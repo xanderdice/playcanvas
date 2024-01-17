@@ -1,0 +1,448 @@
+/*
+El script character proporciona funcionalidades para el control de movimiento 
+y detección de colisiones de un personaje en un entorno 3D. 
+Algunas características notables incluyen:
+
+*/
+
+var Character = pc.createScript('character');
+
+Character.attributes.add('speed', { type: 'number', default: 4, title: "speed", description: "Velocidad del personaje." });
+Character.attributes.add('camera', { type: 'entity', default: null });
+Character.attributes.add('isSelectable', { type: 'boolean', default: false });
+Character.attributes.add('isPlayer', { type: 'boolean', default: false });
+
+// VFX
+//https://mebiusbox.github.io/contents/EffectTextureMaker/
+
+
+
+Character.prototype.initialize = function () {
+    this.entity.isSelectable = this.isSelectable;
+    this.entity.isPlayer = this.isPlayer;
+    this.entity.selected = this.entity.isPlayer;
+    this.entity.isCharacter = true;
+    this.entity.targetPoint = new pc.Vec3(0, 0, 0);
+
+    this.anim = this.entity.anim;
+
+    this.renderCharacterComponent = this.entity.findComponent('render')
+
+    //this.pointEntity = new pc.Entity()
+    /*
+    this.pointEntity.addComponent('render', {
+        type: 'sphere',
+        radius: 0.05
+    });
+    */
+    /*
+        this.pointEntity.addComponent('collision', {
+            type: 'sphere',
+            radius: 0.1
+        });
+    
+        this.pointEntity.collision.on('triggerenter', function () {
+            this.stopMovement();
+        }, this);
+        this.app.root.addChild(this.pointEntity);
+        this.pointEntity.setPosition(this.entity.getPosition());
+        */
+
+
+    var largestAABB = this.getLargestAABB(this.entity);
+
+
+    // this.rayGroundLength = (((largestAABB || {}).halfExtents || {}).y || 0) + 0.1;
+
+
+    if (!this.entity.collision) {
+        this.entity.addComponent('collision', {
+            type: 'compound'
+        });
+        var capsule_collision = new pc.Entity(this.entity.name + "_capsule_collision");
+        this.entity.addChild(capsule_collision);
+
+        var height = (((largestAABB || {}).halfExtents || {}).y || 1) * 2;
+        height = 1.8;
+        capsule_collision.addComponent('collision', {
+            type: 'capsule',
+            radius: 0.35,
+            height: height
+        });
+        this.entity.collision.on("collisionstart", this.sensorCollisionstartEvent, this);
+        this.entity.collision.on("collisionend", this.sensorCollisionendEvent, this);
+
+
+
+        /*
+                var cap = new pc.Entity();
+                cap.addComponent('render', {
+                    type: 'capsule',
+                    radius: 0.35,
+                    height: height
+                });
+                this.entity.addChild(cap);
+        */
+
+    }
+
+
+
+
+
+
+
+
+
+    if (!this.entity.rigidbody) {
+        var largestAABB = this.getLargestAABB(this.entity);
+        var halfExtents = ((largestAABB || {}).halfExtents || {});
+        var volume = ((halfExtents.x || 1) * 2) * ((halfExtents.y || 1) * 2) * ((halfExtents.z || 1) * 2);
+        var mass = volume * 10;
+
+
+        this.entity.addComponent('rigidbody', {
+            type: 'dynamic',         // Tipo de cuerpo rígido (puede ser 'dynamic', 'static' o 'kinematic')
+            mass: mass,              // Masa del cuerpo rígido
+            friction: 0.5,          // Coeficiente de fricción
+            restitution: 0.2,       // Coeficiente de restitución (rebote)
+            linearDamping: 0.0,     // Amortiguación lineal
+            angularDamping: 0.0,    // Amortiguación angular
+            linearFactor: new pc.Vec3(1, 1, 1),  // Permitir movimiento en los ejes X y Z, pero no en el eje Y
+            angularFactor: new pc.Vec3(0, 0, 0)
+        });
+        this.entity.rigidbody.useGravity = false;
+    }
+
+
+
+
+
+
+
+
+
+};
+
+
+
+
+
+
+
+
+
+
+
+
+Character.prototype.stopMovement = function () {
+
+    this.entity.rigidbody.linearVelocity = new pc.Vec3(0, this.entity.rigidbody.linearVelocity.y, 0);
+    this.entity.targetPoint = null;
+
+}
+
+
+
+Character.prototype.getLargestAABB = function (entity) {
+    var largestAABB = null;
+
+    // Obtén todos los componentes de render de la entidad
+    var renderComponents = entity.findComponents('render');
+
+    for (var i = 0; i < renderComponents.length; i++) {
+        var renderComponent = renderComponents[i];
+
+        // Obtén todas las meshInstances del componente de render
+        var meshInstances = renderComponent.meshInstances;
+
+        for (var j = 0; j < meshInstances.length; j++) {
+            var meshInstance = meshInstances[j];
+
+            // Obtén el AABB de la meshInstance
+            var meshAABB = meshInstance.aabb;
+
+            // Si es el primer AABB que encuentras, establece largestAABB
+            if (!largestAABB) {
+                largestAABB = meshAABB.clone();
+            } else {
+                // Amplía largestAABB para incluir el nuevo AABB si es más grande
+                largestAABB.add(meshAABB);
+            }
+        }
+    }
+
+    return largestAABB;
+}
+
+Character.prototype.doMoveCharacter = async function (dt) {
+    if (!this.entity.rigidbody) return;
+    var speed = 0;
+    var moveForward = 0;
+    var moveRight = 0;
+
+    if (this.app.keyboard.isPressed(pc.KEY_W)) moveForward += 1;
+    if (this.app.keyboard.isPressed(pc.KEY_S)) moveForward -= 1;
+    if (this.app.keyboard.isPressed(pc.KEY_A)) moveRight += 1;
+    if (this.app.keyboard.isPressed(pc.KEY_D)) moveRight -= 1;
+
+
+    if (this.entity.targetPoint) {
+
+        // Verificar si el jugador ha alcanzado el punto de destino
+        if (Math.abs(this.entity.getPosition().x - this.entity.targetPoint.x) > 0.1 || Math.abs(this.entity.getPosition().z - this.entity.targetPoint.z) > 0.1) {
+
+            // Calcular la dirección hacia el punto de destino
+
+            var direction = new pc.Vec3();
+            direction.copy(this.entity.targetPoint).sub(this.entity.getPosition()).normalize();
+
+
+            // Rotar hacia la dirección (sin cambiar la altura)
+            direction.y = 0; // Asegurarse de que no cambie la altura
+
+            // Calcular el ángulo de rotación
+            var angle = Math.atan2(-direction.x, -direction.z);
+
+
+
+
+
+            //this.entity.rigidbody.enabled = false;
+            var euler = new pc.Vec3(0, (angle * pc.math.RAD_TO_DEG), 0);
+            var rotation = new pc.Quat().setFromEulerAngles(0, euler.y, 0);
+
+            var newRotation = new pc.Quat().slerp(this.entity.getLocalRotation(), rotation, 0.4);
+            //this.entity.setLocalRotation(newRotation);
+            //this.entity.forward = direction;
+            //this.entity.rigidbody.enabled = true;
+            this.entity.rigidbody.teleport(this.entity.getPosition(), newRotation);
+
+
+
+            // Moverse en la dirección hacia el punto de destino
+            var velocity = direction.scale(this.speed);
+            this.entity.rigidbody.linearVelocity = new pc.Vec3(velocity.x, this.entity.rigidbody.linearVelocity.y, velocity.z);
+
+
+        } else {
+            this.stopMovement();
+        }
+    }
+
+
+    this.doSensors();
+
+
+    var currentVelocity = this.entity.rigidbody.linearVelocity;
+    currentVelocity.y = 0;
+    speed = currentVelocity.length();
+
+
+
+    if (this.anim) {
+        this.anim.enabled = this.visibleThisFrame();
+        this.anim.setInteger('dir', 0);
+        this.anim.setFloat('speed', speed);
+        this.anim.setBoolean('isonair', this.entity.isonair);
+    }
+
+
+    /*
+        for (var i = 0; i < 100000000; i++) {
+            var r = 0;
+        }
+    */
+}
+
+
+Character.prototype.doSensors = function () {
+
+
+    if (this.entity.sensorFrontEntity) {
+
+        this.stopMovement();
+        this.entity.sensorFrontEntity = null;
+    }
+
+
+    var currentVelocity = this.entity.rigidbody.linearVelocity;
+
+
+    this.entity.isonair = false;
+    var onairThreshold = 2.5;
+    if (!this.entity.sensorBottomEntity) {
+        this.entity.isonair = !(currentVelocity.y >= -onairThreshold && currentVelocity.y <= onairThreshold);
+    }
+
+    if (this.entity.isonair) {
+        this.stopMovement();
+    }
+
+
+
+    var characterPosition = this.entity.getPosition();
+    var forward = this.entity.forward;
+
+    // Calcular el punto final del rayo
+    var endPosition = new pc.Vec3();
+    endPosition.copy(characterPosition).addScaled(forward, 0.5);
+
+    // Realizar el raycast
+    var raycast = this.app.systems.rigidbody.raycastFirst
+        (
+            new pc.Vec3(characterPosition.x, characterPosition.y - 0.5, characterPosition.z),
+            new pc.Vec3(endPosition.x, endPosition.y - 0.5, endPosition.z)
+        );
+    /*this.app.drawLine
+        (
+            new pc.Vec3(characterPosition.x, characterPosition.y - 0.5, characterPosition.z),
+            new pc.Vec3(endPosition.x, endPosition.y - 0.5, endPosition.z),
+            pc.Color.RED
+        );
+*/
+    if (raycast != null && raycast.entity != this.entity) {
+
+
+        var dot = raycast.normal.dot(new pc.Vec3(0, 1, 0)); // Calcular el producto punto con el eje Y
+        var angle = Math.acos(Math.min(1, dot)); // Asegurarse de que el ángulo esté en el rango válido [0, π]
+        var maxToleranceAngle = (60 * Math.PI) / 180; // Convertir 75 grados a radianes
+
+        if (maxToleranceAngle < angle) {
+
+            this.stopMovement();
+        }
+    }
+
+    // Realizar el raycast hacia arriba
+    var raycastUp = this.app.systems.rigidbody.raycastFirst
+        (
+            new pc.Vec3(characterPosition.x, characterPosition.y + 1, characterPosition.z),
+            new pc.Vec3(endPosition.x, endPosition.y + 1, endPosition.z),
+        );
+    /*
+this.app.drawLine
+    (
+        new pc.Vec3(characterPosition.x, characterPosition.y + 1, characterPosition.z),
+        new pc.Vec3(endPosition.x, endPosition.y + 1, endPosition.z),
+        pc.Color.RED
+    );
+*/
+    // Lógica para el raycast hacia arriba
+    if (raycastUp != null && raycastUp.entity != this.entity) {
+        // Puedes realizar alguna lógica específica si hay colisión hacia arriba
+        this.stopMovement();
+    }
+
+}
+
+
+Character.prototype.sensorCollisionstartEvent = async function (result) {
+
+
+
+    var i = 0,
+        contacts_length = (result.contacts || []).length,
+        /* Calcular los vectores de los ejes principales*/
+        xAxis = new pc.Vec3(1, 0, 0),
+        yAxis = new pc.Vec3(0, 1, 0),
+        zAxis = new pc.Vec3(0, 0, 1),
+        /* Definir un umbral para determinar si la colisión es significativ */
+        threshold = 0.8;
+
+    for (; i < contacts_length; i++) {
+        var contactNormal = result.contacts[i].normal,
+            /* Calcular el ángulo entre la normal de la colisión y los ejes principales */
+            angleX = contactNormal.dot(xAxis),
+            angleY = contactNormal.dot(yAxis),
+            angleZ = contactNormal.dot(zAxis);
+
+
+
+        /* Analizar los resultados y determinar el lado de la colisión */
+        if (Math.abs(angleX) > threshold) {
+
+
+            if (angleX > 0) {
+                this.entity.sensorRightEntity = null;
+                this.entity.sensorLeftEntity = result.other;
+
+                /*Colisión en el lado izquierdo*/
+            } else {
+                this.entity.sensorRightEntity = result.other;
+                this.entity.sensorLeftEntity = null;
+                /*Colisión en el lado derecho*/
+
+            }
+        } else if (Math.abs(angleY) > threshold) {
+
+
+            if (angleY > 0) {
+                this.entity.sensorTopEntity = null;
+                this.entity.sensorBottomEntity = result.other;
+                /*Colisión en la parte inferior*/
+
+            } else {
+                this.entity.sensorTopEntity = result.other;
+                this.entity.sensorBottomEntity = null;
+                /*Colisión en la parte superior*/
+
+            }
+        } else if (Math.abs(angleZ) > threshold) {
+
+
+            if (angleZ > 0) {
+
+                this.entity.sensorFrontEntity = null;
+                /*Colisión en el lado trasero*/
+                this.entity.sensorBackEntity = result.other;
+
+            } else {
+                this.entity.sensorBackEntity = null;
+                /*Colisión en el lado frontal*/
+
+                this.entity.sensorFrontEntity = result.other;
+
+
+            }
+        }
+    }
+
+}
+Character.prototype.sensorCollisionendEvent = function (entity) {
+
+    if ((this.entity.sensorRightEntity || {})._guid === entity._guid) {
+        this.entity.sensorRightEntity = null;
+    }
+    if ((this.entity.sensorLeftEntity || {})._guid === entity._guid) {
+        this.entity.sensorLeftEntity = null;
+    }
+    if ((this.entity.sensorTopEntity || {})._guid === entity._guid) {
+        this.entity.sensorTopEntity = null;
+    }
+    if ((this.entity.sensorBottomEntity || {})._guid === entity._guid) {
+        this.entity.sensorBottomEntity = null;
+    }
+    if ((this.entity.sensorFrontEntity || {})._guid === entity._guid) {
+        this.entity.sensorFrontEntity = null;
+    }
+    if ((this.entity.sensorBackEntity || {})._guid === entity._guid) {
+        this.entity.sensorBackEntity = null;
+    }
+
+}
+
+
+
+Character.prototype.visibleThisFrame = function (dt) {
+    return (((this.renderCharacterComponent || {}).meshInstances || [])[0] || {}).visibleThisFrame;
+}
+
+/**
+ * UPDATE 
+ */
+Character.prototype.update = function (dt) {
+
+    //this.doMoveCharacter();
+
+};
