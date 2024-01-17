@@ -48,7 +48,7 @@ Character.prototype.initialize = function () {
         */
 
 
-    var largestAABB = this.getLargestAABB(this.entity);
+
 
 
     // this.rayGroundLength = (((largestAABB || {}).halfExtents || {}).y || 0) + 0.1;
@@ -61,12 +61,10 @@ Character.prototype.initialize = function () {
         var capsule_collision = new pc.Entity(this.entity.name + "_capsule_collision");
         this.entity.addChild(capsule_collision);
 
-        var height = (((largestAABB || {}).halfExtents || {}).y || 1) * 2;
-        height = 1.8;
         capsule_collision.addComponent('collision', {
             type: 'capsule',
             radius: 0.35,
-            height: height
+            height: 1.8
         });
         this.entity.collision.on("collisionstart", this.sensorCollisionstartEvent, this);
         this.entity.collision.on("collisionend", this.sensorCollisionendEvent, this);
