@@ -24,6 +24,9 @@ GameCharactersController.attributes.add('camera', { type: 'entity' });
 // initialize code called once per entity
 GameCharactersController.prototype.initialize = function () {
 
+    if (!this.camera) {
+        console.error("you need configure a camera to GameCharactersController script boss !!");
+    }
     this.characters = [];
     this.selectedCharacters = [];
 
@@ -213,14 +216,7 @@ GameCharactersController.prototype.initialize = function () {
                 characters_length = this.characters.length,
                 i = 0;
             for (; i < characters_length; i++) {
-                var ent = this.characters[i];
-                var playerScript = ent.script && ent.script.player;
-
-                if (playerScript && playerScript.doMoveCharacter) {
-                    // Llama al método
-                    await playerScript.doMoveCharacter();
-
-                }
+                this.characters[i].fire("movecharacter");
             }
             this.gameTimer_busy = false;
         }

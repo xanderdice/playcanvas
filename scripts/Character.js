@@ -8,7 +8,6 @@ Algunas características notables incluyen:
 var Character = pc.createScript('character');
 
 Character.attributes.add('speed', { type: 'number', default: 4, title: "speed", description: "Velocidad del personaje." });
-Character.attributes.add('camera', { type: 'entity', default: null });
 Character.attributes.add('isSelectable', { type: 'boolean', default: false });
 Character.attributes.add('isPlayer', { type: 'boolean', default: false });
 
@@ -95,11 +94,7 @@ Character.prototype.initialize = function () {
 
 
     if (!this.entity.rigidbody) {
-        var largestAABB = this.getLargestAABB(this.entity);
-        var halfExtents = ((largestAABB || {}).halfExtents || {});
-        var volume = ((halfExtents.x || 1) * 2) * ((halfExtents.y || 1) * 2) * ((halfExtents.z || 1) * 2);
-        var mass = volume * 10;
-
+        var mass = 90;
 
         this.entity.addComponent('rigidbody', {
             type: 'dynamic',         // Tipo de cuerpo rígido (puede ser 'dynamic', 'static' o 'kinematic')
@@ -111,13 +106,14 @@ Character.prototype.initialize = function () {
             linearFactor: new pc.Vec3(1, 1, 1),  // Permitir movimiento en los ejes X y Z, pero no en el eje Y
             angularFactor: new pc.Vec3(0, 0, 0)
         });
-        this.entity.rigidbody.useGravity = false;
     }
 
 
 
 
-
+    this.entity.on('movecharacter', function (e) {
+        this.doMoveCharacter();
+    }, this);
 
 
 
@@ -144,36 +140,6 @@ Character.prototype.stopMovement = function () {
 
 
 
-Character.prototype.getLargestAABB = function (entity) {
-    var largestAABB = null;
-
-    // Obtén todos los componentes de render de la entidad
-    var renderComponents = entity.findComponents('render');
-
-    for (var i = 0; i < renderComponents.length; i++) {
-        var renderComponent = renderComponents[i];
-
-        // Obtén todas las meshInstances del componente de render
-        var meshInstances = renderComponent.meshInstances;
-
-        for (var j = 0; j < meshInstances.length; j++) {
-            var meshInstance = meshInstances[j];
-
-            // Obtén el AABB de la meshInstance
-            var meshAABB = meshInstance.aabb;
-
-            // Si es el primer AABB que encuentras, establece largestAABB
-            if (!largestAABB) {
-                largestAABB = meshAABB.clone();
-            } else {
-                // Amplía largestAABB para incluir el nuevo AABB si es más grande
-                largestAABB.add(meshAABB);
-            }
-        }
-    }
-
-    return largestAABB;
-}
 
 Character.prototype.doMoveCharacter = async function (dt) {
     if (!this.entity.rigidbody) return;
