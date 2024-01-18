@@ -110,7 +110,7 @@ Character.prototype.initialize = function () {
 
 
     this.entity.on('movecharacter', function (e) {
-        this.doMoveCharacter();
+        this.doMoveCharacter(e);
     }, this);
 
 
@@ -139,38 +139,40 @@ Character.prototype.stopMovement = function () {
 
 
 
-Character.prototype.doMoveCharacter = async function (dt) {
+Character.prototype.doMoveCharacter = async function (params) {
     if (!this.entity.rigidbody) return;
-    var speed = 0;
-    var moveForward = 0;
-    var moveRight = 0;
+    var speed = 0,
+        moveForward = params.deviceInputKeyboard.moveForward || 0,
+        moveRight = params.deviceInputKeyboard.moveRight || 0,
+        direction = new pc.Vec3();
 
-    if (this.app.keyboard.isPressed(pc.KEY_W)) moveForward += 1;
-    if (this.app.keyboard.isPressed(pc.KEY_S)) moveForward -= 1;
-    if (this.app.keyboard.isPressed(pc.KEY_A)) moveRight += 1;
-    if (this.app.keyboard.isPressed(pc.KEY_D)) moveRight -= 1;
+
+    if (moveForward !== 0) {
+        this.entity.targetPoint = null;
+        direction.copy(this.entity.forward).normalize();
+        speed = this.speed * moveForward;
+    }
+
+    if (moveRight !== 0) {
+        this.entity.targetPoint = null;
+        direction.copy(this.entity.right).normalize();
+        speed = this.speed * moveRight;
+    }
+
+    direction.y = 0; // Asegurarse de que no cambie la altura
 
 
     if (this.entity.targetPoint) {
 
         // Verificar si el jugador ha alcanzado el punto de destino
         if (Math.abs(this.entity.getPosition().x - this.entity.targetPoint.x) > 0.1 || Math.abs(this.entity.getPosition().z - this.entity.targetPoint.z) > 0.1) {
-
             // Calcular la dirección hacia el punto de destino
 
-            var direction = new pc.Vec3();
             direction.copy(this.entity.targetPoint).sub(this.entity.getPosition()).normalize();
-
-
-            // Rotar hacia la dirección (sin cambiar la altura)
             direction.y = 0; // Asegurarse de que no cambie la altura
 
             // Calcular el ángulo de rotación
             var angle = Math.atan2(-direction.x, -direction.z);
-
-
-
-
 
             //this.entity.rigidbody.enabled = false;
             var euler = new pc.Vec3(0, (angle * pc.math.RAD_TO_DEG), 0);
@@ -182,17 +184,19 @@ Character.prototype.doMoveCharacter = async function (dt) {
             //this.entity.rigidbody.enabled = true;
             this.entity.rigidbody.teleport(this.entity.getPosition(), newRotation);
 
-
-
-            // Moverse en la dirección hacia el punto de destino
-            var velocity = direction.scale(this.speed);
-            this.entity.rigidbody.linearVelocity = new pc.Vec3(velocity.x, this.entity.rigidbody.linearVelocity.y, velocity.z);
-
-
+            speed = this.speed;
         } else {
+            speed = 0;
             this.stopMovement();
         }
     }
+
+    // Moverse en la dirección hacia el punto de destino
+    var velocity = direction.scale(speed);
+    if (speed !== 0) {
+        this.entity.rigidbody.linearVelocity = new pc.Vec3(velocity.x, this.entity.rigidbody.linearVelocity.y, velocity.z);
+    }
+
 
 
     this.doSensors();

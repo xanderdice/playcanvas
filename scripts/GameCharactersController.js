@@ -50,6 +50,9 @@ GameCharactersController.prototype.initialize = function () {
     canvas.addEventListener('contextmenu', function (event) { event.preventDefault(); }.bind(this), false);
 
 
+    this.moveForward = 0;
+    this.moveRight = 0;
+
     this.gameMouse_busy = false;
     this.app.mouse.on(pc.EVENT_MOUSEDOWN, function (event) {
 
@@ -206,6 +209,33 @@ GameCharactersController.prototype.initialize = function () {
 
 
 
+    this.app.keyboard.on(pc.EVENT_KEYDOWN, function (e) {
+        switch (e.key) {
+            case pc.KEY_W:
+                this.moveForward = 1;
+                break;
+            case pc.KEY_S:
+                this.moveForward = -1;
+                break;
+            case pc.KEY_D:
+                this.moveRight = 1;
+                break;
+            case pc.KEY_A:
+                this.moveRight = -1;
+                break;
+        }
+    }, this);
+
+
+    this.app.keyboard.on(pc.EVENT_KEYUP, function (e) {
+        if (e.key === pc.KEY_W || e.key === pc.KEY_S) {
+            this.moveForward = 0;
+        }
+        if (e.key === pc.KEY_D || e.key === pc.KEY_A) {
+            this.moveRight = 0;
+        }
+    }, this);
+
 
     this.gameTimer_busy = false;
     this.gameTimer = setInterval(async function () {
@@ -214,10 +244,17 @@ GameCharactersController.prototype.initialize = function () {
             //Moves all characters:
             this.characters = this.getCharacters(),
                 characters_length = this.characters.length,
-                i = 0;
+                i = 0,
+                e = {
+                    deviceInputKeyboard: {
+                        moveForward: this.moveForward,
+                        moveRight: this.moveRight,
+                    }
+                };
             for (; i < characters_length; i++) {
-                this.characters[i].fire("movecharacter");
+                this.characters[i].fire("movecharacter", e);
             }
+
             this.gameTimer_busy = false;
         }
 
