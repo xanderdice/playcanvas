@@ -15,6 +15,8 @@ FollowCamera.attributes.add('target', {
     description: 'The target entity to follow'
 });
 
+
+
 FollowCamera.attributes.add('cameraOffset', {
     type: 'vec3',
     default: [0, 5, -10],
@@ -34,38 +36,38 @@ FollowCamera.attributes.add('lerpAmount', {
 
 // initialize code called once per entity
 FollowCamera.prototype.initialize = function () {
+    this.entity.setRotation(pc.Vec3.ZERO);
     this.targetPos = new pc.Vec3();
     this.matrix = new pc.Mat4();
     this.quat = new pc.Quat();
     this.vec = new pc.Vec3();
-    this.cameraRotation = 0;
+    this.cameraPitchRotation = 0;
     this.cameraPitch_busy = false;
+    this.playerPersonStyle = (this.app.gameConfig || {}).playerPersonStyle;
 
     if (this.target) {
-        if (this.app.gameConfig.playerPersonStyle === "ThirdPerson") {
-            this.updateTargetPosition();
-            this.currentPos = this.targetPos.clone();
+        if (this.target.isCharacter) {
+            console.error("Camera can not set directly to the character entity. you need create a target entity and set it as child of the main character entity.");
+            return;
         }
 
-        if (this.app.gameConfig.playerPersonStyle === "FirstPerson") {
-            this.entity.reparent(this.target);
+        this.updateTargetPosition();
+        this.currentPos = this.targetPos.clone();
 
+        if (this.playerPersonStyle === "FirstPerson") {
+            this.cameraOffset = pc.Vec3.ZERO;
+            this.lerpAmount = 1;
 
             this.entity.on('camera:pitch', function (eventLook) {
-                if (!this.entity) return;
                 if (!this.cameraPitch_busy) {
                     this.cameraPitch_busy = true;
 
                     var deltaY = (eventLook.deltaY || 0) * (eventLook.lookSpeed || 1);
 
                     var pitch = -deltaY;
-                    this.cameraRotation += pitch;
-                    this.cameraRotation = pc.math.clamp(this.cameraRotation, -90, 90);
+                    this.cameraPitchRotation += pitch;
+                    this.cameraPitchRotation = pc.math.clamp(this.cameraPitchRotation, -90, 80);
 
-                    if (this.cameraRotation) {
-                        var currentAngles = this.entity.getLocalRotation();
-                        this.entity.setLocalEulerAngles(this.cameraRotation, currentAngles.y + 180, currentAngles.z);
-                    }
                     this.cameraPitch_busy = false;
                 }
             }, this);
@@ -88,6 +90,7 @@ FollowCamera.prototype.updateTargetPosition = function () {
     this.quat.setFromEulerAngles(0, angle, 0);
     this.matrix.setTRS(this.target.getPosition(), this.quat, pc.Vec3.ONE);
 
+
     // Calculate the desired camera position in world space
     this.matrix.transformPoint(this.cameraOffset, this.targetPos);
 
@@ -98,16 +101,33 @@ FollowCamera.prototype.updateTargetPosition = function () {
 FollowCamera.prototype.postUpdate = function (dt) {
     if (this.target) {
         // Calculate where we want the camera to be
-        if (this.app.gameConfig.playerPersonStyle === "ThirdPerson") {
-            this.updateTargetPosition();
+        this.updateTargetPosition();
 
-            // Lerp the current camera position to where we want it to be
-            // Note that the lerping is framerate independent
-            // From: https://www.rorydriscoll.com/2016/03/07/frame-rate-independent-damping-using-lerp/
+        // Lerp the current camera position to where we want it to be
+        // Note that the lerping is framerate independent
+        // From: https://www.rorydriscoll.com/2016/03/07/frame-rate-independent-damping-using-lerp/
+        if (this.lerpAmount === 1) {
+            this.currentPos = this.targetPos;
+        } else {
             this.currentPos.lerp(this.currentPos, this.targetPos, 1 - Math.pow(1 - this.lerpAmount, dt));
+        }
 
-            // Set the camera's position
-            this.entity.setPosition(this.currentPos);
+        // Set the camera's position
+        this.entity.setPosition(this.currentPos);
+
+        if (this.playerPersonStyle === "FirstPerson") {
+            var targetRotation = this.target.getRotation();  // Obtener la rotación como cuaternión
+
+            // Crear un cuaternión para la rotación en el eje X
+            var pitchRotation = new pc.Quat();
+            pitchRotation.setFromEulerAngles(this.cameraPitchRotation, 0, 0);
+
+            // Multiplicar la rotación original por el pitchRotation
+            targetRotation.mul(pitchRotation);
+
+            // Aplicar la rotación resultante a la cámara
+            this.entity.setRotation(targetRotation);
+        } else {
             this.entity.lookAt(this.target.getPosition());
         }
 

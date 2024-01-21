@@ -5,6 +5,7 @@
 
 //https://mebiusbox.github.io/contents/EffectTextureMaker/  SPRITE EFFECT
 //https://basis.dev.jibencaozuo.com/                        BASIS
+//cloth simulation https://playcanvas.com/project/691109/overview/cloth-simulation-demo
 
 //resolutions
 //4320p (8K): 7680x4320

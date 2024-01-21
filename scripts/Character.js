@@ -139,19 +139,31 @@ Character.prototype.initialize = function () {
 
 
 
-    this.entity.on('character:domove', async function (eventParams) {
+    this.entity.on('character:domove', function (eventParams) {
         this.doMoveCharacter(eventParams);
     }, this);
 
-    this.entity.on('character:rotate', async function (eventLook) {
+    this.entity.on('character:rotate', function (eventLook) {
         this.look = eventLook;
+        if (this.app.gameConfig.playerPersonStyle === "FirstPerson" && this.entity.isPlayer) {
+            var rotation = this.entity.getLocalRotation(),
+                deltaX = ((this.look || {}).deltaX) || 0;
+            if (deltaX !== 0) {
+                var deltaY = deltaX * ((this.look || {}).lookSpeed) || 1;
+                var deltaRotation = new pc.Quat().setFromEulerAngles(0, -deltaY, 0);
+                rotation.mul(deltaRotation);
+                this.look.deltaX = 0;
+            }
+            this.entity.rigidbody.teleport(this.entity.getPosition(), rotation);
+        }
+
     }, this);
 
-    this.entity.on('character:forward', async function (e) {
+    this.entity.on('character:forward', function (e) {
 
     }, this);
 
-    this.entity.on('character:strafe', async function (e) {
+    this.entity.on('character:strafe', function (e) {
 
     }, this);
 
@@ -180,7 +192,7 @@ Character.prototype.stopMovement = function () {
 
 
 
-Character.prototype.doMoveCharacter = async function (params) {
+Character.prototype.doMoveCharacter = function (params) {
     if (!this.entity.rigidbody) return;
     if (!this.doMoveCharacter_busy) {
         this.doMoveCharacter_busy = true;
@@ -202,15 +214,7 @@ Character.prototype.doMoveCharacter = async function (params) {
         }
 
 
-        if (this.app.gameConfig.playerPersonStyle === "FirstPerson") {
-            var deltaX = ((this.look || {}).deltaX) || 0;
-            if (deltaX !== 0) {
-                var deltaY = deltaX * ((this.look || {}).lookSpeed) || 1;
-                var deltaRotation = new pc.Quat().setFromEulerAngles(0, -deltaY, 0);
-                rotation.mul(deltaRotation);
-                this.look.deltaX = 0;
-            }
-        }
+
 
 
 
@@ -379,7 +383,7 @@ this.app.drawLine
 }
 
 
-Character.prototype.sensorCollisionstartEvent = async function (result) {
+Character.prototype.sensorCollisionstartEvent = function (result) {
 
 
 
