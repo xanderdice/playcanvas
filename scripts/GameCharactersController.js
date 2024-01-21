@@ -30,6 +30,7 @@ GameCharactersController.prototype.initialize = function () {
     this.characters = [];
     this.selectedCharacters = [];
 
+
     this.mousePointer = new pc.Entity();
     this.mousePointer.addComponent(
         'element', {
@@ -48,7 +49,9 @@ GameCharactersController.prototype.initialize = function () {
 
     var canvas = this.app.graphicsDevice.canvas;
     canvas.addEventListener('contextmenu', function (event) { event.preventDefault(); }.bind(this), false);
+    this.app.mouse.disableContextMenu();
 
+    this.app.mouse.enablePointerLock();
 
     this.moveForward = 0;
     this.moveRight = 0;
@@ -134,7 +137,7 @@ GameCharactersController.prototype.initialize = function () {
     }, this);
 
 
-    this.app.mouse.on(pc.EVENT_MOUSEMOVE, function (event) {
+    this.app.mouse.on(pc.EVENT_MOUSEMOVE, async function (event) {
 
 
         if (!this.gameMouse_busy) {
@@ -147,8 +150,27 @@ GameCharactersController.prototype.initialize = function () {
             }
 
             // Obtiene la posición del clic del mouse en pantalla (coordenadas normalizadas)
-            var x = event.x; // this.app.graphicsDevice.width;
-            var y = event.y; // this.app.graphicsDevice.height;
+            var x = event.x,
+                y = event.y,
+                deltaX = event.dx,
+                deltaY = event.dy;
+
+            if (this.mainPlayer) {
+                if (this.lookLastDeltaX === deltaX) deltaX = 0;
+                if (this.lookLastDeltaY === deltaY) deltaY = 0;
+                this.mainPlayer.fire("character:look", { x: x, y: y, deltaX: deltaX, deltaY: deltaY, lookSpeed: this.lookSpeed || 1 });
+                if (this.camera && this.camera.camera) {
+                    this.camera.fire("camera:pitch", { y: y, deltaY: deltaY, lookSpeed: this.lookSpeed || 1 });
+                }
+                this.lookLastDeltaX = deltaX;
+                this.lookLastDeltaY = deltaY;
+            } else {
+                this.mainPlayer = this.getMainPlayer(this.characters);
+            }
+
+            if (this.camera && this.camera.camera) {
+
+            }
 
             var from = this.camera.getPosition().clone();
             var to = this.camera.camera.screenToWorld(
@@ -252,13 +274,13 @@ GameCharactersController.prototype.initialize = function () {
                     }
                 };
             for (; i < characters_length; i++) {
-                this.characters[i].fire("movecharacter", e);
+                this.characters[i].fire("character:domove", e);
             }
 
             this.gameTimer_busy = false;
         }
 
-    }.bind(this), 50);
+    }.bind(this), 51);
 
 };
 
@@ -296,4 +318,10 @@ GameCharactersController.prototype.getSelectableCharacters = function (character
     return characters;
 }
 
+GameCharactersController.prototype.getMainPlayer = function (characters) {
+    var mainPlayer = characters.find(function (char) {
+        return char.isPlayer;
+    });
+    return mainPlayer;
+}
 
