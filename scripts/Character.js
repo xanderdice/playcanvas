@@ -3,6 +3,9 @@ El script character proporciona funcionalidades para el control de movimiento
 y detección de colisiones de un personaje en un entorno 3D. 
 Algunas características notables incluyen:
 
+ATENCION:
+REQUIERE QUE GameCharactersController.js este instalado en la entidad ROOT.
+
 */
 
 var Character = pc.createScript('character');
@@ -16,13 +19,6 @@ Character.attributes.add('playerOptions',
         type: 'json',
         schema: [
             {
-                name: 'playerPersonStyle',
-                title: 'Player Person Style',
-                type: 'string', enum: [
-                    { 'FirstPerson': 'FirstPerson' },
-                    { 'ThirdPerson': 'ThirdPerson' }
-                ], default: 'ThirdPerson'
-            }, {
                 name: 'playerControllerOnKeyUP',
                 type: 'string', enum: [
                     { 'MoveForward': 'MoveForward' },
@@ -147,7 +143,7 @@ Character.prototype.initialize = function () {
         this.doMoveCharacter(eventParams);
     }, this);
 
-    this.entity.on('character:look', async function (eventLook) {
+    this.entity.on('character:rotate', async function (eventLook) {
         this.look = eventLook;
     }, this);
 
@@ -205,7 +201,8 @@ Character.prototype.doMoveCharacter = async function (params) {
             walkingbackwards = moveForward < 0;
         }
 
-        if ((this.playerOptions.playerPersonStyle || "") === "FirstPerson") {
+
+        if (this.app.gameConfig.playerPersonStyle === "FirstPerson") {
             var deltaX = ((this.look || {}).deltaX) || 0;
             if (deltaX !== 0) {
                 var deltaY = deltaX * ((this.look || {}).lookSpeed) || 1;
@@ -215,88 +212,88 @@ Character.prototype.doMoveCharacter = async function (params) {
             }
         }
 
-        if ((this.playerOptions.playerControllerOnKeyRight || "") === "Rotate") {
 
-            if (moveRight !== 0) {
-                this.entity.targetPoint = null;
-                if ((this.playerOptions.playerControllerOnKeyRight || "") === "Rotate") {
-                    var deltaY = this.speed * (this.speed / 2) * moveRight; // Puedes ajustar este valor según tus necesidades
-                    // Crea un cuaternión de rotación para representar la rotación adicional en el eje Y
-                    var deltaRotation = new pc.Quat().setFromEulerAngles(0, -deltaY, 0);
-                    // Multiplica la rotación actual por la rotación adicional en el eje Y
-                    rotation.mul(deltaRotation);
-                }
-                else if ((this.playerOptions.playerControllerOnKeyRight || "") === "Strafe") {
-                    direction.copy(this.entity.right).normalize();
-                    speed = this.speed * moveRight;
-                }
+
+        if (moveRight !== 0) {
+            this.entity.targetPoint = null;
+            if ((this.playerOptions.playerControllerOnKeyRight || "") === "Rotate") {
+                var deltaY = this.speed * (this.speed / 2) * moveRight; // Puedes ajustar este valor según tus necesidades
+                // Crea un cuaternión de rotación para representar la rotación adicional en el eje Y
+                var deltaRotation = new pc.Quat().setFromEulerAngles(0, -deltaY, 0);
+                // Multiplica la rotación actual por la rotación adicional en el eje Y
+                rotation.mul(deltaRotation);
             }
-
-
-
-            if (this.entity.targetPoint) {
-
-                // Verificar si el jugador ha alcanzado el punto de destino
-                if (Math.abs(this.entity.getPosition().x - this.entity.targetPoint.x) > 0.1 || Math.abs(this.entity.getPosition().z - this.entity.targetPoint.z) > 0.1) {
-                    // Calcular la dirección hacia el punto de destino
-                    direction.copy(this.entity.targetPoint).sub(this.entity.getPosition()).normalize();
-                    // Calcular el ángulo de rotación
-                    var angle = Math.atan2(-direction.x, -direction.z);
-
-                    //this.entity.rigidbody.enabled = false;
-                    var euler = new pc.Vec3(0, (angle * pc.math.RAD_TO_DEG), 0);
-                    rotation = new pc.Quat().setFromEulerAngles(0, euler.y, 0);
-
-                    rotation = new pc.Quat().slerp(this.entity.getLocalRotation(), rotation, 0.4);
-
-                    speed = this.speed;
-                } else {
-                    speed = 0;
-                    this.stopMovement();
-                }
+            else if ((this.playerOptions.playerControllerOnKeyRight || "") === "Strafe") {
+                direction.copy(this.entity.right).normalize();
+                speed = this.speed * moveRight;
             }
-
-
-
-            this.entity.rigidbody.teleport(this.entity.getPosition(), rotation);
-            direction.y = 0; // Asegurarse de que no cambie la altura
-
-            // Moverse en la dirección hacia el punto de destino
-            var velocity = direction.scale(speed);
-            if (speed !== 0) {
-                this.entity.rigidbody.linearVelocity = new pc.Vec3(velocity.x, this.entity.rigidbody.linearVelocity.y, velocity.z);
-            }
-
-
-
-            this.doSensors();
-
-
-            var currentVelocity = this.entity.rigidbody.linearVelocity;
-            currentVelocity.y = 0;
-            speed = currentVelocity.length();
-
-
-
-            if (this.anim) {
-                this.anim.enabled = this.visibleThisFrame();
-                //this.anim.setInteger('dir', 0);
-                //this.anim.setFloat('speed', speed);
-                this.anim.setBoolean('walkingbackwards', walkingbackwards);
-                this.anim.setBoolean('walking', speed > 0.1 && speed < 1.5);
-                this.anim.setBoolean('running', speed > 1.5);
-                this.anim.setBoolean('idle', speed < 0.1);
-                //this.anim.setBoolean('isonair', this.entity.isonair);
-            }
-
-
-            /*
-                for (var i = 0; i < 100000000; i++) {
-                    var r = 0;
-                }
-            */
-            this.doMoveCharacter_busy = false;
         }
+
+
+
+        if (this.entity.targetPoint) {
+
+            // Verificar si el jugador ha alcanzado el punto de destino
+            if (Math.abs(this.entity.getPosition().x - this.entity.targetPoint.x) > 0.1 || Math.abs(this.entity.getPosition().z - this.entity.targetPoint.z) > 0.1) {
+                // Calcular la dirección hacia el punto de destino
+                direction.copy(this.entity.targetPoint).sub(this.entity.getPosition()).normalize();
+                // Calcular el ángulo de rotación
+                var angle = Math.atan2(-direction.x, -direction.z);
+
+                //this.entity.rigidbody.enabled = false;
+                var euler = new pc.Vec3(0, (angle * pc.math.RAD_TO_DEG), 0);
+                rotation = new pc.Quat().setFromEulerAngles(0, euler.y, 0);
+
+                rotation = new pc.Quat().slerp(this.entity.getLocalRotation(), rotation, 0.4);
+
+                speed = this.speed;
+            } else {
+                speed = 0;
+                this.stopMovement();
+            }
+        }
+
+
+
+        this.entity.rigidbody.teleport(this.entity.getPosition(), rotation);
+        direction.y = 0; // Asegurarse de que no cambie la altura
+
+        // Moverse en la dirección hacia el punto de destino
+        var velocity = direction.scale(speed);
+        if (speed !== 0) {
+            this.entity.rigidbody.linearVelocity = new pc.Vec3(velocity.x, this.entity.rigidbody.linearVelocity.y, velocity.z);
+        }
+
+
+
+        this.doSensors();
+
+
+        var currentVelocity = this.entity.rigidbody.linearVelocity;
+        currentVelocity.y = 0;
+        speed = currentVelocity.length();
+
+
+
+        if (this.anim) {
+            this.anim.enabled = this.visibleThisFrame();
+            //this.anim.setInteger('dir', 0);
+            //this.anim.setFloat('speed', speed);
+            this.anim.setBoolean('walkingbackwards', walkingbackwards);
+            this.anim.setBoolean('walking', speed > 0.1 && speed < 1.5);
+            this.anim.setBoolean('running', speed > 1.5);
+            this.anim.setBoolean('idle', speed < 0.1);
+            //this.anim.setBoolean('isonair', this.entity.isonair);
+        }
+
+
+        /*
+            for (var i = 0; i < 100000000; i++) {
+                var r = 0;
+            }
+        */
+        this.doMoveCharacter_busy = false;
+
     }
 }
 

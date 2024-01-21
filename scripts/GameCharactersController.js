@@ -1,4 +1,7 @@
+//IMPORTANT:
 //Put this script in ROOT entitity
+//
+//
 
 //https://mebiusbox.github.io/contents/EffectTextureMaker/  SPRITE EFFECT
 //https://basis.dev.jibencaozuo.com/                        BASIS
@@ -16,7 +19,30 @@
 
 var GameCharactersController = pc.createScript('gameCharactersController');
 
-GameCharactersController.attributes.add('camera', { type: 'entity' });
+GameCharactersController.attributes.add('camera', {
+    type: 'entity',
+    title: "camera",
+    description: "General camera for this game",
+    default: null
+});
+
+GameCharactersController.attributes.add('playerPersonStyle', {
+    title: 'Player Person Style',
+    type: 'string', enum: [
+        { 'FirstPerson': 'FirstPerson' },
+        { 'ThirdPerson': 'ThirdPerson' }
+    ], default: 'ThirdPerson'
+});
+
+GameCharactersController.attributes.add('gameTimerMillisecods', {
+    title: 'gameTimerMillisecods',
+    type: 'number',
+    min: 16,
+    max: 100,
+    precision: 0,
+    default: 55
+});
+
 
 
 
@@ -26,7 +52,14 @@ GameCharactersController.prototype.initialize = function () {
 
     if (!this.camera) {
         console.error("you need configure a camera to GameCharactersController script boss !!");
+        return;
     }
+
+    this.app.gameConfig = {
+        playerPersonStyle: this.playerPersonStyle
+    };
+
+
     this.characters = [];
     this.selectedCharacters = [];
 
@@ -51,7 +84,7 @@ GameCharactersController.prototype.initialize = function () {
     canvas.addEventListener('contextmenu', function (event) { event.preventDefault(); }.bind(this), false);
     this.app.mouse.disableContextMenu();
 
-    this.app.mouse.enablePointerLock();
+
 
     this.moveForward = 0;
     this.moveRight = 0;
@@ -158,7 +191,7 @@ GameCharactersController.prototype.initialize = function () {
             if (this.mainPlayer) {
                 if (this.lookLastDeltaX === deltaX) deltaX = 0;
                 if (this.lookLastDeltaY === deltaY) deltaY = 0;
-                this.mainPlayer.fire("character:look", { x: x, y: y, deltaX: deltaX, deltaY: deltaY, lookSpeed: this.lookSpeed || 1 });
+                this.mainPlayer.fire("character:rotate", { x: x, y: y, deltaX: deltaX, deltaY: deltaY, lookSpeed: this.lookSpeed || 1 });
                 if (this.camera && this.camera.camera) {
                     this.camera.fire("camera:pitch", { y: y, deltaY: deltaY, lookSpeed: this.lookSpeed || 1 });
                 }
@@ -168,9 +201,7 @@ GameCharactersController.prototype.initialize = function () {
                 this.mainPlayer = this.getMainPlayer(this.characters);
             }
 
-            if (this.camera && this.camera.camera) {
-
-            }
+            //RAYCAST:
 
             var from = this.camera.getPosition().clone();
             var to = this.camera.camera.screenToWorld(
@@ -234,15 +265,19 @@ GameCharactersController.prototype.initialize = function () {
     this.app.keyboard.on(pc.EVENT_KEYDOWN, function (e) {
         switch (e.key) {
             case pc.KEY_W:
+            case pc.KEY_UP:
                 this.moveForward = 1;
                 break;
             case pc.KEY_S:
+            case pc.KEY_DOWN:
                 this.moveForward = -1;
                 break;
             case pc.KEY_D:
+            case pc.KEY_RIGHT:
                 this.moveRight = 1;
                 break;
             case pc.KEY_A:
+            case pc.KEY_LEFT:
                 this.moveRight = -1;
                 break;
         }
@@ -250,10 +285,10 @@ GameCharactersController.prototype.initialize = function () {
 
 
     this.app.keyboard.on(pc.EVENT_KEYUP, function (e) {
-        if (e.key === pc.KEY_W || e.key === pc.KEY_S) {
+        if (e.key === pc.KEY_W || e.key === pc.KEY_S || e.key === pc.KEY_UP || e.key === pc.KEY_DOWN) {
             this.moveForward = 0;
         }
-        if (e.key === pc.KEY_D || e.key === pc.KEY_A) {
+        if (e.key === pc.KEY_D || e.key === pc.KEY_A || e.key === pc.KEY_RIGHT || e.key === pc.KEY_LEFT) {
             this.moveRight = 0;
         }
     }, this);
@@ -280,7 +315,7 @@ GameCharactersController.prototype.initialize = function () {
             this.gameTimer_busy = false;
         }
 
-    }.bind(this), 51);
+    }.bind(this), 55);
 
 };
 

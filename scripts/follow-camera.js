@@ -1,17 +1,18 @@
+/*
+ATENCION:
+REQUIERE QUE GameCharactersController.js este instalado en la entidad ROOT.
+
+poner este script en la camara. la camara debe estar en el root.
+
+
+*/
+
 var FollowCamera = pc.createScript('followCamera');
 
 FollowCamera.attributes.add('target', {
     type: 'entity',
     title: 'Target',
     description: 'The target entity to follow'
-});
-
-FollowCamera.attributes.add('playerPersonStyle', {
-    title: 'Player Person Style',
-    type: 'string', enum: [
-        { 'FirstPerson': 'FirstPerson' },
-        { 'ThirdPerson': 'ThirdPerson' }
-    ], default: 'ThirdPerson'
 });
 
 FollowCamera.attributes.add('cameraOffset', {
@@ -38,16 +39,17 @@ FollowCamera.prototype.initialize = function () {
     this.quat = new pc.Quat();
     this.vec = new pc.Vec3();
     this.cameraRotation = 0;
+    this.cameraPitch_busy = false;
 
     if (this.target) {
-        if (this.playerPersonStyle === "ThirdPerson") {
+        if (this.app.gameConfig.playerPersonStyle === "ThirdPerson") {
             this.updateTargetPosition();
             this.currentPos = this.targetPos.clone();
         }
 
-        if (this.playerPersonStyle === "FirstPerson") {
+        if (this.app.gameConfig.playerPersonStyle === "FirstPerson") {
             this.entity.reparent(this.target);
-            this.cameraPitch_busy = false;
+
 
             this.entity.on('camera:pitch', function (eventLook) {
                 if (!this.entity) return;
@@ -96,7 +98,7 @@ FollowCamera.prototype.updateTargetPosition = function () {
 FollowCamera.prototype.postUpdate = function (dt) {
     if (this.target) {
         // Calculate where we want the camera to be
-        if (this.playerPersonStyle === "ThirdPerson") {
+        if (this.app.gameConfig.playerPersonStyle === "ThirdPerson") {
             this.updateTargetPosition();
 
             // Lerp the current camera position to where we want it to be
