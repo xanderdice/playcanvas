@@ -84,6 +84,7 @@ GameCharactersController.prototype.initialize = function () {
     var canvas = this.app.graphicsDevice.canvas;
     canvas.addEventListener('contextmenu', function (event) { event.preventDefault(); }.bind(this), false);
     this.app.mouse.disableContextMenu();
+    canvas.requestPointerLock();
 
 
 
@@ -190,6 +191,7 @@ GameCharactersController.prototype.initialize = function () {
                 deltaY = event.dy;
 
             if (this.mainPlayer) {
+                this.lookSpeed = 0.3;
                 if (this.lookLastDeltaX === deltaX) deltaX = 0;
                 if (this.lookLastDeltaY === deltaY) deltaY = 0;
                 this.mainPlayer.fire("character:rotate", { x: x, y: y, deltaX: deltaX, deltaY: deltaY, lookSpeed: this.lookSpeed || 1 });
