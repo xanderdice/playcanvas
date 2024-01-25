@@ -50,16 +50,15 @@ GameCharactersController.attributes.add('gameTimerMillisecods', {
 
 // initialize code called once per entity
 GameCharactersController.prototype.initialize = function () {
-
     if (!this.camera) {
         console.error("you need configure a camera to GameCharactersController script boss !!");
         return;
     }
 
+
     this.app.gameConfig = {
         playerPersonStyle: this.playerPersonStyle
     };
-
 
     this.characters = [];
     this.selectedCharacters = [];
@@ -78,13 +77,14 @@ GameCharactersController.prototype.initialize = function () {
     this.app.root.addChild(this.mousePointer);
     this.mousePointer.setLocalRotation(0, 0, 0);
     this.mousePointer.setLocalScale(1, 1, 1);
-
+    this.previousX = 0;
+    this.previousY = 0;
 
 
     var canvas = this.app.graphicsDevice.canvas;
     canvas.addEventListener('contextmenu', function (event) { event.preventDefault(); }.bind(this), false);
     this.app.mouse.disableContextMenu();
-    canvas.requestPointerLock();
+
 
 
 
@@ -92,7 +92,9 @@ GameCharactersController.prototype.initialize = function () {
     this.moveRight = 0;
 
     this.gameMouse_busy = false;
-    this.app.mouse.on(pc.EVENT_MOUSEDOWN, function (event) {
+    //this.app.mouse.on(pc.EVENT_MOUSEDOWN, function (event) {
+    canvas.addEventListener(pc.EVENT_MOUSEDOWN, async function (event) {
+
 
         if (!this.gameMouse_busy) {
             this.gameMouse_busy = true;
@@ -100,6 +102,20 @@ GameCharactersController.prototype.initialize = function () {
 
             this.selectedCharacters = this.getSelectedCharacters(this.characters);
             if (this.selectedCharacters.length === 0) {
+                this.gameMouse_busy = false;
+                return;
+            }
+
+            if (this.app.gameConfig.playerPersonStyle === "FirstPerson") {
+                var canvas = this.app.graphicsDevice.canvas;
+                try {
+                    if (document.pointerLockElement !== canvas && canvas.requestPointerLock) {
+                        canvas.requestPointerLock();
+                    }
+                } catch { }
+
+
+
                 this.gameMouse_busy = false;
                 return;
             }
@@ -169,26 +185,27 @@ GameCharactersController.prototype.initialize = function () {
             this.gameMouse_busy = false;
         }
 
-    }, this);
+    }.bind(this));
 
 
     this.app.mouse.on(pc.EVENT_MOUSEMOVE, async function (event) {
+        //canvas.addEventListener(pc.EVENT_MOUSEMOVE, async function (event) {
 
 
         if (!this.gameMouse_busy) {
             this.gameMouse_busy = true;
 
-            var selectedCharacters = this.getSelectedCharacters(this.characters);
-            if (selectedCharacters.length === 0) {
+            if (document.pointerLockElement !== canvas && this.app.gameConfig.playerPersonStyle === "FirstPerson") {
                 this.gameMouse_busy = false;
                 return;
             }
 
-            // Obtiene la posición del clic del mouse en pantalla (coordenadas normalizadas)
+            // Actualiza las variables de posición anterior para el próximo cálculo
             var x = event.x,
                 y = event.y,
-                deltaX = event.dx,
-                deltaY = event.dy;
+                deltaX = event.clientX ? event.clientX - this.previousX : event.dx,
+                deltaY = event.clientY ? event.clientY - this.previousY : event.dy;
+
 
             if (this.mainPlayer) {
                 this.lookSpeed = 0.3;
@@ -204,7 +221,24 @@ GameCharactersController.prototype.initialize = function () {
                 this.mainPlayer = this.getMainPlayer(this.characters);
             }
 
+            this.previousX = event.clientX;
+            this.previousY = event.clientY;
+
+            /*if is firtsperson, extt */
+            if (this.app.gameConfig.playerPersonStyle === "FirstPerson") {
+                this.gameMouse_busy = false;
+                return;
+            }
+
+            //
             //RAYCAST:
+            //
+            var selectedCharacters = this.getSelectedCharacters(this.characters);
+            if (selectedCharacters.length === 0) {
+                this.gameMouse_busy = false;
+                return;
+            }
+
 
             var from = this.camera.getPosition().clone();
             var to = this.camera.camera.screenToWorld(
@@ -265,8 +299,9 @@ GameCharactersController.prototype.initialize = function () {
 
 
 
-    this.app.keyboard.on(pc.EVENT_KEYDOWN, function (e) {
-        switch (e.key) {
+    //this.app.keyboard.on(pc.EVENT_KEYDOWN, function (e) {
+    canvas.addEventListener(pc.EVENT_KEYDOWN, function (event) {
+        switch (event.keyCode) {
             case pc.KEY_W:
             case pc.KEY_UP:
                 this.moveForward = 1;
@@ -284,17 +319,18 @@ GameCharactersController.prototype.initialize = function () {
                 this.moveRight = -1;
                 break;
         }
-    }, this);
+    }.bind(this));
 
 
-    this.app.keyboard.on(pc.EVENT_KEYUP, function (e) {
-        if (e.key === pc.KEY_W || e.key === pc.KEY_S || e.key === pc.KEY_UP || e.key === pc.KEY_DOWN) {
+    //this.app.keyboard.on(pc.EVENT_KEYUP, function (event) {
+    canvas.addEventListener(pc.EVENT_KEYUP, function (event) {
+        if (event.keyCode === pc.KEY_W || event.keyCode === pc.KEY_S || event.keyCode === pc.KEY_UP || event.keyCode === pc.KEY_DOWN) {
             this.moveForward = 0;
         }
-        if (e.key === pc.KEY_D || e.key === pc.KEY_A || e.key === pc.KEY_RIGHT || e.key === pc.KEY_LEFT) {
+        if (event.keyCode === pc.KEY_D || event.keyCode === pc.KEY_A || event.keyCode === pc.KEY_RIGHT || event.keyCode === pc.KEY_LEFT) {
             this.moveRight = 0;
         }
-    }, this);
+    }.bind(this));
 
 
     this.gameTimer_busy = false;
@@ -318,7 +354,7 @@ GameCharactersController.prototype.initialize = function () {
             this.gameTimer_busy = false;
         }
 
-    }.bind(this), 55);
+    }.bind(this), this.gameTimerMillisecods || 55);
 
 };
 
