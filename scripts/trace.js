@@ -19,13 +19,12 @@ TracerScript.prototype.initialize = function () {
     canvas.parentElement.appendChild(TracerScript.div);
 };
 
-TracerScript.prototype.print = async function (text) {
-    debugger;
+TracerScript.prototype.print = async function (text, varname) {
     if (TracerScript.div.style.display === 'none') {
         TracerScript.div.style.display = "block";
         TracerScript.div.innerHTML = text + "<br />";
     } else {
-        TracerScript.div.innerHTML += text + "<br />";
+        TracerScript.div.innerHTML = text + "<br />" + TracerScript.div.innerHTML;
     }
 
     if (TracerScript.timer) {
@@ -38,16 +37,9 @@ TracerScript.prototype.print = async function (text) {
 };
 
 
-async function Trace(text) {
+async function Trace(text, varname) {
     if (TracerScript) {
-        var fechaHoraActual = new Date();
-        var horas = fechaHoraActual.getHours();
-        var minutos = fechaHoraActual.getMinutes();
-        var segundos = fechaHoraActual.getSeconds();
-        var milisegundos = fechaHoraActual.getMilliseconds();
-        var tiempoActual = horas + ":" + minutos + ":" + segundos + ":" + milisegundos;
-
-        TracerScript.prototype.print(tiempoActual + ": " + text);
+        TracerScript.prototype.print(text, varname);
     }
 }
 
