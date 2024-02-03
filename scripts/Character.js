@@ -50,7 +50,7 @@ Character.prototype.initialize = function () {
     this.entity.isPlayer = this.isPlayer;
     this.entity.selected = this.entity.isPlayer;
     this.entity.isCharacter = true;
-    this.entity.targetPoint = new pc.Vec3(0, 0, 0);
+    this.entity.targetPoint = null;
     this.doMoveCharacter_busy = false;
 
     this.anim = this.entity.anim;
@@ -270,7 +270,7 @@ Character.prototype.doMoveCharacter = function (params) {
 
 
 
-        this.doSensors();
+        //this.doSensors();
 
 
         var currentVelocity = this.entity.rigidbody.linearVelocity;
