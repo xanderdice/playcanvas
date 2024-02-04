@@ -46,10 +46,12 @@ Character.attributes.add('playerOptions',
 
 
 Character.prototype.initialize = function () {
+    this.entity.isCharacter = true;
+
     this.entity.isSelectable = this.isSelectable;
     this.entity.isPlayer = this.isPlayer;
     this.entity.selected = this.entity.isPlayer;
-    this.entity.isCharacter = true;
+
     this.entity.targetPoint = null;
     this.doMoveCharacter_busy = false;
 
@@ -145,7 +147,7 @@ Character.prototype.initialize = function () {
 
     this.entity.on('character:rotate', function (eventLook) {
         this.look = eventLook;
-        if (this.app.gameConfig.playerPersonStyle === "FirstPerson" && this.entity.isPlayer) {
+        if (eventLook.playerPersonStyle === "FirstPerson" && this.entity.isPlayer) {
             var rotation = this.entity.getLocalRotation(),
                 deltaX = ((this.look || {}).deltaX) || 0;
             if (deltaX !== 0) {

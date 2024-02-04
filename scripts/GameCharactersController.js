@@ -23,7 +23,7 @@ var GameCharactersController = pc.createScript('gameCharactersController');
 GameCharactersController.attributes.add('camera', {
     type: 'entity',
     title: "camera",
-    description: "General camera for this game",
+    description: "General camera for this game.",
     default: null
 });
 
@@ -32,7 +32,8 @@ GameCharactersController.attributes.add('playerPersonStyle', {
     type: 'string', enum: [
         { 'FirstPerson': 'FirstPerson' },
         { 'ThirdPerson': 'ThirdPerson' }
-    ], default: 'ThirdPerson'
+    ], default: 'ThirdPerson',
+    description: "General style of player view for this game.",
 });
 
 GameCharactersController.attributes.add('gameTimerMillisecods', {
@@ -41,11 +42,40 @@ GameCharactersController.attributes.add('gameTimerMillisecods', {
     min: 16,
     max: 100,
     precision: 0,
-    default: 55
+    default: 55,
+    description: "Time to refresh the movemente of the characters. Uses to nivelate performance.",
 });
 
 
+GameCharactersController.attributes.add('followCamera',
+    {
+        title: "Follow Camera",
+        type: 'json',
+        schema: [
+            {
+                name: 'target',
+                type: 'entity',
+                default: null,
+                description: 'The target entity to follow'
+            }, {
 
+                name: "cameraOffset",
+                type: 'vec3',
+                default: [0, 1, 3],
+                title: 'Camera Offset',
+                description: 'The local space offset with respect to the target entity coordinate system'
+            },
+            {
+                name: 'lerpAmount',
+                type: 'number',
+                min: 0,
+                max: 1,
+                default: 0.99,
+                title: 'Lerp Amount',
+                description: 'The amount to lerp the camera towards its desired position over time. The closer it is to 1, the faster the camera will move. Lerping is frame rate independent and will be correct for every frame rate.'
+            }
+        ]
+    });
 
 
 // initialize code called once per entity
@@ -54,11 +84,6 @@ GameCharactersController.prototype.initialize = function () {
         console.error("you need configure a camera to GameCharactersController script boss !!");
         return;
     }
-
-
-    this.app.gameConfig = {
-        playerPersonStyle: this.playerPersonStyle
-    };
 
     this.characters = [];
     this.selectedCharacters = [];
@@ -106,7 +131,7 @@ GameCharactersController.prototype.initialize = function () {
                 return;
             }
 
-            if (this.app.gameConfig.playerPersonStyle === "FirstPerson") {
+            if (this.playerPersonStyle === "FirstPerson") {
                 var canvas = this.app.graphicsDevice.canvas;
                 try {
                     if (document.pointerLockElement !== canvas && canvas.requestPointerLock) {
@@ -195,7 +220,7 @@ GameCharactersController.prototype.initialize = function () {
         if (!this.gameMouse_busy) {
             this.gameMouse_busy = true;
 
-            if (document.pointerLockElement !== canvas && this.app.gameConfig.playerPersonStyle === "FirstPerson") {
+            if (document.pointerLockElement !== canvas && this.playerPersonStyle === "FirstPerson") {
                 this.gameMouse_busy = false;
                 return;
             }
@@ -211,9 +236,9 @@ GameCharactersController.prototype.initialize = function () {
                 this.lookSpeed = 0.3;
                 if (this.lookLastDeltaX === deltaX) deltaX = 0;
                 if (this.lookLastDeltaY === deltaY) deltaY = 0;
-                this.mainPlayer.fire("character:rotate", { x: x, y: y, deltaX: deltaX, deltaY: deltaY, lookSpeed: this.lookSpeed || 1 });
+                this.mainPlayer.fire("character:rotate", { x: x, y: y, deltaX: deltaX, deltaY: deltaY, lookSpeed: this.lookSpeed || 1, playerPersonStyle: this.playerPersonStyle, camera: this.camera });
                 if (this.camera && this.camera.camera) {
-                    this.camera.fire("camera:pitch", { y: y, deltaY: deltaY, lookSpeed: this.lookSpeed || 1 });
+                    this.camera.fire("camera:pitch", { y: y, deltaY: deltaY, lookSpeed: this.lookSpeed || 1, playerPersonStyle: this.playerPersonStyle, camera: this.camera });
                 }
                 this.lookLastDeltaX = deltaX;
                 this.lookLastDeltaY = deltaY;
@@ -225,10 +250,29 @@ GameCharactersController.prototype.initialize = function () {
             this.previousY = event.clientY;
 
             /*if is firtsperson, extt */
-            if (this.app.gameConfig.playerPersonStyle === "FirstPerson") {
+            if (this.playerPersonStyle === "FirstPerson") {
+                var cameraEntityPosition = this.camera.getPosition();
+                var cameraEntityForward = this.camera.forward;
+
+                var lineDistance = 4; // 2 metros
+                var lineEnd = new pc.Vec3().add2(cameraEntityPosition, cameraEntityForward.scale(lineDistance));
+
+                var raycast = this.app.systems.rigidbody.raycastFirst(cameraEntityPosition, lineEnd);
+
+
+                // Comprueba si el rayo golpeó algo
+                if (raycast) {
+                    Trace("detect: " + raycast.entity.name);
+                    // Aquí puedes realizar acciones específicas cuando se detecta un objeto
+                }
+
+
+
                 this.gameMouse_busy = false;
                 return;
             }
+
+
 
             //
             //RAYCAST:
@@ -345,6 +389,8 @@ GameCharactersController.prototype.initialize = function () {
                     deviceInputKeyboard: {
                         moveForward: this.moveForward,
                         moveRight: this.moveRight,
+                        camera: this.camera,
+                        playerPersonStyle: this.playerPersonStyle
                     }
                 };
             for (; i < characters_length; i++) {
@@ -356,8 +402,115 @@ GameCharactersController.prototype.initialize = function () {
 
     }.bind(this), this.gameTimerMillisecods || 55);
 
+
+
+    /*******************************************************/
+    /*
+    /*    FOLLOR CAMERA
+    /*
+    /*******************************************************/
+
+    this.camera.setRotation(pc.Vec3.ZERO);
+    this.followCamera.targetPos = new pc.Vec3();
+    this.followCamera.matrix = new pc.Mat4();
+    this.followCamera.quat = new pc.Quat();
+    this.followCamera.vec = new pc.Vec3();
+    this.followCamera.cameraPitchRotation = 0;
+    this.followCamera.cameraPitch_busy = false;
+
+    if (this.followCamera.target) {
+        if (this.followCamera.target.isCharacter) {
+            console.error("Camera can not set directly to the character entity. you need create a target entity and set it as child of the main character entity.");
+            return;
+        }
+
+        this.updateFollorCameraTargetPosition();
+        this.followCamera.currentPos = this.followCamera.targetPos.clone();
+
+        if (this.playerPersonStyle === "FirstPerson") {
+            this.followCamera.cameraOffset = pc.Vec3.ZERO;
+            this.followCamera.lerpAmount = 1;
+
+            this.camera.on('camera:pitch', function (eventLook) {
+                if (!this.followCamera.cameraPitch_busy) {
+                    this.followCamera.cameraPitch_busy = true;
+
+                    var deltaY = (eventLook.deltaY || 0) * (eventLook.lookSpeed || 1);
+
+                    var pitch = -deltaY;
+                    this.followCamera.cameraPitchRotation += pitch;
+                    this.followCamera.cameraPitchRotation = pc.math.clamp(this.followCamera.cameraPitchRotation, -90, 80);
+
+                    this.followCamera.cameraPitch_busy = false;
+                }
+            }, this);
+
+        }
+
+    } else {
+        this.followCamera.currentPos = this.camera.getPosition().clone();
+    }
+
+
 };
 
+GameCharactersController.prototype.updateFollorCameraTargetPosition = function () {
+
+    // Calculate the target's angle around the world Y axis
+    var forward = this.followCamera.target.forward;
+    this.followCamera.vec.set(-forward.x, 0, -forward.z).normalize();
+    var angle = Math.atan2(this.followCamera.vec.x, this.followCamera.vec.z) * 180 / Math.PI;
+
+    // Rebuild the world transform for the target with a rotation limited to the world y axis
+    this.followCamera.quat.setFromEulerAngles(0, angle, 0);
+    this.followCamera.matrix.setTRS(this.followCamera.target.getPosition(), this.followCamera.quat, pc.Vec3.ONE);
+
+
+    // Calculate the desired camera position in world space
+    this.followCamera.matrix.transformPoint(this.followCamera.cameraOffset, this.followCamera.targetPos);
+
+
+};
+
+// update code called every frame
+GameCharactersController.prototype.postUpdate = function (dt) {
+    if (this.followCamera.target) {
+        if (this.playerPersonStyle === "ThirdPerson") {
+            // Calculate where we want the camera to be
+            this.updateFollorCameraTargetPosition();
+
+            // Lerp the current camera position to where we want it to be
+            // Note that the lerping is framerate independent
+            // From: https://www.rorydriscoll.com/2016/03/07/frame-rate-independent-damping-using-lerp/
+            if (this.followCamera.lerpAmount === 1) {
+                this.followCamera.currentPos = this.followCamera.targetPos;
+            } else {
+                this.followCamera.currentPos.lerp(this.followCamera.currentPos, this.followCamera.targetPos, 1 - Math.pow(1 - this.followCamera.lerpAmount, dt));
+            }
+
+            // Set the camera's position
+            this.camera.setPosition(this.followCamera.currentPos);
+
+            this.camera.lookAt(this.followCamera.target.getPosition());
+        }
+
+        if (this.playerPersonStyle === "FirstPerson") {
+            this.camera.setPosition(this.followCamera.target.getPosition());
+            var targetRotation = this.followCamera.target.getRotation();  // Obtener la rotación como cuaternión
+
+            // Crear un cuaternión para la rotación en el eje X
+            var pitchRotation = new pc.Quat();
+            pitchRotation.setFromEulerAngles(this.followCamera.cameraPitchRotation, 0, 0);
+
+            // Multiplicar la rotación original por el pitchRotation
+            targetRotation.mul(pitchRotation);
+
+            // Aplicar la rotación resultante a la cámara
+            this.camera.setRotation(targetRotation);
+        }
+
+    }
+};
 
 
 // update code called every frame
