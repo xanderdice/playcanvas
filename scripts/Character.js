@@ -13,6 +13,7 @@ var Character = pc.createScript('character');
 Character.attributes.add('speed', { type: 'number', default: 4, title: "speed", description: "Velocidad del personaje." });
 Character.attributes.add('isSelectable', { type: 'boolean', default: false });
 Character.attributes.add('isPlayer', { type: 'boolean', default: false });
+Character.attributes.add('inertia', { type: 'boolean', default: true });
 Character.attributes.add('playerOptions',
     {
         title: "Player options",
@@ -266,7 +267,11 @@ Character.prototype.doMoveCharacter = function (params) {
 
         // Moverse en la dirección hacia el punto de destino
         var velocity = direction.scale(speed);
-        if (speed !== 0) {
+        if (this.inertia) {
+            if (speed !== 0) {
+                this.entity.rigidbody.linearVelocity = new pc.Vec3(velocity.x, this.entity.rigidbody.linearVelocity.y, velocity.z);
+            }
+        } else {
             this.entity.rigidbody.linearVelocity = new pc.Vec3(velocity.x, this.entity.rigidbody.linearVelocity.y, velocity.z);
         }
 

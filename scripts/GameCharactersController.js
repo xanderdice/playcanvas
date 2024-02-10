@@ -47,6 +47,15 @@ GameCharactersController.attributes.add('gameTimerMillisecods', {
 });
 
 
+GameCharactersController.attributes.add('fontAsset', {
+    title: 'font',
+    type: 'asset',
+    assetType: "font",
+    default: null,
+    description: "Font."
+});
+
+
 GameCharactersController.attributes.add('followCamera',
     {
         title: "Follow Camera",
@@ -262,11 +271,8 @@ GameCharactersController.prototype.initialize = function () {
 
                 // Comprueba si el rayo golpeó algo
                 if (raycast) {
-                    Trace("detect: " + raycast.entity.name);
-                    // Aquí puedes realizar acciones específicas cuando se detecta un objeto
+                    this.showTextForEntity(raycast.entity, raycast.point);
                 }
-
-
 
                 this.gameMouse_busy = false;
                 return;
@@ -329,6 +335,7 @@ GameCharactersController.prototype.initialize = function () {
                 }
 
             } else {
+
                 if (this.mouseHoverCharacter) {
                     var renderComp = (this.mouseHoverCharacter.findComponents("render") || [])[0];
                     this.mouseHoverCharacter = null;
@@ -361,6 +368,9 @@ GameCharactersController.prototype.initialize = function () {
             case pc.KEY_A:
             case pc.KEY_LEFT:
                 this.moveRight = -1;
+                break;
+            case pc.KEY_E:
+                this.interact = true;
                 break;
         }
     }.bind(this));
@@ -552,3 +562,37 @@ GameCharactersController.prototype.getMainPlayer = function (characters) {
     return mainPlayer;
 }
 
+
+
+GameCharactersController.prototype.showTextForEntity = function (entity, point) {
+
+    if (!this.textEntity) {
+        this.textEntity = new pc.Entity();
+        this.app.root.addChild(this.textEntity);
+
+        this.textEntity.addComponent('element', {
+            type: pc.ELEMENTTYPE_TEXT,
+            anchor: new pc.Vec4(0.5, 0.5, 0.5, 0.5),
+            pivot: new pc.Vec2(0.5, 0.5),
+            width: 200,
+            height: 50,
+            fontAsset: this.fontAsset
+        });
+
+        this.textEntity.element.color = pc.Color.WHITE;
+        this.textEntity.element.fontSize = 0.1;
+    }
+
+
+
+    // Asigna el nombre de la entidad al texto
+    this.textEntity.element.text = entity.name;
+
+    // Ajusta la posición del texto para que aparezca cerca del objeto impactado
+    this.textEntity.setPosition(point);
+
+    this.textEntity.lookAt(this.camera.getPosition());
+    this.textEntity.rotateLocal(0, 180, 0);
+    // Ajusta otros estilos y propiedades del texto según sea necesario
+
+}
