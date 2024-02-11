@@ -148,7 +148,7 @@ Character.prototype.initialize = function () {
 
     this.entity.on('character:rotate', function (eventLook) {
         this.look = eventLook;
-        if (eventLook.playerPersonStyle === "FirstPerson" && this.entity.isPlayer) {
+        if (this.entity.isPlayer) {
             var rotation = this.entity.getLocalRotation(),
                 deltaX = ((this.look || {}).deltaX) || 0;
             if (deltaX !== 0) {
@@ -251,7 +251,7 @@ Character.prototype.doMoveCharacter = function (params) {
                 var euler = new pc.Vec3(0, (angle * pc.math.RAD_TO_DEG), 0);
                 rotation = new pc.Quat().setFromEulerAngles(0, euler.y, 0);
 
-                rotation = new pc.Quat().slerp(this.entity.getLocalRotation(), rotation, 0.4);
+                //rotation = new pc.Quat().slerp(this.entity.getLocalRotation(), rotation, 0.9);
 
                 speed = this.speed;
             } else {
@@ -287,7 +287,6 @@ Character.prototype.doMoveCharacter = function (params) {
 
 
         if (this.anim) {
-            this.anim.enabled = this.visibleThisFrame();
             //this.anim.setInteger('dir', 0);
             //this.anim.setFloat('speed', speed);
             this.anim.setBoolean('walkingbackwards', walkingbackwards);

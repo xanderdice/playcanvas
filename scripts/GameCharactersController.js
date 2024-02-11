@@ -36,6 +36,7 @@ GameCharactersController.attributes.add('playerPersonStyle', {
     description: "General style of player view for this game.",
 });
 
+
 GameCharactersController.attributes.add('gameTimerMillisecods', {
     title: 'gameTimerMillisecods',
     type: 'number',
@@ -54,6 +55,30 @@ GameCharactersController.attributes.add('fontAsset', {
     default: null,
     description: "Font."
 });
+
+
+
+GameCharactersController.attributes.add('mouseOptions', {
+    title: "Mouse Options",
+    type: 'json',
+    schema: [
+        {
+            name: 'hideMousePointer',
+            title: 'hideMousePointer',
+            type: 'boolean',
+            default: false,
+            description: 'hideMousePointer'
+        },
+        {
+            name: 'fireMenuEventOnMouseMove',
+            title: 'fireMenuEventOnMouseMove',
+            type: 'boolean',
+            default: false,
+            description: 'fireMenuEventOnMouseMove'
+        }
+    ]
+});
+
 
 
 GameCharactersController.attributes.add('followCamera',
@@ -115,8 +140,8 @@ GameCharactersController.prototype.initialize = function () {
     this.previousY = 0;
 
 
-    var canvas = this.app.graphicsDevice.canvas;
-    canvas.addEventListener('contextmenu', function (event) { event.preventDefault(); }.bind(this), false);
+    this.canvas = this.app.graphicsDevice.canvas;
+    this.canvas.addEventListener('contextmenu', function (event) { event.preventDefault(); }.bind(this), false);
     this.app.mouse.disableContextMenu();
 
 
@@ -127,7 +152,7 @@ GameCharactersController.prototype.initialize = function () {
 
     this.gameMouse_busy = false;
     //this.app.mouse.on(pc.EVENT_MOUSEDOWN, function (event) {
-    canvas.addEventListener(pc.EVENT_MOUSEDOWN, async function (event) {
+    this.canvas.addEventListener(pc.EVENT_MOUSEDOWN, async function (event) {
 
 
         if (!this.gameMouse_busy) {
@@ -140,15 +165,12 @@ GameCharactersController.prototype.initialize = function () {
                 return;
             }
 
-            if (this.playerPersonStyle === "FirstPerson") {
-                var canvas = this.app.graphicsDevice.canvas;
+            if (this.mouseOptions.hideMousePointer) {
                 try {
-                    if (document.pointerLockElement !== canvas && canvas.requestPointerLock) {
-                        canvas.requestPointerLock();
+                    if (document.pointerLockElement !== this.canvas && this.canvas.requestPointerLock) {
+                        this.canvas.requestPointerLock();
                     }
                 } catch { }
-
-
 
                 this.gameMouse_busy = false;
                 return;
@@ -229,7 +251,7 @@ GameCharactersController.prototype.initialize = function () {
         if (!this.gameMouse_busy) {
             this.gameMouse_busy = true;
 
-            if (document.pointerLockElement !== canvas && this.playerPersonStyle === "FirstPerson") {
+            if (this.mouseOptions.hideMousePointer && document.pointerLockElement !== this.canvas) {
                 this.gameMouse_busy = false;
                 return;
             }
@@ -351,7 +373,7 @@ GameCharactersController.prototype.initialize = function () {
 
 
     //this.app.keyboard.on(pc.EVENT_KEYDOWN, function (e) {
-    canvas.addEventListener(pc.EVENT_KEYDOWN, function (event) {
+    this.canvas.addEventListener(pc.EVENT_KEYDOWN, function (event) {
         switch (event.keyCode) {
             case pc.KEY_W:
             case pc.KEY_UP:
@@ -377,7 +399,7 @@ GameCharactersController.prototype.initialize = function () {
 
 
     //this.app.keyboard.on(pc.EVENT_KEYUP, function (event) {
-    canvas.addEventListener(pc.EVENT_KEYUP, function (event) {
+    this.canvas.addEventListener(pc.EVENT_KEYUP, function (event) {
         if (event.keyCode === pc.KEY_W || event.keyCode === pc.KEY_S || event.keyCode === pc.KEY_UP || event.keyCode === pc.KEY_DOWN) {
             this.moveForward = 0;
         }
@@ -416,7 +438,7 @@ GameCharactersController.prototype.initialize = function () {
 
     /*******************************************************/
     /*
-    /*    FOLLOR CAMERA
+    /*    FOLLOW CAMERA
     /*
     /*******************************************************/
 
@@ -506,7 +528,9 @@ GameCharactersController.prototype.postUpdate = function (dt) {
 
         if (this.playerPersonStyle === "FirstPerson") {
             this.camera.setPosition(this.followCamera.target.getPosition());
-            var targetRotation = this.followCamera.target.getRotation();  // Obtener la rotación como cuaternión
+            var currentCameraRotation = this.camera.getRotation().clone();
+            var targetRotation = this.followCamera.target.getRotation().clone();  // Obtener la rotación como cuaternión
+
 
             // Crear un cuaternión para la rotación en el eje X
             var pitchRotation = new pc.Quat();
@@ -514,6 +538,15 @@ GameCharactersController.prototype.postUpdate = function (dt) {
 
             // Multiplicar la rotación original por el pitchRotation
             targetRotation.mul(pitchRotation);
+
+            // Realizar interpolación esférica entre las rotaciones actual y objetivo
+            //targetRotation.slerp(currentCameraRotation, this.followCamera.lerpAmount);
+
+            console.log("currentCameraRotation", currentCameraRotation);
+            console.log("targetRotation", targetRotation);
+
+            //targetRotation.slerp(currentCameraRotation, 1 - Math.pow(1 - this.followCamera.lerpAmount, dt));
+
 
             // Aplicar la rotación resultante a la cámara
             this.camera.setRotation(targetRotation);
