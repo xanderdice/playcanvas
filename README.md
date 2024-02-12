@@ -5,6 +5,7 @@ playcanvas scripts textures and more
 
 * //https://mebiusbox.github.io/contents/EffectTextureMaker/  SPRITE EFFECT
 * //https://basis.dev.jibencaozuo.com/                        BASIS
+* //https://www.smart-page.net/smartnormal/                   ABLETO TO NORMAL MAPS
 
 //resolutions
 * 4320p (8K): 7680x4320
