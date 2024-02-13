@@ -457,13 +457,13 @@
         });
     Bloom.attributes.add('blendmode',
         {
-            title: 'Blend Mode', type: 'string', default: 'add', enum: [{ Add: 'add' }, { Screen: 'screen' }],
+            title: 'Blend Mode', type: 'string', default: 'screen', enum: [{ Add: 'add' }, { Screen: 'screen' }],
             description: `Bloom blending mode. [Add] is using standard additive mixing, [Screen] results in higher
     contrast in extreme cases like super bright lights, maxed out iterations and low mip limit.`
         });
     Bloom.attributes.add('iterations',
         {
-            title: 'Iterations', type: 'number', default: 12, min: 1, max: 12, precision: 0,
+            title: 'Iterations', type: 'number', default: 7, min: 1, max: 12, precision: 0,
             description: `Richness of bloom effect. The difference between 1 and 12 in terms of performance is
     truly negligible so it's recommended to leave it at maximum unless you're targeting specific artistic
     look. Not all iterations may be used internally since downscaling stops at Mip Limit resolution. Low
@@ -472,7 +472,7 @@
         });
     Bloom.attributes.add('strength',
         {
-            title: 'Strength', type: 'number', default: 5, min: 0, max: 100, precision: 1,
+            title: 'Strength', type: 'number', default: 20, min: 0, max: 100, precision: 1,
             description: `Blending factor. High values together with bright lights result in a steam room look! :D`
         });
     Bloom.attributes.add('miplimit',
@@ -490,13 +490,13 @@
         });
     Bloom.attributes.add('thresholdB',
         {
-            title: 'Threshold B', type: 'number', default: 1, min: 0, max: 10, precision: 1,
+            title: 'Threshold B', type: 'number', default: 0, min: 0, max: 10, precision: 1,
             description: `Thresholding function upper limit. Pixels dimmer than A do not contribute to bloom,
     pixels brighter than B contribute fully, pixels in (A, B) range contribute with smoothstep curve.`
         });
     Bloom.attributes.add('radius',
         {
-            title: 'Filter Radius', type: 'vec2', default: [1, 1],
+            title: 'Filter Radius', type: 'vec2', default: [2, 2],
             description: `Radius of additional blur applied during upsampling stage. It's mostly used to
     dilute a minor moire artefact that is visible at radius (0, 0). Due to the nature of texture
     filtering Filter Radius may produce slightly different bloom kernel depending on device pixel
