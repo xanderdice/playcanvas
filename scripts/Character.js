@@ -31,7 +31,14 @@ Character.attributes.add('playerOptions',
                     { 'Rotate': 'Rotate' },
                     { 'Strafe': 'Strafe' }
                 ], default: 'Rotate'
-            }, {
+            },
+            {
+                name: 'rotationEventDelay',
+                title: 'rotationEventDelay',
+                type: 'number',
+                default: 500
+            },
+            {
                 name: 'godMode',
                 type: 'boolean',
                 default: false
@@ -147,6 +154,7 @@ Character.prototype.initialize = function () {
     }, this);
 
     this.entity.on('character:rotate', function (eventLook) {
+        Trace("character:rotate");
         this.look = eventLook;
         if (this.entity.isPlayer) {
             var rotation = this.entity.getLocalRotation(),
@@ -162,13 +170,20 @@ Character.prototype.initialize = function () {
 
     }, this);
 
-    this.entity.on('character:forward', function (e) {
+    this.entity.on('character:cameramovement', function (e) {
+        this.playerOptions.rotateToNewDirectionCamera = e.camera;
+        // Reinicia el temporizador
+        if (this.playerOptions.rotationTimer) {
+            clearTimeout(this.playerOptions.rotationTimer);
+        }
 
+        if (this.playerOptions.rotationEventDelay) {
+            this.playerOptions.rotationTimer = setTimeout(function () {
+                this.rotateToNewDirectionFromCamera(e.camera, true); //rota y hace un teleport
+            }.bind(this), this.playerOptions.rotationEventDelay);
+        }
     }, this);
 
-    this.entity.on('character:strafe', function (e) {
-
-    }, this);
 
 
 
@@ -182,7 +197,27 @@ Character.prototype.initialize = function () {
 
 
 
+Character.prototype.rotateToNewDirectionFromCamera = function (camera, teleport) {
+    this.playerOptions.rotateToNewDirectionCamera = null;
+    // Obtiene la posición actual del jugador y de la cámara
+    var playerPosition = this.entity.getPosition();
+    var cameraPosition = camera.getPosition();
 
+    // Calcula la dirección desde el jugador hacia la cámara
+    var direction = cameraPosition.clone().sub(playerPosition).normalize();
+
+    // Utiliza el método lookAt para orientar al jugador hacia la cámara
+    this.entity.lookAt(playerPosition.x + direction.x, playerPosition.y, playerPosition.z + direction.z);
+    this.entity.rotateLocal(0, 180, 0);
+
+    // Ajusta la rotación para el rigidbody
+    var rigidbodyRotation = this.entity.getRotation();
+
+    // Teletransporta al jugador a la nueva posición y rotación
+    if (teleport) {
+        this.entity.rigidbody.teleport(playerPosition, rigidbodyRotation);
+    }
+}
 
 
 Character.prototype.stopMovement = function () {
@@ -209,8 +244,17 @@ Character.prototype.doMoveCharacter = function (params) {
             walkingbackwards = false;
 
 
+        /* MOVE FORWARD */
         if (moveForward !== 0) {
             this.entity.targetPoint = null;
+            if (this.playerOptions.rotationTimer) {
+                clearTimeout(this.playerOptions.rotationTimer);
+            }
+
+            if (this.playerOptions.rotateToNewDirectionCamera) {
+                this.rotateToNewDirectionFromCamera(this.playerOptions.rotateToNewDirectionCamera);
+            }
+
             direction.copy(this.entity.forward).normalize();
             speed = this.speed * moveForward;
             walkingbackwards = moveForward < 0;
@@ -220,7 +264,7 @@ Character.prototype.doMoveCharacter = function (params) {
 
 
 
-
+        /* MOVE RIGHT */
         if (moveRight !== 0) {
             this.entity.targetPoint = null;
             if ((this.playerOptions.playerControllerOnKeyRight || "") === "Rotate") {
@@ -262,7 +306,13 @@ Character.prototype.doMoveCharacter = function (params) {
 
 
 
+        //SMOOTH MOVEMENT:
+        //rotation = new pc.Quat().slerp(this.entity.getRotation(), rotation, 0.1);
+
+
         this.entity.rigidbody.teleport(this.entity.getPosition(), rotation);
+
+
         direction.y = 0; // Asegurarse de que no cambie la altura
 
         // Moverse en la dirección hacia el punto de destino
@@ -280,22 +330,23 @@ Character.prototype.doMoveCharacter = function (params) {
         //this.doSensors();
 
 
-        var currentVelocity = this.entity.rigidbody.linearVelocity;
-        currentVelocity.y = 0;
-        speed = currentVelocity.length();
-
-
-
-        if (this.anim) {
-            //this.anim.setInteger('dir', 0);
-            //this.anim.setFloat('speed', speed);
-            this.anim.setBoolean('walkingbackwards', walkingbackwards);
-            this.anim.setBoolean('walking', speed > 0.1 && speed < 1.5);
-            this.anim.setBoolean('running', speed > 1.5);
-            this.anim.setBoolean('idle', speed < 0.1);
-            //this.anim.setBoolean('isonair', this.entity.isonair);
-        }
-
+        /*
+                var currentVelocity = this.entity.rigidbody.linearVelocity;
+                currentVelocity.y = 0;
+                speed = currentVelocity.length();
+        
+        
+        
+                if (this.anim) {
+                    //this.anim.setInteger('dir', 0);
+                    //this.anim.setFloat('speed', speed);
+                    this.anim.setBoolean('walkingbackwards', walkingbackwards);
+                    this.anim.setBoolean('walking', speed > 0.1 && speed < 1.5);
+                    this.anim.setBoolean('running', speed > 1.5);
+                    this.anim.setBoolean('idle', speed < 0.1);
+                    //this.anim.setBoolean('isonair', this.entity.isonair);
+                }
+        */
 
         /*
             for (var i = 0; i < 100000000; i++) {
@@ -486,14 +537,44 @@ Character.prototype.sensorCollisionendEvent = function (entity) {
 
 
 
-Character.prototype.visibleThisFrame = function (dt) {
-    return (((this.renderCharacterComponent || {}).meshInstances || [])[0] || {}).visibleThisFrame;
-}
 
 /**
  * UPDATE 
  */
 Character.prototype.update = function (dt) {
+
+
+
+    var currentVelocity = this.entity.rigidbody.linearVelocity;
+    currentVelocity.y = 0;
+    speed = currentVelocity.length();
+
+
+
+    if (this.anim) {
+        var idle = false,
+            walking = false,
+            running = false;
+
+        if (speed <= 0.1) {
+            idle = true;
+        }
+        else if (speed > 0.1 && speed < 1.5) {
+            walking = true;
+        }
+        else if (speed > 1.5) {
+            running = true;
+        }
+
+        //this.anim.setInteger('dir', 0);
+        //this.anim.setFloat('speed', speed);
+        //this.anim.setBoolean('walkingbackwards', walkingbackwards);
+        this.anim.setBoolean('idle', idle);
+        this.anim.setBoolean('walking', walking);
+        this.anim.setBoolean('running', running);
+
+        //this.anim.setBoolean('isonair', this.entity.isonair);
+    }
 
     //this.doMoveCharacter();
 
