@@ -70,7 +70,10 @@ Object.assign(VerticalTiltShiftEffect.prototype, {
         scope.resolve("uV").setValue(1 / inputTarget.height);
         scope.resolve("uR").setValue(this.focus);
         scope.resolve("uColorBuffer").setValue(inputTarget.colorBuffer);
-        pc.drawFullscreenQuad(device, outputTarget, this.vertexBuffer, this.shader, rect);
+        //pc.drawFullscreenQuad(device, outputTarget, this.vertexBuffer, this.shader, rect);
+
+        this.drawQuad(outputTarget, this.shader, rect);
+
     }
 });
 
