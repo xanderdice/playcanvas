@@ -15,7 +15,7 @@ function ChromaticAberrationEffect(graphicsDevice) {
             aPosition: pc.SEMANTIC_POSITION
         },
         vshader: [
-            (graphicsDevice.webgl2) ? ("#version 300 es\n\n" + pc.shaderChunks.gles3VS) : "",
+            (graphicsDevice.isWebGL2) ? ("#version 300 es\n\n" + pc.shaderChunks.gles3VS) : "",
             "attribute vec2 aPosition;",
             "",
             "varying vec2 vUv0;",
@@ -27,7 +27,7 @@ function ChromaticAberrationEffect(graphicsDevice) {
             "}"
         ].join("\n"),
         fshader: [
-            (graphicsDevice.webgl2) ? ("#version 300 es\n\n" + pc.shaderChunks.gles3PS) : "",
+            (graphicsDevice.isWebGL2) ? ("#version 300 es\n\n" + pc.shaderChunks.gles3PS) : "",
             "precision " + graphicsDevice.precision + " float;",
             pc.shaderChunks.screenDepthPS,
             "",
@@ -72,7 +72,9 @@ Object.assign(ChromaticAberrationEffect.prototype, {
         scope.resolve("uAmount").setValue(this.amount);
         scope.resolve("uColorBuffer").setValue(inputTarget.colorBuffer);
 
-        pc.drawFullscreenQuad(device, outputTarget, this.vertexBuffer, this.shader, rect);
+        this.drawQuad(outputTarget, this.shader, rect);
+
+
     }
 });
 
