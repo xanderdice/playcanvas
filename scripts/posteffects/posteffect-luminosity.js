@@ -51,7 +51,8 @@ Object.assign(LuminosityEffect.prototype, {
         var scope = device.scope;
 
         scope.resolve("uColorBuffer").setValue(inputTarget.colorBuffer);
-        pc.drawFullscreenQuad(device, outputTarget, this.vertexBuffer, this.shader, rect);
+        //pc.drawFullscreenQuad(device, outputTarget, this.vertexBuffer, this.shader, rect);
+        this.drawQuad(outputTarget, this.shader, rect);
     }
 });
 
