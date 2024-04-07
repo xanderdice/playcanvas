@@ -8,9 +8,12 @@ REQUIERE QUE GameCharactersController.js este instalado en la entidad ROOT.
 
 */
 
+/* VFX
+// https://mebiusbox.github.io/contents/EffectTextureMaker/ */
+
 var Character = pc.createScript('character');
 
-Character.attributes.add('speed', { type: 'number', default: 4, title: "speed", description: "Velocidad del personaje." });
+Character.attributes.add('speed', { type: 'number', default: 2, title: "speed", description: "Velocidad del personaje.", min: 2, max: 3, precision: 1 });
 Character.attributes.add('isSelectable', { type: 'boolean', default: false });
 Character.attributes.add('isPlayer', { type: 'boolean', default: false });
 Character.attributes.add('inertia', { type: 'boolean', default: true });
@@ -36,20 +39,69 @@ Character.attributes.add('playerOptions',
                 name: 'rotationEventDelay',
                 title: 'rotationEventDelay',
                 type: 'number',
-                default: 500
+                default: 0
+            }
+        ]
+    });
+
+Character.attributes.add('playerAnimationsOptions',
+    {
+        title: "Player Animations Options",
+        type: 'json',
+        schema: [
+            {
+                name: 'motionrootmode',
+                title: "Motion root mode",
+                type: 'string', enum: [
+                    { "in_place_all_axis": "in_place_all_axis" },
+                    { "in_place_z_axis": "in_place_z_axis" },
+                    { "teleport": "teleport" },
+                    { "none": "none" }],
+                default: "in_place_z_axis"
             },
             {
-                name: 'godMode',
-                type: 'boolean',
-                default: false
+                name: 'hips',
+                title: "Hips Entity",
+                type: 'entity',
+                default: null
             }
         ]
     });
 
 
+Character.attributes.add('sensorOptions',
+    {
+        title: "Sensor options",
+        type: 'json',
+        schema: [
+            {
+                name: 'sensorEnabled',
+                type: 'boolean',
+                default: true
+            },
+            {
+                name: 'sensorDebug',
+                type: 'boolean',
+                default: false
+            },
+            {
+                name: 'sensorJumpDebug',
+                type: 'boolean',
+                default: false
+            }
+            ,
+            {
+                name: 'groundtolerance',
+                type: 'number',
+                description: 'ground tolerance for steps',
+                default: 0.15,
+                min: 0.1,
+                max: 0.5
+            }
+        ]
+    });
 
-// VFX
-//https://mebiusbox.github.io/contents/EffectTextureMaker/
+
 
 
 
@@ -63,9 +115,34 @@ Character.prototype.initialize = function () {
     this.entity.targetPoint = null;
     this.doMoveCharacter_busy = false;
 
-    this.anim = this.entity.anim;
+    this.CHAR_CUR_POSITION = this.entity.getPosition();
+    this.CHAR_CUR_ROTATION = this.entity.getRotation();
+    this.CHAR_LAST_POSITION = this.CHAR_CUR_POSITION.clone();
 
-    this.renderCharacterComponent = this.entity.findComponent('render')
+    this.detectedEntities = [];
+
+
+    this.renderCharacterComponent = this.entity.findComponent('render');
+
+
+    /*internal character timers*/
+    this._timers = {};
+    this._timercounter = 0;
+
+    this.jumping_availability = true;
+
+
+    if (!this.playerAnimationsOptions.hips) {
+        this.playerAnimationsOptions.hips = this.entity.findByName("mixamorig:Hips");
+    }
+    if (this.playerAnimationsOptions.hips) {
+        this.playerAnimationsOptions.startPosition = this.playerAnimationsOptions.hips.getLocalPosition().clone();
+    }
+    this.motionrootmode = this.playerAnimationsOptions.motionrootmode;
+
+
+    this.animatorTargetReached = true;
+    this.animatorCurrentAnimId = 0;
 
     //this.pointEntity = new pc.Entity()
     /*
@@ -92,7 +169,8 @@ Character.prototype.initialize = function () {
 
 
 
-
+    this.characterHeight = 1.8;
+    this.characterRadius = 0.3;
 
     if (!this.entity.collision) {
         this.entity.addComponent('collision', {
@@ -103,27 +181,43 @@ Character.prototype.initialize = function () {
 
         capsule_collision.addComponent('collision', {
             type: 'capsule',
-            radius: 0.35,
-            height: 1.8
+            radius: this.characterRadius,
+            height: this.characterHeight
         });
-        this.entity.collision.on("collisionstart", this.sensorCollisionstartEvent, this);
-        this.entity.collision.on("collisionend", this.sensorCollisionendEvent, this);
 
 
 
-        /*
-                var cap = new pc.Entity();
-                cap.addComponent('render', {
-                    type: 'capsule',
-                    radius: 0.35,
-                    height: height
-                });
-                this.entity.addChild(cap);
-        */
+        if (this.sensorOptions.sensorDebug) {
+            const capsuleMesh = pc.createCapsule(this.app.graphicsDevice, {
+                radius: this.characterRadius,
+                height: this.characterHeight
+            });
+            const transparentMaterial = new pc.StandardMaterial({
+                opacity: 0.5,
+                blendType: pc.BLEND_NORMAL,
+                diffuse: pc.Color.RED
+            });
+            const meshInstance = new pc.MeshInstance(capsule_collision, capsuleMesh, transparentMaterial);
+            capsule_collision.addComponent('render', {
+                renderStyle: pc.RENDERSTYLE_WIREFRAME,
+                meshInstances: [meshInstance],
+                material: transparentMaterial
+            });
+            capsule_collision.render.meshInstances[0].material = transparentMaterial;
+        }
+
 
     }
 
+    this.entity.collision.on("collisionstart", this.sensorCollisionStartEvent, this);
+    this.entity.collision.on("collisionend", this.sensorCollisionEndEvent, this);
 
+
+
+    this.sensorOptions.processstep = 0;
+    this.sensorOptions.groundProcessstep = 0;
+
+    this.mantleHeight = 0.9;
 
 
 
@@ -137,8 +231,8 @@ Character.prototype.initialize = function () {
         this.entity.addComponent('rigidbody', {
             type: 'dynamic',         // Tipo de cuerpo rígido (puede ser 'dynamic', 'static' o 'kinematic')
             mass: mass,              // Masa del cuerpo rígido
-            friction: 0.5,          // Coeficiente de fricción
-            restitution: 0.2,       // Coeficiente de restitución (rebote)
+            friction: 0.99,          // Coeficiente de fricción
+            restitution: 0,       // Coeficiente de restitución (rebote)
             linearDamping: 0.0,     // Amortiguación lineal
             angularDamping: 0.0,    // Amortiguación angular
             linearFactor: new pc.Vec3(1, 1, 1),  // Permitir movimiento en los ejes X y Z, pero no en el eje Y
@@ -146,15 +240,12 @@ Character.prototype.initialize = function () {
         });
     }
 
+    this.prepareAnimComponent();
 
 
-
-    this.entity.on('character:domove', function (eventParams) {
-        this.doMoveCharacter(eventParams);
-    }, this);
 
     this.entity.on('character:rotate', function (eventLook) {
-        Trace("character:rotate");
+
         this.look = eventLook;
         if (this.entity.isPlayer) {
             var rotation = this.entity.getLocalRotation(),
@@ -179,13 +270,21 @@ Character.prototype.initialize = function () {
 
         if (this.playerOptions.rotationEventDelay) {
             this.playerOptions.rotationTimer = setTimeout(function () {
-                this.rotateToNewDirectionFromCamera(e.camera, true); //rota y hace un teleport
+                this.rotateToNewDirectionFromCameraFunc(e.camera, true); //rota y hace un teleport
             }.bind(this), this.playerOptions.rotationEventDelay);
         }
     }, this);
 
 
+    this.entity.on('character:detector', function (e) {
+        Trace("character:detector -> " + e);
+    }, this);
 
+
+    this.vec = new pc.Vec3;
+    this.vec2 = new pc.Vec3;
+    this.vec3 = new pc.Vec3;
+    this.quat = new pc.Quat;
 
 };
 
@@ -195,30 +294,76 @@ Character.prototype.initialize = function () {
 
 
 
-
-
-Character.prototype.rotateToNewDirectionFromCamera = function (camera, teleport) {
+Character.prototype.rotateToNewDirectionFromCameraFunc = function (camera, teleport) {
     this.playerOptions.rotateToNewDirectionCamera = null;
     // Obtiene la posición actual del jugador y de la cámara
-    var playerPosition = this.entity.getPosition();
+    var playerPosition = this.CHAR_CUR_POSITION;
     var cameraPosition = camera.getPosition();
+    var originalPlayerRotation = this.entity.getRotation().clone();
 
     // Calcula la dirección desde el jugador hacia la cámara
     var direction = cameraPosition.clone().sub(playerPosition).normalize();
 
     // Utiliza el método lookAt para orientar al jugador hacia la cámara
+
     this.entity.lookAt(playerPosition.x + direction.x, playerPosition.y, playerPosition.z + direction.z);
     this.entity.rotateLocal(0, 180, 0);
 
     // Ajusta la rotación para el rigidbody
+
     var rigidbodyRotation = this.entity.getRotation();
 
     // Teletransporta al jugador a la nueva posición y rotación
     if (teleport) {
         this.entity.rigidbody.teleport(playerPosition, rigidbodyRotation);
     }
+
+    var originalYaw = this.getYaw(originalPlayerRotation);
+    var newYaw = this.getYaw(rigidbodyRotation);
+
+    var result = "";
+    var diff = newYaw - originalYaw;
+    if (Math.abs(diff) < 1) {
+        //Trace("rotateToNewDirectionFromCamera", "Sin cambio o Rotación mínima");
+    } else {
+        if (diff >= -180 && diff <= 180) {
+            if (diff > 0) {
+                //Trace("Derecha");
+                //result = "right";
+                result = "left";
+            } else if (diff < 0) {
+                //result = "left";
+                result = "right";
+                //Trace("Izquierda");
+            } else {
+                result = "";
+                //Trace("Sin cambio");
+            }
+        } else if (diff < -180) {
+            //result = "right";
+            result = "left";
+            //Trace("Derecha");
+        } else if (diff > 180) {
+            //result = "left";
+            result = "right";
+            //Trace("Izquierda");
+        }
+    }
+
+
+    return result;
 }
 
+
+
+// Función para calcular la rotación en grados dado un quaternion de rotación
+Character.prototype.getYaw = function (rotation) {
+    // Calcular el ángulo en radianes del eje Y (Yaw) de la rotación
+    var angleRadians = Math.atan2(2 * (rotation.w * rotation.y + rotation.x * rotation.z), 1 - 2 * (rotation.y * rotation.y + rotation.z * rotation.z));
+    // Convertir el ángulo de radianes a grados
+    var angleDegrees = angleRadians * (180 / Math.PI);
+    return angleDegrees;
+}
 
 Character.prototype.stopMovement = function () {
 
@@ -229,20 +374,46 @@ Character.prototype.stopMovement = function () {
 
 
 
-
+/*******************************/
+/*   DO MOVE CHARACTER         */
+/*******************************/
 Character.prototype.doMoveCharacter = function (params) {
+
+
+
     if (!this.entity.rigidbody) return;
     if (!this.doMoveCharacter_busy) {
         this.doMoveCharacter_busy = true;
 
+        this.CHAR_CUR_POSITION = this.entity.getPosition();
+        this.CHAR_CUR_ROTATION = this.entity.getRotation();
+
+        this.doSensors();
 
         var speed = 0,
+            calculedSpeed = 0,
             moveForward = params.deviceInputKeyboard.moveForward || 0,
             moveRight = params.deviceInputKeyboard.moveRight || 0,
+            jumping = params.deviceInputKeyboard.jumping,
+            sprinting = params.deviceInputKeyboard.sprinting,
+            attack = params.deviceInputKeyboard.attack,
+            interact = params.deviceInputKeyboard.interact,
+            animVelocityMode = "",
             direction = new pc.Vec3(),
             rotation = this.entity.getLocalRotation(),
-            walkingbackwards = false;
+            dt = params.dt,
+            cameraYaw = params.cameraYaw;
 
+
+        /*JUMP*/
+        if (this.jumping_availability && jumping && !this.entity.isonair) {
+            this.jumping_availability = false;
+            this.addTimer(1.2, function () {/* 1 second between jumps */
+                this.jumping_availability = true;
+            }, this, true);
+
+            this.createAnimator(new pc.Vec3(0, 1, 0), 0.5, "jump", this.speed * 2, pc.RIGIDBODY_TYPE_DYNAMIC);
+        }
 
         /* MOVE FORWARD */
         if (moveForward !== 0) {
@@ -251,13 +422,24 @@ Character.prototype.doMoveCharacter = function (params) {
                 clearTimeout(this.playerOptions.rotationTimer);
             }
 
+            /*ROTATES TO NEW DIRECTION CAMERA IF EXISTS */
             if (this.playerOptions.rotateToNewDirectionCamera) {
-                this.rotateToNewDirectionFromCamera(this.playerOptions.rotateToNewDirectionCamera);
+                var anim = this.rotateToNewDirectionFromCameraFunc(this.playerOptions.rotateToNewDirectionCamera, false);
+
+                //this.createAnimator(new pc.Vec3(0, 0, 0), 0.9, anim + "turn90");
             }
 
+
+
+
             direction.copy(this.entity.forward).normalize();
-            speed = this.speed * moveForward;
-            walkingbackwards = moveForward < 0;
+            if (moveForward >= 0) {
+                speed = this.speed * moveForward;
+                animVelocityMode = "running";
+            } else if (moveForward <= 0) {
+                speed = (this.speed / 2) * moveForward;
+                animVelocityMode = "walking";
+            }
         }
 
 
@@ -277,6 +459,21 @@ Character.prototype.doMoveCharacter = function (params) {
             else if ((this.playerOptions.playerControllerOnKeyRight || "") === "Strafe") {
                 direction.copy(this.entity.right).normalize();
                 speed = this.speed * moveRight;
+                animVelocityMode = "running";
+            }
+        }
+
+        if (sprinting) {
+            speed *= 2;
+            animVelocityMode = "sprinting";
+        }
+
+
+        if (attack) {
+            if (this.animatorTargetReached) {
+                const forwardVector = new pc.Vec3(0, 1, 0);
+                this.createAnimator(forwardVector, 0.9, "climb", 2, pc.RIGIDBODY_TYPE_KINEMATIC);
+                //pc.RIGIDBODY_TYPE_KINEMATIC
             }
         }
 
@@ -285,9 +482,9 @@ Character.prototype.doMoveCharacter = function (params) {
         if (this.entity.targetPoint) {
 
             // Verificar si el jugador ha alcanzado el punto de destino
-            if (Math.abs(this.entity.getPosition().x - this.entity.targetPoint.x) > 0.1 || Math.abs(this.entity.getPosition().z - this.entity.targetPoint.z) > 0.1) {
+            if (Math.abs(this.CHAR_CUR_POSITION.x - this.entity.targetPoint.x) > 0.1 || Math.abs(this.CHAR_CUR_POSITION.z - this.entity.targetPoint.z) > 0.1) {
                 // Calcular la dirección hacia el punto de destino
-                direction.copy(this.entity.targetPoint).sub(this.entity.getPosition()).normalize();
+                direction.copy(this.entity.targetPoint).sub(this.CHAR_CUR_POSITION).normalize();
                 // Calcular el ángulo de rotación
                 var angle = Math.atan2(-direction.x, -direction.z);
 
@@ -306,143 +503,566 @@ Character.prototype.doMoveCharacter = function (params) {
 
 
 
-        //SMOOTH MOVEMENT:
-        //rotation = new pc.Quat().slerp(this.entity.getRotation(), rotation, 0.1);
+        var newPosition = this.CHAR_CUR_POSITION.clone();
+        if (speed) {
+            //rotation = new pc.Quat().slerp(this.entity.getLocalRotation(), rotation, 0.5);
+            // Calcula la distancia de teletransporte ajustada por el delta de tiempo
+            calculedSpeed = speed * dt;
+            newPosition = newPosition.add(direction.scale(calculedSpeed));
+        }
 
 
-        this.entity.rigidbody.teleport(this.entity.getPosition(), rotation);
+        /*A N I M A T O R */
+        if (!this.animatorTargetReached) {
+            const progress = Math.min(1, this.animatorElapsedTime / this.animatorDuration);
 
+            const rotatedForward = this.CHAR_CUR_ROTATION.transformVector(this.animatorTargetForwardVector);
+            const movementDirection = rotatedForward.clone().scale(progress * dt * this.animatorSpeed); // Multiplicar por velocidad
 
-        direction.y = 0; // Asegurarse de que no cambie la altura
+            // Aplicar el movimiento lineal a la posición actual del personaje
+            newPosition.add(movementDirection);
 
-        // Moverse en la dirección hacia el punto de destino
-        var velocity = direction.scale(speed);
-        if (this.inertia) {
-            if (speed !== 0) {
-                this.entity.rigidbody.linearVelocity = new pc.Vec3(velocity.x, this.entity.rigidbody.linearVelocity.y, velocity.z);
+            // Actualizar el tiempo acumulado
+            this.animatorElapsedTime += dt;
+
+            // Verificar si se alcanzó la posición objetivo
+            if (progress >= 1) {
+                this.destroyAnimator();
             }
-        } else {
-            this.entity.rigidbody.linearVelocity = new pc.Vec3(velocity.x, this.entity.rigidbody.linearVelocity.y, velocity.z);
+        }
+
+
+        /* T E L E P O R T   the    E N T I T Y */
+        if (speed || !this.animatorTargetReached) {
+            this.entity.rigidbody.teleport(newPosition, rotation);
         }
 
 
 
-        //this.doSensors();
+
+        this.doCalculateAnimation(animVelocityMode, dt)
 
 
-        /*
-                var currentVelocity = this.entity.rigidbody.linearVelocity;
-                currentVelocity.y = 0;
-                speed = currentVelocity.length();
-        
-        
-        
-                if (this.anim) {
-                    //this.anim.setInteger('dir', 0);
-                    //this.anim.setFloat('speed', speed);
-                    this.anim.setBoolean('walkingbackwards', walkingbackwards);
-                    this.anim.setBoolean('walking', speed > 0.1 && speed < 1.5);
-                    this.anim.setBoolean('running', speed > 1.5);
-                    this.anim.setBoolean('idle', speed < 0.1);
-                    //this.anim.setBoolean('isonair', this.entity.isonair);
-                }
-        */
 
-        /*
-            for (var i = 0; i < 100000000; i++) {
-                var r = 0;
-            }
-        */
+
+
         this.doMoveCharacter_busy = false;
 
     }
 }
 
 
-Character.prototype.doSensors = function () {
+Character.prototype.applyMovement = function (input, dt) {
+
+    this.doSensors();
+
+    Trace("input", input);
+
+    const isSprinting = input.sprint;
+
+    var moveSpeed = input.sprint ? this.speed * 2 : this.speed;
+
+    const isMoving = input.x !== 0 || input.y !== 0;
+    !isMoving && (moveSpeed = 0);
 
 
-    if (this.entity.sensorFrontEntity) {
+    this.charSpeed < moveSpeed - 0.1 ? this.charSpeed = pc.math.lerp(this.charSpeed, 1 * moveSpeed, dt * this.speed * 4) : this.charSpeed = moveSpeed;
 
-        this.stopMovement();
-        this.entity.sensorFrontEntity = null;
+
+    var animationBlend = isSprinting ? moveSpeed / this.speed * 2 : moveSpeed / this.speed - 0.3;
+    animationBlend < 0.01 && (animationBlend = 0);
+
+    if (this.app.xr.active) {
+        const targetPosition = this.entity.getPosition().clone().add(this.camera.forward.scale(10));
+        this.entity.lookAt(targetPosition);
+        const targetRotation = (Math.atan2(-input.x, input.y) * pc.math.RAD_TO_DEG + 360) % 360;
+        this.entity.rotate(0, targetRotation, 0);
+        this.currenRotation = Math.atan2(this.camera.forward.x, this.camera.forward.z) * pc.math.RAD_TO_DEG % 360 + 180;
     }
 
 
-    var currentVelocity = this.entity.rigidbody.linearVelocity;
+
+    // Teleporting the entity to the destination
+    if (isMoving) {
+        const cameraTargetYaw = input.cameraYaw;
+        const targetRotation = (Math.atan2(-input.x, input.y) * pc.math.RAD_TO_DEG + cameraTargetYaw) % 360;
+        this.currenRotation = pc.math.lerpAngle(this.currenRotation ?? 0, targetRotation, this.speed * 3 * dt);
+
+        this.entity.setEulerAngles(0, this.currenRotation, 0);
 
 
-    this.entity.isonair = false;
-    var onairThreshold = 2.5;
-    if (!this.entity.sensorBottomEntity) {
-        this.entity.isonair = !(currentVelocity.y >= -onairThreshold && currentVelocity.y <= onairThreshold);
-    }
-
-    if (this.entity.isonair) {
-        this.stopMovement();
-    }
-
-
-
-    var characterPosition = this.entity.getPosition();
-    var forward = this.entity.forward;
-
-    // Calcular el punto final del rayo
-    var endPosition = new pc.Vec3();
-    endPosition.copy(characterPosition).addScaled(forward, 0.5);
-
-    // Realizar el raycast
-    var raycast = this.app.systems.rigidbody.raycastFirst
-        (
-            new pc.Vec3(characterPosition.x, characterPosition.y - 0.5, characterPosition.z),
-            new pc.Vec3(endPosition.x, endPosition.y - 0.5, endPosition.z)
-        );
-    /*this.app.drawLine
-        (
-            new pc.Vec3(characterPosition.x, characterPosition.y - 0.5, characterPosition.z),
-            new pc.Vec3(endPosition.x, endPosition.y - 0.5, endPosition.z),
-            pc.Color.RED
-        );
-*/
-    if (raycast != null && raycast.entity != this.entity) {
-
-
-        var dot = raycast.normal.dot(new pc.Vec3(0, 1, 0)); // Calcular el producto punto con el eje Y
-        var angle = Math.acos(Math.min(1, dot)); // Asegurarse de que el ángulo esté en el rango válido [0, π]
-        var maxToleranceAngle = (60 * Math.PI) / 180; // Convertir 75 grados a radianes
-
-        if (maxToleranceAngle < angle) {
-
-            this.stopMovement();
+        const forwardDirection = this.entity.forward;
+        const movementVector = forwardDirection.mulScalar(this.charSpeed * dt);
+        const verticalMovement = this.vec3.set(0, this.verticalVelocity * dt, 0);
+        if (this.entity.rigidbody.linearVelocity.y <= 0.000001) {
+            // movementVector.add(verticalMovement);
         }
+
+
+
+        // Calculating destination position using teleport
+        const destinationPosition = this.entity.getPosition().clone().add(movementVector);
+        this.entity.rigidbody.teleport(destinationPosition, this.entity.getRotation());
     }
 
-    // Realizar el raycast hacia arriba
-    var raycastUp = this.app.systems.rigidbody.raycastFirst
-        (
-            new pc.Vec3(characterPosition.x, characterPosition.y + 1, characterPosition.z),
-            new pc.Vec3(endPosition.x, endPosition.y + 1, endPosition.z),
-        );
-    /*
-this.app.drawLine
-    (
-        new pc.Vec3(characterPosition.x, characterPosition.y + 1, characterPosition.z),
-        new pc.Vec3(endPosition.x, endPosition.y + 1, endPosition.z),
-        pc.Color.RED
-    );
-*/
-    // Lógica para el raycast hacia arriba
-    if (raycastUp != null && raycastUp.entity != this.entity) {
-        // Puedes realizar alguna lógica específica si hay colisión hacia arriba
-        this.stopMovement();
+    if (this.entity.anim) {
+        this.entity.anim.setFloat("Speed", animationBlend);
     }
-
 }
 
 
-Character.prototype.sensorCollisionstartEvent = function (result) {
+
+const CharacterLocomotionEnum = Object.freeze({
+    IDLE: 0,
+    FORWARD: 1,
+    BACKWARD: 2,
+    RIGHT: 3,
+    LEFT: 4,
+    FORWARDRIGHT: 5,
+    FORWARDLEFT: 6,
+    BACKWARDRIGHT: 7,
+    BACKWARDLEFT: 8
+});
 
 
+
+Character.prototype.doCalculateLocomotionDirection = function (dt) {
+    var direction = CharacterLocomotionEnum.IDLE;
+    // Calcular el vector de movimiento
+    var movimiento = new pc.Vec3();
+    movimiento.sub2(this.CHAR_CUR_POSITION.clone(), this.CHAR_LAST_POSITION.clone());
+
+
+    // Determinar si la magnitud del movimiento es pequeña (está quieto)
+    var umbralMovimiento = 0.001; // Puedes ajustar este umbral según sea necesario
+    if (movimiento.length() < umbralMovimiento) {
+        direction = CharacterLocomotionEnum.IDLE;
+    } else {
+        movimiento.normalize(); // Normalizar solo si la magnitud es mayor al umbral
+
+        // Obtener el vector forward de la entidad
+        var ejeAdelante = this.entity.forward.clone().normalize();
+
+        // Calcular la velocidad dividiendo la distancia entre fotogramas por el tiempo transcurrido
+        var velocidad = movimiento.length() / dt;
+        var velocidadRelativa = movimiento.dot(ejeAdelante) / dt;
+        var distanciaRecorrida = movimiento.length();
+
+
+
+        // Calcular el ángulo entre el vector de movimiento y el vector forward
+        var anguloRad = Math.atan2(movimiento.z, movimiento.x) - Math.atan2(ejeAdelante.z, ejeAdelante.x);
+        var anguloDeg = anguloRad * (180 / Math.PI);
+
+        // Normalizar el ángulo dentro del rango de -180 a 180 grados
+        if (anguloDeg > 180) {
+            anguloDeg -= 360;
+        } else if (anguloDeg < -180) {
+            anguloDeg += 360;
+        }
+
+        // Determinar la dirección de movimiento dentro del rango de ±22.5 grados
+        if (Math.abs(anguloDeg) <= 22.5 || Math.abs(anguloDeg) >= 337.5) {
+            direction = CharacterLocomotionEnum.FORWARD;
+        } else if (Math.abs(anguloDeg - 180) <= 22.5 || Math.abs(anguloDeg + 180) <= 22.5) {
+            direction = CharacterLocomotionEnum.BACKWARD;
+        } else if (Math.abs(anguloDeg - 90) <= 22.5 || Math.abs(anguloDeg + 270) <= 22.5) {
+            direction = CharacterLocomotionEnum.RIGHT;
+        } else if (Math.abs(anguloDeg + 90) <= 22.5 || Math.abs(anguloDeg - 270) <= 22.5) {
+            direction = CharacterLocomotionEnum.LEFT;
+        } else if (Math.abs(anguloDeg - 45) <= 22.5 || Math.abs(anguloDeg + 315) <= 22.5) {
+            direction = CharacterLocomotionEnum.FORWARDRIGHT;
+        } else if (Math.abs(anguloDeg + 45) <= 22.5 || Math.abs(anguloDeg - 315) <= 22.5) {
+            direction = CharacterLocomotionEnum.FORWARDLEFT;
+        } else if (Math.abs(anguloDeg + 135) <= 22.5 || Math.abs(anguloDeg - 225) <= 22.5) {
+            direction = CharacterLocomotionEnum.BACKWARDRIGHT;
+        } else if (Math.abs(anguloDeg - 135) <= 22.5 || Math.abs(anguloDeg + 225) <= 22.5) {
+            direction = CharacterLocomotionEnum.BACKWARDLEFT;
+        } else {
+            direction = CharacterLocomotionEnum.IDLE;
+        }
+    }
+
+    return direction;
+}
+
+/* e n t i t y   a n i m a t o r */
+/**
+ * its creates an animation.
+ * @param {number} forwardVector - Direction vector.
+ * @param {number} animatorDuration - Time to destroy the animator.
+ * @param {string} animForce - Animacion you want to force while pays the movement.
+ * @returns {void} void function.
+ */
+Character.prototype.createAnimator = function (forwardVector, animatorDuration, animForce, speed, rigidBodyType) {
+    this.animatorAnimForce = animForce ?? null;
+    this.animatorElapsedTime = 0;
+    this.animatorTargetForwardVector = forwardVector;
+    this.animatorDuration = animatorDuration;
+    this.animatorTargetReached = false;
+    this.animatorSpeed = speed ?? this.speed * 2;
+    this.animatorRestoreToRigidBodyType = this.entity.rigidbody.type;
+    this.entity.rigidbody.type = rigidBodyType ?? this.animatorRestoreToRigidBodyType;
+}
+Character.prototype.destroyAnimator = function () {
+    this.animatorTargetReached = true;
+    this.animatorElapsedTime = 0;
+    this.animatorSpeed = 0;
+    this.entity.rigidbody.type = this.animatorRestoreToRigidBodyType;
+    this.animatorAnimForce = null;
+    this.animatorAnimMotionRootMode = null;
+}
+
+
+
+
+/* ****************************************************** */
+/*   C A L C U L A T E S    T H E    A N I M A T I O N    */
+/* ****************************************************** */
+Character.prototype.doCalculateAnimation = function (animVelocityMode, dt) {
+
+    var animation = this.animatorCurrentAnimId;
+
+    if (this.animatorAnimForce) {
+        //TODO: hacer un array claver valor para que sea mas performante.
+        //Si ya estaba la animacion seteada que no la busque de nuevo.
+        const transition = animPlayerStateGraphData.layers[0].transitions.find(function (t) { return t.to === this.animatorAnimForce }.bind(this));
+        animation = transition?.conditions[0]?.value ?? this.animatorCurrentAnimId;
+        this.animatorAnimMotionRootMode = transition?.motionRootMode;
+    } else {
+        const locoDir = this.doCalculateLocomotionDirection(dt);
+
+        if (locoDir === CharacterLocomotionEnum.IDLE) {
+            animation = 1;
+        }
+        if (locoDir === CharacterLocomotionEnum.FORWARD) {
+            if (animVelocityMode === "walking") {
+                animation = 2;
+            } else if (animVelocityMode === "running") {
+                animation = 3;
+            } else if (animVelocityMode === "sprinting") {
+                animation = 4;
+            }
+        }
+
+        if (this.entity.isonair) {
+            animation = 5;
+        }
+
+
+        if (this.entity.isteeter) {
+            animation = 7;
+        }
+
+        if (this.entity.islanding) {
+            if (animVelocityMode) {
+                this.destroyTimer(this.entity.islanding_timerid);
+                this.entity.islanding = false;
+            } else {
+                animation = 8;
+            }
+        }
+
+        Trace("locoDir -> ", locoDir);
+    }
+
+    Trace("animForce", this.animatorAnimForce ?? "");
+    Trace("animation", animation);
+
+
+
+
+
+    if (this.entity.anim && this.animatorCurrentAnimId !== animation) {
+        this.entity.anim.setInteger("animation", animation);
+    }
+
+
+    this.animatorCurrentAnimId = animation;
+}
+
+
+
+/*-----------------------------------------------------------------------------------------*/
+
+/*******************************/
+/*                             */
+/*   S E N S O R               */
+/*                             */
+/*******************************/
+
+Character.prototype.doSensors = function (dt) {
+
+    if (this.entity.isonair && this.entity.targetPoint) {
+        this.stopMovement();
+    }
+
+
+
+
+
+    //var onairThreshold = 2.5;
+    //this.entity.isonair = !(currentVelocity.y >= -onairThreshold && currentVelocity.y <= onairThreshold);
+
+
+
+
+
+
+    if (!this.sensorEntity) {
+        this.sensorEntity = new pc.Entity();
+        this.sensorEntity.name = 'characterSensor';
+
+        // Agrega un componente de modelo de caja
+        if (this.sensorOptions.sensorDebug) {
+            this.sensorEntity.addComponent('render', {
+                type: 'box',
+                renderStyle: pc.RENDERSTYLE_WIREFRAME
+            });
+        }
+        this.entity.parent.addChild(this.sensorEntity);
+        this.sensorEntity.addComponent('collision', {
+            type: 'box',
+            halfExtents: new pc.Vec3(0.5, 0.5, 0.5)
+        });
+
+        this.sensorEntity.collision.on('triggerenter', this.sensorEntityTriggerEnter, this);
+        this.sensorEntity.collision.on('triggerleave', this.sensorEntityTriggerleave, this);
+
+
+    }
+
+    // Calcular la nueva posición a un metro en la dirección del jugador
+    const forwardVector = new pc.Vec3(0, 0, -1); // Asumiendo que la dirección "forward" está en el eje Z
+    const rotatedForward = this.CHAR_CUR_ROTATION.transformVector(forwardVector);
+    const newSensorPosition = this.CHAR_CUR_POSITION.clone().add(rotatedForward.scale(1)); // 1 metro de distancia
+
+
+
+
+    const raycastJumplength = this.characterHeight / 2 + this.characterHeight; // 2 mts.
+
+    const originAir = this.CHAR_CUR_POSITION.clone(); // Posición actual de la entidad
+    const destinationAir = originAir.clone().add(new pc.Vec3(0, -raycastJumplength, 0)); // Un metro hacia abajo desde la posición actual
+    const raycastAir1 = this.app.systems.rigidbody.raycastFirst(originAir, destinationAir, { lowResolution: true });
+    var distanceToImpact1 = 0;
+    var distanceToImpact2 = 0;
+    var distanceToImpact3 = 0;
+    const groundTolerance = this.characterRadius;
+    if (raycastAir1) {
+        const hitFraction = raycastAir1.hitFraction;
+        const rayLength = originAir.distance(destinationAir);
+        distanceToImpact1 = (rayLength * hitFraction) - this.characterHeight / 2;
+    } else {
+        distanceToImpact1 = null;
+    }
+    if (this.sensorOptions.sensorJumpDebug) {
+        this.app.drawLine(originAir, destinationAir, (distanceToImpact1 ?? 1) > 0 ? pc.Color.RED : pc.Color.GREEN, 5);
+    }
+    this.entity.sensorGroundDistanceCenter = distanceToImpact1;
+
+
+    if (this.sensorOptions.groundProcessstep === 1) {
+        const forwardVectorAir = this.entity.forward.clone();
+        forwardVectorAir.y = 0; // Establecer la componente Y a 0 para evitar movimientos verticales
+        forwardVectorAir.normalize().scale((this.characterRadius / 4) * 3); // 50 cm hacia adelante
+        originAir.add(forwardVectorAir);
+        destinationAir.add(forwardVectorAir);
+        const raycastAir2 = this.app.systems.rigidbody.raycastFirst(originAir, destinationAir, { lowResolution: true });
+        if (raycastAir2) {
+            const hitFraction = raycastAir2.hitFraction;
+            const rayLength = originAir.distance(destinationAir);
+            distanceToImpact2 = (rayLength * hitFraction) - this.characterHeight / 2;
+        } else {
+            distanceToImpact2 = null;
+        }
+        if (this.sensorOptions.sensorJumpDebug) {
+            this.app.drawLine(originAir, destinationAir, (distanceToImpact2 ?? 1) > groundTolerance ? pc.Color.RED : pc.Color.GREEN, 5);
+        }
+        this.entity.sensorGroundDistanceForward = distanceToImpact2;
+    }
+
+    if (this.sensorOptions.groundProcessstep === 2) {
+        const forwardVectorAir = this.entity.forward.clone().scale(-1);
+        forwardVectorAir.y = 0; // Establecer la componente Y a 0 para evitar movimientos verticales
+        forwardVectorAir.normalize().scale((this.characterRadius / 4) * 3); // 50 cm hacia adelante
+        originAir.add(forwardVectorAir);
+        destinationAir.add(forwardVectorAir);
+        const raycastAir3 = this.app.systems.rigidbody.raycastFirst(originAir, destinationAir, { lowResolution: true });
+        if (raycastAir3) {
+            const hitFraction = raycastAir3.hitFraction;
+            const rayLength = originAir.distance(destinationAir);
+            distanceToImpact3 = (rayLength * hitFraction) - this.characterHeight / 2;
+        } else {
+            distanceToImpact3 = null;
+        }
+        if (this.sensorOptions.sensorJumpDebug) {
+            this.app.drawLine(originAir, destinationAir, (distanceToImpact3 ?? 1) > groundTolerance ? pc.Color.RED : pc.Color.GREEN, 5);
+        }
+        this.entity.sensorGroundDistanceBackward = distanceToImpact3;
+    }
+
+    this.sensorOptions.groundProcessstep++;
+    if (this.sensorOptions.groundProcessstep > 2) {
+        this.sensorOptions.groundProcessstep = 0;
+    }
+
+
+
+    this.entity.isonair = (this.entity.sensorGroundDistanceCenter ?? 1) > 0 &&
+        (this.entity.sensorGroundDistanceForward ?? 1) > groundTolerance &&
+        (this.entity.sensorGroundDistanceBackward ?? 1) > groundTolerance;
+
+
+    //TEETER:
+    if (this.entity.isonair) {
+        this.entity.isteeter = false;
+    } else {
+        const isteeter = (this.entity.sensorGroundDistanceForward ?? 1) > groundTolerance &&
+            this.entity.sensorGroundDistanceCenter <= groundTolerance &&
+            (this.entity.sensorGroundDistanceBackward ?? 1) <= groundTolerance;
+        if (isteeter) {
+            this.addTimer(0.1, function () {
+                this.entity.isteeter = (this.entity.sensorGroundDistanceForward ?? 1) > groundTolerance &&
+                    this.entity.sensorGroundDistanceCenter <= groundTolerance &&
+                    (this.entity.sensorGroundDistanceBackward ?? 1) <= groundTolerance;
+            }, this, true);
+        }
+    }
+
+    //LANDING
+    if (this.entity.isonair) {
+        if (this.entity.sensorGroundDistanceCenter <= this.characterHeight / 4) {
+            this.entity.islanding = true;
+            this.entity.islanding_timerid = this.addTimer(1, function () {
+                this.entity.islanding = false;
+            }, this, true);
+        }
+    }
+
+
+
+
+    //&& distanceToImpact2 > this.sensorOptions.groundtolerance && distanceToImpact3 > this.sensorOptions.groundtolerance;
+
+
+
+    if (this.sensorOptions.sensorJumpDebug) {
+        Trace("GDistanceForward", (0 + this.entity.sensorGroundDistanceForward).toFixed(2));
+        Trace("GDistanceCenter", (0 + this.entity.sensorGroundDistanceCenter).toFixed(2));
+        Trace("GDistanceBackward", (0 + this.entity.sensorGroundDistanceBackward).toFixed(2));
+        Trace("entity.isonair", this.entity.isonair);
+    }
+
+
+
+
+
+
+
+
+
+    if (this.sensorOptions.processstep === 0) {
+        // Mover la caja a la nueva posición
+        this.sensorEntity.setPosition(newSensorPosition);
+        this.sensorEntity.collision.enabled = true;
+    }
+
+    if (this.sensorOptions.processstep === 1) {
+        this.sensorEntity.collision.enabled = false;
+        this.CHAR_CUR_ROTATION.transformVector(forwardVector, forwardVector);
+        var origin = this.CHAR_CUR_POSITION.clone().add(new pc.Vec3(0, -0.5, 0)); // Medio metro hacia arriba
+        var destination = origin.clone().add(forwardVector.scale(1)); // Un metro hacia adelante desde el origen
+
+        // BOTON RAYCAST:
+        const raycast = this.app.systems.rigidbody.raycastFirst(origin, destination, { lowResolution: true });
+        if (raycast) {
+            const hitFraction = raycast.hitFraction;
+            const rayLength = origin.distance(destination);
+            distanceToImpact = (rayLength * hitFraction) - 0.35;
+        } else {
+            distanceToImpact = null;
+        }
+        if (this.sensorOptions.sensorJumpDebug) {
+            this.app.drawLine(origin, destination, (raycast ? pc.Color.GREEN : pc.Color.RED), 5);
+        }
+    }
+
+
+    if (this.sensorOptions.processstep === 2) {
+        const raycast = this.app.systems.rigidbody.raycastFirst(this.CHAR_CUR_POSITION, newSensorPosition, { lowResolution: true });
+        if (raycast) {
+            const hitFraction = raycast.hitFraction;
+            const rayLength = this.CHAR_CUR_POSITION.distance(newSensorPosition);
+            distanceToImpact = (rayLength * hitFraction) - 0.35;
+        } else {
+            distanceToImpact = null;
+        }
+        if (this.sensorOptions.sensorJumpDebug) {
+            this.app.drawLine(this.CHAR_CUR_POSITION, newSensorPosition, (raycast ? pc.Color.GREEN : pc.Color.RED), 5);
+        }
+    }
+
+    if (this.sensorOptions.processstep === 3) {
+        this.CHAR_CUR_ROTATION.transformVector(forwardVector, forwardVector);
+        var origin = this.CHAR_CUR_POSITION.clone().add(new pc.Vec3(0, 0.5, 0)); // Medio metro hacia arriba
+        var destination = origin.clone().add(forwardVector.scale(1)); // Un metro hacia adelante desde el origen
+
+        const raycast = this.app.systems.rigidbody.raycastFirst(origin, destination, { lowResolution: true });
+        if (raycast) {
+            const hitFraction = raycast.hitFraction;
+            const rayLength = origin.distance(destination);
+            distanceToImpact = (rayLength * hitFraction) - 0.35;
+        } else {
+            distanceToImpact = null;
+        }
+        if (this.sensorOptions.sensorJumpDebug) {
+            this.app.drawLine(origin, destination, (raycast ? pc.Color.GREEN : pc.Color.RED), 5);
+        }
+
+    }
+
+
+    if (this.sensorOptions.processstep === 4) {
+        this.CHAR_CUR_ROTATION.transformVector(forwardVector, forwardVector);
+        const origin = this.CHAR_CUR_POSITION.clone().add(new pc.Vec3(0, 1, 0)); // Medio metro hacia arriba
+        const destination = origin.clone().add(forwardVector.scale(1)); // Un metro hacia adelante desde el origen
+
+        if (this.sensorOptions.sensorJumpDebug) {
+            this.app.drawLine(origin, destination, pc.Color.RED, 5);
+        }
+    }
+
+
+
+
+    this.sensorOptions.processstep++;
+    if (this.sensorOptions.processstep > 4) {
+        this.sensorOptions.processstep = 0;
+    }
+
+
+
+
+}
+
+Character.prototype.sensorEntityTriggerEnter = function (otherEntity) {
+    if (otherEntity && otherEntity._guid !== this.entity._guid) {
+        if (!this.detectedEntities.find(entity => entity._guid === otherEntity._guid)) {
+            this.detectedEntities.push(otherEntity);
+            this.entity.fire("character:detector", this.detectedEntities);
+        }
+    }
+}
+
+Character.prototype.sensorEntityTriggerleave = function (otherEntity) {
+    if (otherEntity && otherEntity._guid !== this.entity._guid) {
+        this.detectedEntities = this.detectedEntities.filter(entity => entity._guid !== otherEntity._guid);
+        this.entity.fire("character:detector", this.detectedEntities);
+    }
+}
+
+Character.prototype.sensorCollisionStartEvent = function (result) {
 
     var i = 0,
         contacts_length = (result.contacts || []).length,
@@ -511,8 +1131,10 @@ Character.prototype.sensorCollisionstartEvent = function (result) {
         }
     }
 
+    this.sensorTrace();
+
 }
-Character.prototype.sensorCollisionendEvent = function (entity) {
+Character.prototype.sensorCollisionEndEvent = function (entity) {
 
     if ((this.entity.sensorRightEntity || {})._guid === entity._guid) {
         this.entity.sensorRightEntity = null;
@@ -533,49 +1155,286 @@ Character.prototype.sensorCollisionendEvent = function (entity) {
         this.entity.sensorBackEntity = null;
     }
 
+    this.sensorTrace();
+
+}
+
+Character.prototype.sensorTrace = function () {
+    if (!this.sensorOptions.sensorDebug) return;
+    Trace("sensorRight ", (this.entity.sensorRightEntity ?? {}).name ?? "");
+    Trace("sensorLeft  ", (this.entity.sensorLeftEntity ?? {}).name ?? "");
+    Trace("sensorTop   ", (this.entity.sensorTopEntity ?? {}).name ?? "");
+    Trace("sensorBottom", (this.entity.sensorBottomEntity ?? {}).name ?? "");
+    Trace("sensorFront ", (this.entity.sensorFrontEntity ?? {}).name ?? "");
+    Trace("sensorBack  ", (this.entity.sensorBackEntity ?? {}).name ?? "");
 }
 
 
+/*-----------------------------------------------------------------------------------------*/
 
+/*******************************/
+/*                             */
+/*   T I M E R                 */
+/*                             */
+/*******************************/
 
-/**
- * UPDATE 
- */
+Character.prototype.addTimer = function (time, callback, scope, once) {
+    const timerId = "t_" + this._timercounter;
+    this._timers[timerId] = {
+        time: time,
+        callback: callback,
+        scope: scope,
+        once: once,
+        __elapsedTime: 0
+    };
+    this._timercounter++;
+    return timerId;
+}
+Character.prototype.destroyTimer = function (timerId) {
+    delete this._timers[timerId];
+}
+
+Character.prototype.evaluateTimers = function (dt) {
+    for (let key in this._timers) {
+        var timer = this._timers[key];
+        timer.__elapsedTime += dt;
+        if (timer.__elapsedTime >= timer.time) {
+            timer.callback.call(timer.scope);
+            if (timer.once) {
+                delete this._timers[key];
+            } else {
+                timer.__elapsedTime = 0;
+            }
+        }
+    }
+}
+
 Character.prototype.update = function (dt) {
+    this.evaluateTimers(dt);
 
+    this.CHAR_LAST_POSITION = this.CHAR_CUR_POSITION.clone();
+}
 
+Character.prototype.postUpdate = function (dt) {
+    //this.app.root.findByName("Boxy").rigidbody.system.gravity = pc.Vec3.ZERO;
+    this.rootMotionFix();
+    this.CHAR_LAST_POSITION = this.CHAR_CUR_POSITION.clone();
+}
 
-    var currentVelocity = this.entity.rigidbody.linearVelocity;
-    currentVelocity.y = 0;
-    speed = currentVelocity.length();
+Character.prototype.rootMotionFix = function () {
+    /*root motion FIX*/
+    if (this.motionrootmode === "in_place_z_axis") {
+        if (this.playerAnimationsOptions.hips) {
+            const pos = this.playerAnimationsOptions.hips.getLocalPosition();
+            const startPosY = this.playerAnimationsOptions.startPosition.y;
 
+            const deltaY = Math.abs(pos.y - startPosY);
 
+            const referenceY = Math.abs(startPosY * 0.045);
+            var vecpos = pos;
+            if (deltaY > referenceY) {
+                vecpos = new pc.Vec3(pos.x, startPosY, this.playerAnimationsOptions.startPosition.z ?? 0);
+            } else {
+                vecpos = new pc.Vec3(pos.x, pos.y, this.playerAnimationsOptions.startPosition.z ?? 0);
+            }
+            vecpos = new pc.Vec3(pos.x, pos.y, this.playerAnimationsOptions.startPosition.z ?? 0);
 
-    if (this.anim) {
-        var idle = false,
-            walking = false,
-            running = false;
-
-        if (speed <= 0.1) {
-            idle = true;
+            this.playerAnimationsOptions.hips.setLocalPosition(vecpos);
         }
-        else if (speed > 0.1 && speed < 1.5) {
-            walking = true;
-        }
-        else if (speed > 1.5) {
-            running = true;
-        }
-
-        //this.anim.setInteger('dir', 0);
-        //this.anim.setFloat('speed', speed);
-        //this.anim.setBoolean('walkingbackwards', walkingbackwards);
-        this.anim.setBoolean('idle', idle);
-        this.anim.setBoolean('walking', walking);
-        this.anim.setBoolean('running', running);
-
-        //this.anim.setBoolean('isonair', this.entity.isonair);
+    }
+    if (this.motionrootmode === "in_place_all_axis") {
+        this.playerAnimationsOptions.hips?.setLocalPosition(this.playerAnimationsOptions.startPosition);
     }
 
-    //this.doMoveCharacter();
+    if (this.animatorAnimMotionRootMode) {
+        this.motionrootmode = this.animatorAnimMotionRootMode;
+    } else {
+        if (this.motionrootmode !== this.playerAnimationsOptions.motionrootmode) {
+            this.playerAnimationsOptions.hips?.setLocalPosition(this.playerAnimationsOptions.startPosition);
+            this.motionrootmode = this.playerAnimationsOptions.motionrootmode;
+        }
+    }
+}
 
+
+Character.prototype.prepareAnimComponent = function () {
+
+    const animPlayerStateGraphData = {
+        layers: [
+            {
+                name: 'unarmed',
+                states: [
+                    {
+                        name: 'START'
+                    },
+                    {
+                        name: 'ANY'
+                    },
+                    {
+                        name: 'idle'
+                    },
+                    {
+                        name: 'walking'
+                    },
+                    {
+                        name: 'running'
+                    },
+                    {
+                        name: 'sprinting'
+                    },
+                    {
+                        name: 'jump',
+                        loop: false
+                    },
+                    {
+                        name: 'climb',
+                        loop: false,
+                        speed: 1
+                    },
+                    {
+                        name: 'teeter'
+                    },
+                    {
+                        name: 'landing',
+                        loop: false
+                    },
+                    {
+                        name: "leftturn90",
+                        loop: false
+                    },
+                    {
+                        name: "rightturn90",
+                        loop: false
+                    }
+                ],
+                transitions: [
+                    {
+                        from: 'START',
+                        to: 'idle',
+                        time: 0.2,
+                        priority: 0
+                    }, {
+                        from: 'idle',
+                        to: 'walking',
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [{
+                            parameterName: 'Speed',
+                            predicate: pc.ANIM_GREATER_THAN,
+                            value: 0
+                        }]
+                    }, {
+                        from: 'walking',
+                        to: 'idle',
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [{
+                            parameterName: 'Speed',
+                            predicate: pc.ANIM_LESS_THAN,
+                            value: 0.01
+                        }]
+                    },
+                    {
+                        from: 'walking',
+                        to: 'running',
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [{
+                            parameterName: 'Speed',
+                            predicate: pc.ANIM_GREATER_THAN,
+                            value: 0.99
+                        }]
+                    },
+                    {
+                        from: 'running',
+                        to: 'walking',
+                        time: 0.1,
+                        priority: 0,
+                        conditions: [{
+                            parameterName: 'Speed',
+                            predicate: pc.ANIM_LESS_THAN,
+                            value: 1
+                        }]
+                    },
+                    {
+                        from: 'idle',
+                        to: 'running',
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [{
+                            parameterName: 'Speed',
+                            predicate: pc.ANIM_GREATER_THAN_EQUAL_TO,
+                            value: 1
+                        }]
+                    }
+
+                ]
+            }
+        ],
+        parameters: {
+            Speed: {
+                name: 'Speed',
+                type: pc.ANIM_PARAMETER_FLOAT,
+                value: 0
+            },
+            Jump: {
+                name: 'Jump',
+                type: pc.ANIM_PARAMETER_BOOLEAN,
+                value: false
+            },
+            Grounded: {
+                name: 'Grounded',
+                type: pc.ANIM_PARAMETER_BOOLEAN,
+                value: false
+            },
+            Fly: {
+                name: 'Fly',
+                type: pc.ANIM_PARAMETER_BOOLEAN,
+                value: false
+            },
+            FreeFall: {
+                name: 'FreeFall',
+                type: pc.ANIM_PARAMETER_BOOLEAN,
+                value: false
+            },
+            Swim: {
+                name: 'Swim',
+                type: pc.ANIM_PARAMETER_BOOLEAN,
+                value: false
+            }
+
+
+
+        }
+    };
+
+
+    // add an anim component to the entity
+    this.entity.addComponent('anim', {
+        activate: true
+    });
+
+    this.entity.anim.loadStateGraph(animPlayerStateGraphData);
+
+    const locomotionLayer = this.entity.anim.baseLayer,
+        states = locomotionLayer.states,
+        states_length = states.length;
+    var i = 0;
+    for (; i < states_length; i++) {
+        const state = states[i];
+        if (state !== "START" && state !== "END" && state !== "ANY") {
+            var asset = this.app.assets.find(state);
+            if (asset && asset.type === 'animation') {
+                if (asset.resource) {
+                    locomotionLayer.assignAnimation(state, asset.resource);
+                } else {
+                    // El asset aún no está cargado, cargarlo
+                    asset.ready(function () {
+                        locomotionLayer.assignAnimation(state, this.resource);
+                    });
+                    this.app.assets.load(asset);
+                }
+            }
+        }
+    }
 };

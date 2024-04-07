@@ -32,21 +32,35 @@ GameCharactersController.attributes.add('playerPersonStyle', {
     title: 'Player Person Style',
     type: 'string', enum: [
         { 'FirstPerson': 'FirstPerson' },
-        { 'ThirdPerson': 'ThirdPerson' }
+        { 'ThirdPerson': 'ThirdPerson' },
+        { 'ThirdPersonPointMove': 'ThirdPersonPointMove' }
     ], default: 'ThirdPerson',
     description: "General style of player view for this game.",
 });
 
 
-GameCharactersController.attributes.add('gameTimerMillisecods', {
-    title: 'gameTimerMillisecods',
+GameCharactersController.attributes.add('gamesleep', {
+    title: 'gamesleep',
     type: 'number',
-    min: 16,
+    default: 0,
+    min: 0,
     max: 100,
     precision: 0,
-    default: 55,
-    description: "Time to refresh the movemente of the characters. Uses to nivelate performance.",
+    description: "Simulates bad performance"
 });
+
+GameCharactersController.attributes.add('gametimescale', {
+    title: 'gametimescale',
+    type: 'number',
+    default: 1,
+    min: 0,
+    max: 1,
+    precision: 2,
+    description: "gametimescale"
+});
+
+
+
 
 
 GameCharactersController.attributes.add('fontAsset', {
@@ -104,18 +118,71 @@ GameCharactersController.attributes.add('followCamera',
             {
                 name: 'orbitRadius',
                 type: 'number',
-                default: 5,
+                default: 3,
                 title: 'Orbit Radius'
+            },
+            {
+                name: 'bottomClamp',
+                type: 'number',
+                default: -30,
+                min: -30,
+                max: 10,
+                precision: 0,
+                title: 'bottomClamp',
+                description: "The maximum value in angle degrees for the camera downwards movement."
+            },
+            {
+                name: 'topClamp',
+                type: 'number',
+                default: 70,
+                min: 50,
+                max: 70,
+                precision: 0,
+                title: 'topClamp',
+                description: "The maximum value in angle degrees for the camera upwards movement."
             },
             {
                 name: 'smoothFactor',
                 type: 'number',
                 default: 0.2,
-                min: 0,
+                min: 0.01,
                 max: 1,
                 title: 'Smooth Factor',
                 description: 'Adjusts the smoothness of camera movement (0.1 for more smooth, 1 for immediate response)'
+            },
+            {
+                name: 'autofov',
+                type: 'boolean',
+                default: false,
+                title: 'autofov'
+            },
+
+        ]
+    });
+
+
+GameCharactersController.attributes.add('lensflareCamera',
+    {
+        title: "LensFlare Camera",
+        type: 'json',
+        schema: [
+            {
+                name: 'enabled',
+                type: 'boolean',
+                default: true,
+                title: 'enabled',
+                description: 'enables lens flares'
+            },
+
+            {
+                name: 'texture',
+                type: 'asset',
+                assetType: "texture",
+                default: null,
+                title: 'texture',
+                description: 'texture'
             }
+
         ]
     });
 
@@ -126,6 +193,58 @@ GameCharactersController.prototype.initialize = function () {
         console.error("you need configure a camera to GameCharactersController script boss !!");
         return;
     }
+
+    this.initialFov = this.camera.camera.fov;
+
+    var display = this.app.graphicsDevice;
+    // Obtener el pixelRatio actual
+    var currentPixelRatio = window.devicePixelRatio || 1;
+    this.app.maxDeltaTime = 0.2;
+    // Calcular el ancho y alto deseados para mantener el pixelRatio en 1
+    var desiredWidth = display.width / currentPixelRatio;
+    var desiredHeight = display.height / currentPixelRatio;
+
+    var screen_width = screen.width;
+    var screen_height = screen.height;
+
+    //this.app.resizeCanvas(screen_width, screen_height);
+
+    // Establecer el nuevo ancho y alto en la pantalla
+
+    // Actualizar la resolución interna del dispositivo gráfico
+    screen_width = ((screen_width * currentPixelRatio) / 4) * 2.5;
+    screen_height = ((screen_height * currentPixelRatio) / 4) * 2.5;
+
+    //console.log("screen_width" + screen_width);
+    //console.log("screen_height" + screen_width);
+
+    this.app.setCanvasResolution(pc.RESOLUTION_FIXED, screen_width, screen_height);
+    this.app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW, screen_width, screen_height);
+
+    var ambientColor = new pc.Color(96 / 255, 128 / 255, 128 / 255);
+    //var ambientColor = new pc.Color(112 / 255, 144 / 255, 144 / 255);
+    this.app.scene.ambientLight = ambientColor;
+
+
+    const currentOptions = {
+        camera: this.camera.camera, // camera used to render those passes
+        samples: 0, // number of samples for multi-sampling
+        // sceneColorMap: true, // true if the scene color should be captured
+        sceneColorMap: false,
+
+        // enable the pre-pass to generate the depth buffer, which is needed by the TAA
+        prepassEnabled: true,
+        /*tonemapping: pc.TONEMAP_ACES,*/
+
+        // enable temporal anti-aliasing
+        taaEnabled: true
+    };
+
+    const renderPassCamera = new pcx.RenderPassCameraFrame(this.app, currentOptions);
+    //this.camera.camera.renderPasses = [renderPassCamera];
+    //renderPassCamera.composePass.toneMapping = pc.TONEMAP_ACES;
+    this.camera.camera.jitter = 1;
+
 
     this.characters = [];
     this.selectedCharacters = [];
@@ -153,14 +272,39 @@ GameCharactersController.prototype.initialize = function () {
     this.app.mouse.disableContextMenu();
 
 
-
-
+    /*-----------*/
+    /* keyboard  */
+    /*-----------*/
     this.moveForward = 0;
     this.moveRight = 0;
+    this.interact = false;
+    this.attack = false;
+    this.jumping = false;
+    this.jumping_elapsedtime = 0;
+    this.jumping_availability = true;
+    this.sprinting = false;
+
+    this.input = {
+        x: 0,
+        y: 0,
+        jump: false,
+        sprint: false,
+        attack: false,
+        interact: false,
+        mouseX: 0,
+        mouseY: 0,
+        mouseDx: 0,
+        mouseDy: 0,
+        mouseSensitivity: this.mouseOptions.mouseSensitivity,
+        cameraX: 0,
+        cameraY: 0,
+        cameraYaw: this.camera ? this.camera.getLocalEulerAngles().y : 0,
+        cameraPitch: 0
+    };
 
     this.gameMouse_busy = false;
     //this.app.mouse.on(pc.EVENT_MOUSEDOWN, function (event) {
-    this.canvas.addEventListener(pc.EVENT_MOUSEDOWN, async function (event) {
+    this.canvas.addEventListener(pc.EVENT_MOUSEDOWN, function (event) {
 
 
         if (!this.gameMouse_busy) {
@@ -175,8 +319,8 @@ GameCharactersController.prototype.initialize = function () {
 
             if (this.mouseOptions.hideMousePointer) {
                 try {
-                    if (document.pointerLockElement !== this.canvas && this.canvas.requestPointerLock) {
-                        this.canvas.requestPointerLock();
+                    if (!pc.Mouse.isPointerLocked()) {
+                        this.app.mouse.enablePointerLock();
                     }
                 } catch { }
 
@@ -198,7 +342,8 @@ GameCharactersController.prototype.initialize = function () {
 
             var raycast = this.app.systems.rigidbody.raycastFirst(
                 from,
-                to
+                to,
+                { lowResolution: true }
             );
 
             if (raycast != null && raycast.entity) {
@@ -252,14 +397,17 @@ GameCharactersController.prototype.initialize = function () {
     }.bind(this));
 
 
-    this.app.mouse.on(pc.EVENT_MOUSEMOVE, async function (event) {
+
+    /* MOUSE MOVE */
+    this.app.mouse.on(pc.EVENT_MOUSEMOVE, function (event) {
         //canvas.addEventListener(pc.EVENT_MOUSEMOVE, async function (event) {
 
 
         if (!this.gameMouse_busy) {
             this.gameMouse_busy = true;
 
-            if (this.mouseOptions.hideMousePointer && document.pointerLockElement !== this.canvas) {
+
+            if (this.mouseOptions.hideMousePointer && !pc.Mouse.isPointerLocked()) {
                 this.gameMouse_busy = false;
                 return;
             }
@@ -270,6 +418,14 @@ GameCharactersController.prototype.initialize = function () {
                 deltaX = event.clientX ? event.clientX - this.previousX : event.dx,
                 deltaY = event.clientY ? event.clientY - this.previousY : event.dy;
 
+            this.input.mouseX = x;
+            this.input.mouseY = y;
+            this.input.mouseDx = deltaX;
+            this.input.mouseDy = deltaY;
+            this.input.cameraX = -this.mouseOptions.mouseSensitivity * deltaX;
+            this.input.cameraY = -this.mouseOptions.mouseSensitivity * deltaY;
+
+
 
             if (this.mainPlayer) {
                 this.lookSpeed = 0.3;
@@ -278,8 +434,7 @@ GameCharactersController.prototype.initialize = function () {
                 //this.mainPlayer.fire("character:rotate", { x: x, y: y, deltaX: deltaX, deltaY: deltaY, lookSpeed: this.lookSpeed || 1, playerPersonStyle: this.playerPersonStyle, camera: this.camera });
                 if (this.camera && this.camera.camera) {
                     this.onMouseMoveFollowCamera({ dx: deltaX, dy: deltaY });
-                    this.camera.fire("camera:pitch", { y: y, deltaY: deltaY, lookSpeed: this.lookSpeed || 1, playerPersonStyle: this.playerPersonStyle, camera: this.camera });
-                    this.camera.fire("camera:rotate", { x: x, deltaX: deltaX, lookSpeed: this.lookSpeed || 1, playerPersonStyle: this.playerPersonStyle, camera: this.camera });
+                    //this.camera.fire("camera:rotate", { x: x, deltaX: deltaX, lookSpeed: this.lookSpeed || 1, playerPersonStyle: this.playerPersonStyle, camera: this.camera });
                 }
                 this.lookLastDeltaX = deltaX;
                 this.lookLastDeltaY = deltaY;
@@ -290,21 +445,25 @@ GameCharactersController.prototype.initialize = function () {
             this.previousX = event.clientX;
             this.previousY = event.clientY;
 
-            /*if is firtsperson, extt */
-            if (this.playerPersonStyle === "FirstPerson") {
-                var cameraEntityPosition = this.camera.getPosition();
-                var cameraEntityForward = this.camera.forward;
+            if (pc.Mouse.isPointerLocked()) {
+                /*if is firtsperson, extt */
+                if (this.playerPersonStyle === "FirstPerson") {
+                    var cameraEntityPosition = this.camera.getPosition();
+                    var cameraEntityForward = this.camera.forward;
 
-                var lineDistance = 4; // 2 metros
-                var lineEnd = new pc.Vec3().add2(cameraEntityPosition, cameraEntityForward.scale(lineDistance));
+                    var lineDistance = 4; // 2 metros
+                    var lineEnd = new pc.Vec3().add2(cameraEntityPosition, cameraEntityForward.scale(lineDistance));
 
-                var raycast = this.app.systems.rigidbody.raycastFirst(cameraEntityPosition, lineEnd);
+                    var raycast = this.app.systems.rigidbody.raycastFirst(cameraEntityPosition, lineEnd, { lowResolution: true });
 
 
-                // Comprueba si el rayo golpeó algo
-                if (raycast) {
-                    this.showTextForEntity(raycast.entity, raycast.point);
+                    // Comprueba si el rayo golpeó algo
+                    if (raycast) {
+                        this.showTextForEntity(raycast.entity, raycast.point);
+                    }
+
                 }
+
 
                 this.gameMouse_busy = false;
                 return;
@@ -332,7 +491,8 @@ GameCharactersController.prototype.initialize = function () {
 
             var raycast = this.app.systems.rigidbody.raycastFirst(
                 from,
-                to
+                to,
+                { lowResolution: true }
             );
 
             if (raycast != null) {
@@ -382,70 +542,6 @@ GameCharactersController.prototype.initialize = function () {
 
 
 
-    //this.app.keyboard.on(pc.EVENT_KEYDOWN, function (e) {
-    this.canvas.addEventListener(pc.EVENT_KEYDOWN, function (event) {
-        switch (event.keyCode) {
-            case pc.KEY_W:
-            case pc.KEY_UP:
-                this.moveForward = 1;
-                break;
-            case pc.KEY_S:
-            case pc.KEY_DOWN:
-                this.moveForward = -1;
-                break;
-            case pc.KEY_D:
-            case pc.KEY_RIGHT:
-                this.moveRight = 1;
-                break;
-            case pc.KEY_A:
-            case pc.KEY_LEFT:
-                this.moveRight = -1;
-                break;
-            case pc.KEY_E:
-                this.interact = true;
-                break;
-        }
-    }.bind(this));
-
-
-    //this.app.keyboard.on(pc.EVENT_KEYUP, function (event) {
-    this.canvas.addEventListener(pc.EVENT_KEYUP, function (event) {
-        if (event.keyCode === pc.KEY_W || event.keyCode === pc.KEY_S || event.keyCode === pc.KEY_UP || event.keyCode === pc.KEY_DOWN) {
-            this.moveForward = 0;
-        }
-        if (event.keyCode === pc.KEY_D || event.keyCode === pc.KEY_A || event.keyCode === pc.KEY_RIGHT || event.keyCode === pc.KEY_LEFT) {
-            this.moveRight = 0;
-        }
-    }.bind(this));
-
-
-
-    this.gameTimer_busy = false;
-    this.gameTimer = setInterval(async function () {
-        if (!this.gameTimer_busy) {
-            this.gameTimer_busy = true;
-            //Moves all characters:
-            this.characters = this.getCharacters(),
-                characters_length = this.characters.length,
-                i = 0,
-                e = {
-                    deviceInputKeyboard: {
-                        moveForward: this.moveForward,
-                        moveRight: this.moveRight,
-                        camera: this.camera,
-                        playerPersonStyle: this.playerPersonStyle
-                    }
-                };
-            for (; i < characters_length; i++) {
-                this.characters[i].fire("character:domove", e);
-            }
-
-            this.gameTimer_busy = false;
-        }
-
-    }.bind(this), this.gameTimerMillisecods || 55);
-
-
 
     /*******************************************************/
     /*
@@ -456,6 +552,37 @@ GameCharactersController.prototype.initialize = function () {
     this.followCamera.eulers = new pc.Vec3();
     this.followCamera.smoothedPosition = new pc.Vec3();
 
+
+
+    /*******************************************************/
+    /*
+    /*    LENS FLARE
+    /*
+    /*******************************************************/
+    this.lensflareCamera.lights = [];
+    this.lensflareCamera.elapsedTime = 0;
+    this.lensflareCamera.batchGroup_lensflare_images = this.app.batcher.getGroupByName("lensflare_images");
+    this.lensflareCamera.batchGroup_lensflare_sphere = this.app.batcher.getGroupByName("lensflare_sphere");
+    if (!this.lensflareCamera.batchGroup_lensflare_images) {
+        this.lensflareCamera.batchGroup_lensflare_images = this.app.batcher.addGroup("lensflare_images", true, 100);
+    }
+    if (!this.lensflareCamera.batchGroup_lensflare_sphere) {
+        this.lensflareCamera.batchGroup_lensflare_sphere = this.app.batcher.addGroup("lensflare_sphere", true, 100);
+    }
+
+    this.lensflareCamera.lights = [];
+    var lights = this.app.root.findComponents('light'),
+        lights = lights.filter(function (li) {
+            return li.isStatic;
+        });
+
+    var i = 0, lights_length = lights.length, frustum = this.camera.camera.frustum;
+    this.lensflareCamera.lights = [];
+    for (; i < lights_length; i++) {
+        /*if (frustum.containsPoint(lights[i].entity.getPosition())) {*/
+        this.lensflareCamera.lights.push(lights[i].entity);
+        /*}*/
+    }
 
 
 
@@ -510,11 +637,6 @@ GameCharactersController.prototype.initialize = function () {
         }, this);
 
 
-        this.camera.on('camera:pitch', function (eventLook) {
-
-
-        }, this);
-
 
 
 
@@ -548,6 +670,127 @@ GameCharactersController.prototype.initialize = function () {
 
 };
 
+
+GameCharactersController.prototype.onKeyboardInput = function (dt) {
+    const keyboard = this.app.keyboard;
+
+    this.moveForward = 0;
+    this.moveRight = 0;
+    if (this.app.keyboard.isPressed(pc.KEY_W)) {
+        this.moveForward = 1;
+    }
+    if (this.app.keyboard.isPressed(pc.KEY_S)) {
+        this.moveForward = -1;
+    }
+    if (this.app.keyboard.isPressed(pc.KEY_D)) {
+        this.moveRight = 1;
+    }
+    if (this.app.keyboard.isPressed(pc.KEY_A)) {
+        this.moveRight = -1;
+    }
+    if (this.app.keyboard.isPressed(pc.KEY_E)) {
+        this.interact = true;
+    } else {
+        this.interact = false;
+    }
+    if (this.app.keyboard.isPressed(pc.KEY_F)) {
+        this.attack = true;
+    } else {
+        this.attack = false;
+    }
+    if (this.app.keyboard.isPressed(pc.KEY_SPACE)) {
+        this.jumping = true;
+    } else {
+        this.jumping = false;
+    }
+    if (this.app.keyboard.isPressed(pc.KEY_SHIFT)) {
+        this.sprinting = true;
+    } else {
+        this.sprinting = false;
+    }
+
+
+
+    if (!this.jumping_availability) {
+        this.jumping_elapsedtime += dt;
+        if (this.jumping_elapsedtime >= 0.1) {
+            this.jumping_elapsedtime = 0;
+            this.jumping_availability = true;
+        }
+    }
+
+
+
+
+    // Movimiento horizontal
+    if (keyboard.isPressed(pc.KEY_A) || keyboard.isPressed(pc.KEY_LEFT)) {
+        this.input.x = -1;
+    } else if (keyboard.isPressed(pc.KEY_D) || keyboard.isPressed(pc.KEY_RIGHT)) {
+        this.input.x = 1;
+    } else {
+        this.input.x = 0;
+    }
+
+    // Movimiento vertical
+    if (keyboard.isPressed(pc.KEY_W) || keyboard.isPressed(pc.KEY_UP)) {
+        this.input.y = 1;
+    } else if (keyboard.isPressed(pc.KEY_S) || keyboard.isPressed(pc.KEY_DOWN)) {
+        this.input.y = -1;
+    } else {
+        this.input.y = 0;
+    }
+
+    // Salto
+    if (keyboard.wasPressed(pc.KEY_SPACE)) {
+        this.input.jump = true;
+    }
+
+    // Sprint
+    const isShiftPressed = keyboard.isPressed(pc.KEY_SHIFT);
+    //this.input.sprint = this.sprintByDefault ? !isShiftPressed : isShiftPressed;
+    this.input.sprint = isShiftPressed;
+
+}
+
+GameCharactersController.prototype.updateCharactersMovement = function (dt) {
+    if (!this.updateCharactersMovement_busy) {
+        this.updateCharactersMovement_busy = true;
+
+        //Moves all characters:
+        this.characters = this.getCharacters(),
+            characters_length = this.characters.length,
+            i = 0,
+            e = {
+                dt: dt,
+                input: this.input,
+                deviceInputKeyboard: {
+                    moveForward: this.moveForward,
+                    moveRight: this.moveRight,
+                    interact: this.interact,
+                    attack: this.attack,
+                    jumping: this.jumping,
+                    sprinting: this.sprinting,
+                    camera: this.camera,
+                    playerPersonStyle: this.playerPersonStyle
+                }
+            };
+        for (; i < characters_length; i++) {
+            var otherScript = this.characters[i].script.character
+            if (otherScript) {
+                otherScript.applyMovement(this.input, dt);
+            }
+
+
+            //this.characters[i].fire("character:domove", e);
+        }
+
+        this.updateCharactersMovement_busy = false;
+    } else {
+        Trace("updateCharactersMovement_busy = true");
+    }
+}
+
+
 GameCharactersController.prototype.onMouseMoveFollowCamera = function (e) {
     if (this.playerPersonStyle === "FirstPerson") {
     }
@@ -564,14 +807,35 @@ GameCharactersController.prototype.onMouseMoveFollowCamera = function (e) {
     }
 };
 
-GameCharactersController.prototype.updateCameraOrientation = function () {
-    var targetY = this.followCamera.eulers.x + 180;
+GameCharactersController.prototype.updateCameraOrientation = function (dt) {
+
+
+    const targetY = this.followCamera.eulers.x + 180;
     var targetX = this.followCamera.eulers.y;
 
-    var targetAng = new pc.Vec3(-targetX, targetY, 0);
+
+
+    const targetAng = new pc.Vec3(-targetX, targetY, 0);
 
     this.camera.setEulerAngles(targetAng);
+
+
+    this.input.cameraYaw = targetAng.y;
+    this.input.cameraPitch += dt * this.input.cameraY;
+    this.input.cameraY = 0;
+    this.input.cameraPitch = this.clampPitchAngle(this.input.cameraPitch, this.followCamera.bottomClamp, this.followCamera.topClamp);
 };
+GameCharactersController.prototype.clampPitchAngle = function (angle, minAngle, maxAngle) {
+    if (angle < -360) {
+        angle += 360;
+    } else if (angle > 360) {
+        angle -= 360;
+    }
+
+    return pc.math.clamp(angle, minAngle, maxAngle);
+};
+
+
 
 GameCharactersController.prototype.updateCameraPosition = function () {
     if (!this.followCamera.target) {
@@ -581,12 +845,14 @@ GameCharactersController.prototype.updateCameraPosition = function () {
 
 
     var targetPosition = this.followCamera.target.getPosition();
+
+
     var cameraPosition = targetPosition.clone().add(this.camera.forward.scale(-this.followCamera.orbitRadius));
     cameraPosition.y = pc.math.clamp(cameraPosition.y, 0.5, Number.POSITIVE_INFINITY);
 
-    var hit = this.app.systems.rigidbody.raycastFirst(targetPosition, cameraPosition);
+    const hit = this.app.systems.rigidbody.raycastFirst(targetPosition, cameraPosition);
 
-    if (hit && hit.entity && !(hit.entity.isPlayer || false)) {
+    if (hit && hit.entity && !(hit.entity.isPlayer ?? false) && hit.entity.name.toLowerCase() !== "charactersensor") {
         var direction = this.followCamera.target.getPosition().sub(hit.point).normalize();
         cameraPosition = hit.point.clone().add(direction.scale(0.1));
     }
@@ -594,95 +860,96 @@ GameCharactersController.prototype.updateCameraPosition = function () {
     this.followCamera.smoothedPosition.lerp(this.followCamera.smoothedPosition, cameraPosition, this.followCamera.smoothFactor);
 
     this.camera.setPosition(this.followCamera.smoothedPosition);
-    this.camera.lookAt(this.followCamera.target.getPosition());
-};
+
+    targetPosition = this.followCamera.target.getPosition();
+    this.camera.lookAt(targetPosition);
 
 
-/*
-GameCharactersController.prototype.updateFollorCameraTargetPosition = function () {
+    var distanceToTarget = targetPosition.distance(this.camera.getPosition());
 
-    // Calculate the target's angle around the world Y axis
-    var forward = this.followCamera.target.forward;
-    this.followCamera.vec.set(-forward.x, 0, -forward.z).normalize();
-    var angle = Math.atan2(this.followCamera.vec.x, this.followCamera.vec.z) * 180 / Math.PI;
-
-    // Rebuild the world transform for the target with a rotation limited to the world y axis
-    this.followCamera.quat.setFromEulerAngles(0, angle, 0);
-    this.followCamera.matrix.setTRS(this.followCamera.target.getPosition(), this.followCamera.quat, pc.Vec3.ONE);
-
-
-    // Calculate the desired camera position in world space
-    this.followCamera.matrix.transformPoint(this.followCamera.cameraOffset, this.followCamera.targetPos);
-
-
-};
-*/
-
-// update code called every frame
-GameCharactersController.prototype.postUpdate = function (dt) {
-    if (this.followCamera.target) {
-
-        this.updateCameraOrientation();
-        this.updateCameraPosition();
-        // Actualiza la posición de la cámara para suavizar el movimiento
-        //var currentPosition = this.camera.getPosition();
-        // this.camera.setPosition(currentPosition.lerp(this.followCamera.targetPosition, 0.1));
-
-
-        return;
-        if (this.playerPersonStyle === "ThirdPerson") {
-            // Calculate where we want the camera to be
-            this.updateFollorCameraTargetPosition();
-
-            // Lerp the current camera position to where we want it to be
-            // Note that the lerping is framerate independent
-            // From: https://www.rorydriscoll.com/2016/03/07/frame-rate-independent-damping-using-lerp/
-            if (this.followCamera.lerpAmount === 1) {
-                this.followCamera.currentPos = this.followCamera.targetPos;
-            } else {
-                this.followCamera.currentPos.lerp(this.followCamera.currentPos, this.followCamera.targetPos, 1 - Math.pow(1 - this.followCamera.lerpAmount, dt));
-            }
-
-            // Set the camera's position
-            this.camera.setPosition(this.followCamera.currentPos);
-
-            this.camera.lookAt(this.followCamera.target.getPosition());
-        }
-
-        if (this.playerPersonStyle === "FirstPerson") {
-            this.camera.setPosition(this.followCamera.target.getPosition());
-            var currentCameraRotation = this.camera.getRotation().clone();
-            var targetRotation = this.followCamera.target.getRotation().clone();  // Obtener la rotación como cuaternión
-
-
-            // Crear un cuaternión para la rotación en el eje X
-            var pitchRotation = new pc.Quat();
-            pitchRotation.setFromEulerAngles(this.followCamera.cameraPitchRotation, 0, 0);
-
-            // Multiplicar la rotación original por el pitchRotation
-            targetRotation.mul(pitchRotation);
-
-            // Realizar interpolación esférica entre las rotaciones actual y objetivo
-            //targetRotation.slerp(currentCameraRotation, this.followCamera.lerpAmount);
-
-            console.log("currentCameraRotation", currentCameraRotation);
-            console.log("targetRotation", targetRotation);
-
-            //targetRotation.slerp(currentCameraRotation, 1 - Math.pow(1 - this.followCamera.lerpAmount, dt));
-
-
-            // Aplicar la rotación resultante a la cámara
-            this.camera.setRotation(targetRotation);
-        }
-
+    if (this.followCamera.autofov) {
+        var fov = this.initialFov + (this.initialFov * (1 - Math.min(distanceToTarget, this.followCamera.orbitRadius) / this.followCamera.orbitRadius));
+        // Limitar el FOV a un rango válido
+        fov = pc.math.clamp(fov, this.initialFov, 90);
+        // Aplicar el FOV a la cámara
+        this.camera.camera.fov = fov;
     }
+
 };
 
 
 // update code called every frame
 GameCharactersController.prototype.update = function (dt) {
 
+
+    this.gamesleep ? this.sleep(this.gamesleep) : null;
+    this.gametimescale ? this.app.timeScale = this.gametimescale : null;
+
+
+    this.onKeyboardInput(dt);
+
+    if (this.followCamera.target) {
+        this.updateCameraOrientation(dt);
+        this.updateCameraPosition();
+    }
+
+    this.updateCharactersMovement(dt);
+
+
+    this.getSceneLights(dt);
+    return;
+
+
+
+    if (this.playerPersonStyle === "ThirdPerson") {
+        // Calculate where we want the camera to be
+        this.updateFollorCameraTargetPosition();
+
+        // Lerp the current camera position to where we want it to be
+        // Note that the lerping is framerate independent
+        // From: https://www.rorydriscoll.com/2016/03/07/frame-rate-independent-damping-using-lerp/
+        if (this.followCamera.lerpAmount === 1) {
+            this.followCamera.currentPos = this.followCamera.targetPos;
+        } else {
+            this.followCamera.currentPos.lerp(this.followCamera.currentPos, this.followCamera.targetPos, 1 - Math.pow(1 - this.followCamera.lerpAmount, dt));
+        }
+
+        // Set the camera's position
+        this.camera.setPosition(this.followCamera.currentPos);
+
+        this.camera.lookAt(this.followCamera.target.getPosition());
+    }
+
+    if (this.playerPersonStyle === "FirstPerson") {
+        this.camera.setPosition(this.followCamera.target.getPosition());
+        var currentCameraRotation = this.camera.getRotation().clone();
+        var targetRotation = this.followCamera.target.getRotation().clone();  // Obtener la rotación como cuaternión
+
+
+        // Crear un cuaternión para la rotación en el eje X
+        var pitchRotation = new pc.Quat();
+        pitchRotation.setFromEulerAngles(this.followCamera.cameraPitchRotation, 0, 0);
+
+        // Multiplicar la rotación original por el pitchRotation
+        targetRotation.mul(pitchRotation);
+
+        // Realizar interpolación esférica entre las rotaciones actual y objetivo
+        //targetRotation.slerp(currentCameraRotation, this.followCamera.lerpAmount);
+
+        console.log("currentCameraRotation", currentCameraRotation);
+        console.log("targetRotation", targetRotation);
+
+        //targetRotation.slerp(currentCameraRotation, 1 - Math.pow(1 - this.followCamera.lerpAmount, dt));
+
+
+        // Aplicar la rotación resultante a la cámara
+        this.camera.setRotation(targetRotation);
+    }
+
+
 };
+
+
 
 
 /// ------------------------------------------------------------
@@ -751,4 +1018,89 @@ GameCharactersController.prototype.showTextForEntity = function (entity, point) 
     this.textEntity.rotateLocal(0, 180, 0);
     // Ajusta otros estilos y propiedades del texto según sea necesario
 
+}
+
+
+
+GameCharactersController.prototype.getSceneLights = function (dt) {
+
+    if (this.lensflareCamera.elapsedTime === 0) {
+    }
+
+
+    var i = 0,
+        lights_length = this.lensflareCamera.lights.length;
+
+
+
+
+    for (; i < lights_length; i++) {
+        var lightEntity = this.lensflareCamera.lights[i];
+
+        if (!lightEntity.lensFlareImage) {
+            lightEntity.lensFlareImage = new pc.Entity();
+
+            if (!this.lensflareCamera.material) {
+                this.lensflareCamera.material = new pc.StandardMaterial();
+                this.lensflareCamera.material.blendType = pc.BLEND_NORMAL; // Tipo de mezcla (puedes ajustar según tus necesidades)
+                this.lensflareCamera.material.opacity = 0.01; // Opacidad del material (0 es totalmente transparente, 1 es totalmente opaco)
+                this.lensflareCamera.material.update();
+            }
+
+            lightEntity.lensFlareImage.addComponent('element', {
+                type: 'image', // Tipo de elemento: imagen
+                anchor: [0.5, 0.5, 0.5, 0.5], // Anclajes para ajustar la posición y tamaño de la imagen
+                pivot: [0.5, 0.5], // Pivote de la imagen
+                width: 4, // Ancho de la imagen en píxeles
+                height: 4, // Altura de la imagen en píxeles
+                opacity: 1, // Opacidad de la imagen (0 a 1)
+                rect: [0, 0, 1, 1], // Rectángulo que define la región de la imagen (x, y, width, height)
+                textureAsset: this.lensflareCamera.texture, // Asset de textura para la imagen (puede ser null)
+                layers: [pc.LAYERID_WORLD],
+                batchGroupId: this.lensflareCamera.batchGroup_lensflare_images.id
+            });
+
+            lightEntity.lensFlareImage.addComponent('render', {
+                type: 'sphere', // Tipo de geometría (plano)
+                material: this.lensflareCamera.material,
+                isStatic: true,
+                layers: [pc.LAYERID_WORLD],
+                batchGroupId: this.lensflareCamera.batchGroup_lensflare_sphere.id
+            });
+
+
+            this.app.root.addChild(lightEntity.lensFlareImage);
+            lightEntity.lensFlareImage.setPosition(lightEntity.getPosition());
+        }
+
+
+        // Calcular la rotación necesaria utilizando la matriz de vista de la cámara
+        var rotation = new pc.Quat().setFromMat4(this.camera.camera.viewMatrix).conjugate();
+        lightEntity.lensFlareImage.setRotation(rotation);
+
+    }
+
+
+
+
+    this.lensflareCamera.elapsedTime += dt;
+    if (this.lensflareCamera.elapsedTime >= 1) {
+        this.lensflareCamera.elapsedTime = 0;
+    }
+
+
+}
+
+// Función para calcular la rotación en grados dado un quaternion de rotación
+GameCharactersController.prototype.getYaw = function (rotation) {
+    // Calcular el ángulo en radianes del eje Y (Yaw) de la rotación
+    var angleRadians = Math.atan2(2 * (rotation.w * rotation.y + rotation.x * rotation.z), 1 - 2 * (rotation.y * rotation.y + rotation.z * rotation.z));
+    // Convertir el ángulo de radianes a grados
+    var angleDegrees = angleRadians * (180 / Math.PI);
+    return angleDegrees;
+}
+
+GameCharactersController.prototype.sleep = function (milliseconds) {
+    const startTime = Date.now();
+    while (Date.now() - startTime < milliseconds) { }
 }
