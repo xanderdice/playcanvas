@@ -189,12 +189,7 @@ GameCharactersController.attributes.add('lensflareCamera',
 
 // initialize code called once per entity
 GameCharactersController.prototype.initialize = function () {
-    if (!this.camera) {
-        console.error("you need configure a camera to GameCharactersController script boss !!");
-        return;
-    }
 
-    this.initialFov = this.camera.camera.fov;
 
     var display = this.app.graphicsDevice;
     // Obtener el pixelRatio actual
@@ -212,8 +207,8 @@ GameCharactersController.prototype.initialize = function () {
     // Establecer el nuevo ancho y alto en la pantalla
 
     // Actualizar la resolución interna del dispositivo gráfico
-    screen_width = ((screen_width * currentPixelRatio) / 4) * 2.5;
-    screen_height = ((screen_height * currentPixelRatio) / 4) * 2.5;
+    screen_width = ((screen_width * currentPixelRatio) / 4) * 2;
+    screen_height = ((screen_height * currentPixelRatio) / 4) * 2;
 
     //console.log("screen_width" + screen_width);
     //console.log("screen_height" + screen_width);
@@ -221,29 +216,30 @@ GameCharactersController.prototype.initialize = function () {
     this.app.setCanvasResolution(pc.RESOLUTION_FIXED, screen_width, screen_height);
     this.app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW, screen_width, screen_height);
 
-    var ambientColor = new pc.Color(96 / 255, 128 / 255, 128 / 255);
-    //var ambientColor = new pc.Color(112 / 255, 144 / 255, 144 / 255);
+    //var ambientColor = new pc.Color(96 / 255, 128 / 255, 128 / 255);
+    var ambientColor = new pc.Color(0 / 255, 32 / 255, 64 / 255);
     this.app.scene.ambientLight = ambientColor;
 
+    if (this.camera) {
+        const currentOptions = {
+            camera: this.camera.camera, // camera used to render those passes
+            samples: 0, // number of samples for multi-sampling
+            // sceneColorMap: true, // true if the scene color should be captured
+            sceneColorMap: false,
 
-    const currentOptions = {
-        camera: this.camera.camera, // camera used to render those passes
-        samples: 0, // number of samples for multi-sampling
-        // sceneColorMap: true, // true if the scene color should be captured
-        sceneColorMap: false,
+            // enable the pre-pass to generate the depth buffer, which is needed by the TAA
+            prepassEnabled: true,
+            /*tonemapping: pc.TONEMAP_ACES,*/
 
-        // enable the pre-pass to generate the depth buffer, which is needed by the TAA
-        prepassEnabled: true,
-        /*tonemapping: pc.TONEMAP_ACES,*/
+            // enable temporal anti-aliasing
+            taaEnabled: true
+        };
 
-        // enable temporal anti-aliasing
-        taaEnabled: true
-    };
-
-    const renderPassCamera = new pcx.RenderPassCameraFrame(this.app, currentOptions);
-    //this.camera.camera.renderPasses = [renderPassCamera];
-    //renderPassCamera.composePass.toneMapping = pc.TONEMAP_ACES;
-    this.camera.camera.jitter = 1;
+        const renderPassCamera = new pcx.RenderPassCameraFrame(this.app, currentOptions);
+        //this.camera.camera.renderPasses = [renderPassCamera];
+        //renderPassCamera.composePass.toneMapping = pc.TONEMAP_ACES;
+        this.camera.camera.jitter = 1;
+    }
 
 
     this.characters = [];
@@ -551,6 +547,7 @@ GameCharactersController.prototype.initialize = function () {
 
     this.followCamera.eulers = new pc.Vec3();
     this.followCamera.smoothedPosition = new pc.Vec3();
+    this.followCamera.initialFov = this.camera ? this.camera.camera.fov : 45;
 
 
 
@@ -576,12 +573,10 @@ GameCharactersController.prototype.initialize = function () {
             return li.isStatic;
         });
 
-    var i = 0, lights_length = lights.length, frustum = this.camera.camera.frustum;
+    var i = 0, lights_length = lights.length;
     this.lensflareCamera.lights = [];
     for (; i < lights_length; i++) {
-        /*if (frustum.containsPoint(lights[i].entity.getPosition())) {*/
         this.lensflareCamera.lights.push(lights[i].entity);
-        /*}*/
     }
 
 
@@ -795,7 +790,7 @@ GameCharactersController.prototype.onMouseMoveFollowCamera = function (e) {
     if (this.playerPersonStyle === "FirstPerson") {
     }
     if (this.playerPersonStyle === "ThirdPerson") {
-        if (pc.Mouse.isPointerLocked()) {
+        if (pc.Mouse.isPointerLocked() && this.followCamera.eulers) {
             this.followCamera.eulers.x -= ((this.mouseOptions.mouseSensitivity * e.dx) / 60) % 360;
             this.followCamera.eulers.y += ((this.mouseOptions.mouseSensitivity * e.dy) / 60) % 360;
 
@@ -809,21 +804,22 @@ GameCharactersController.prototype.onMouseMoveFollowCamera = function (e) {
 
 GameCharactersController.prototype.updateCameraOrientation = function (dt) {
 
-
-    const targetY = this.followCamera.eulers.x + 180;
-    var targetX = this.followCamera.eulers.y;
-
-
-
-    const targetAng = new pc.Vec3(-targetX, targetY, 0);
-
-    this.camera.setEulerAngles(targetAng);
+    if (this.camera && this.followCamera && this.followCamera.eulers) {
+        const targetY = this.followCamera.eulers.x + 180;
+        var targetX = this.followCamera.eulers.y;
 
 
-    this.input.cameraYaw = targetAng.y;
-    this.input.cameraPitch += dt * this.input.cameraY;
-    this.input.cameraY = 0;
-    this.input.cameraPitch = this.clampPitchAngle(this.input.cameraPitch, this.followCamera.bottomClamp, this.followCamera.topClamp);
+
+        const targetAng = new pc.Vec3(-targetX, targetY, 0);
+
+        this.camera.setEulerAngles(targetAng);
+
+
+        this.input.cameraYaw = targetAng.y;
+        this.input.cameraPitch += dt * this.input.cameraY;
+        this.input.cameraY = 0;
+        this.input.cameraPitch = this.clampPitchAngle(this.input.cameraPitch, this.followCamera.bottomClamp, this.followCamera.topClamp);
+    }
 };
 GameCharactersController.prototype.clampPitchAngle = function (angle, minAngle, maxAngle) {
     if (angle < -360) {
@@ -838,8 +834,10 @@ GameCharactersController.prototype.clampPitchAngle = function (angle, minAngle, 
 
 
 GameCharactersController.prototype.updateCameraPosition = function () {
-    if (!this.followCamera.target) {
-        console.warn('Target Entity not set. Please assign a target entity for the camera to orbit around.');
+    if (!this.camera || !this.followCamera.target) {
+        return;
+    }
+    if (!this.followCamera.smoothedPosition) {
         return;
     }
 
@@ -868,7 +866,7 @@ GameCharactersController.prototype.updateCameraPosition = function () {
     var distanceToTarget = targetPosition.distance(this.camera.getPosition());
 
     if (this.followCamera.autofov) {
-        var fov = this.initialFov + (this.initialFov * (1 - Math.min(distanceToTarget, this.followCamera.orbitRadius) / this.followCamera.orbitRadius));
+        var fov = this.followCamera.initialFov + (this.followCamera.initialFov * (1 - Math.min(distanceToTarget, this.followCamera.orbitRadius) / this.followCamera.orbitRadius));
         // Limitar el FOV a un rango válido
         fov = pc.math.clamp(fov, this.initialFov, 90);
         // Aplicar el FOV a la cámara
@@ -896,7 +894,7 @@ GameCharactersController.prototype.update = function (dt) {
     this.updateCharactersMovement(dt);
 
 
-    this.getSceneLights(dt);
+    //this.getSceneLights(dt);
     return;
 
 
@@ -1062,7 +1060,7 @@ GameCharactersController.prototype.getSceneLights = function (dt) {
 
             lightEntity.lensFlareImage.addComponent('render', {
                 type: 'sphere', // Tipo de geometría (plano)
-                material: this.lensflareCamera.material,
+                //material: this.lensflareCamera.material,
                 isStatic: true,
                 layers: [pc.LAYERID_WORLD],
                 batchGroupId: this.lensflareCamera.batchGroup_lensflare_sphere.id

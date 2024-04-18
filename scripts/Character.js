@@ -13,7 +13,7 @@ REQUIERE QUE GameCharactersController.js este instalado en la entidad ROOT.
 
 var Character = pc.createScript('character');
 
-Character.attributes.add('speed', { type: 'number', default: 2, title: "speed", description: "Velocidad del personaje.", min: 2, max: 3, precision: 1 });
+Character.attributes.add('speed', { type: 'number', default: 1.5, title: "speed", description: "Velocidad del personaje.", min: 1.5, max: 2.5, precision: 1 });
 Character.attributes.add('isSelectable', { type: 'boolean', default: false });
 Character.attributes.add('isPlayer', { type: 'boolean', default: false });
 Character.attributes.add('inertia', { type: 'boolean', default: true });
@@ -558,28 +558,15 @@ Character.prototype.applyMovement = function (input, dt) {
 
     Trace("input", input);
 
-    const isSprinting = input.sprint;
-
     var moveSpeed = input.sprint ? this.speed * 2 : this.speed;
 
     const isMoving = input.x !== 0 || input.y !== 0;
     !isMoving && (moveSpeed = 0);
 
-
     this.charSpeed < moveSpeed - 0.1 ? this.charSpeed = pc.math.lerp(this.charSpeed, 1 * moveSpeed, dt * this.speed * 4) : this.charSpeed = moveSpeed;
 
-
-    var animationBlend = isSprinting ? moveSpeed / this.speed * 2 : moveSpeed / this.speed - 0.3;
-    animationBlend < 0.01 && (animationBlend = 0);
-
-    if (this.app.xr.active) {
-        const targetPosition = this.entity.getPosition().clone().add(this.camera.forward.scale(10));
-        this.entity.lookAt(targetPosition);
-        const targetRotation = (Math.atan2(-input.x, input.y) * pc.math.RAD_TO_DEG + 360) % 360;
-        this.entity.rotate(0, targetRotation, 0);
-        this.currenRotation = Math.atan2(this.camera.forward.x, this.camera.forward.z) * pc.math.RAD_TO_DEG % 360 + 180;
-    }
-
+    this.speedAnimBlend = input.sprint ? moveSpeed / this.speed * 2 : moveSpeed / this.speed - 0.3;
+    this.speedAnimBlend < 0.01 && (this.speedAnimBlend = 0);
 
 
     // Teleporting the entity to the destination
@@ -587,7 +574,6 @@ Character.prototype.applyMovement = function (input, dt) {
         const cameraTargetYaw = input.cameraYaw;
         const targetRotation = (Math.atan2(-input.x, input.y) * pc.math.RAD_TO_DEG + cameraTargetYaw) % 360;
         this.currenRotation = pc.math.lerpAngle(this.currenRotation ?? 0, targetRotation, this.speed * 3 * dt);
-
         this.entity.setEulerAngles(0, this.currenRotation, 0);
 
 
@@ -606,7 +592,7 @@ Character.prototype.applyMovement = function (input, dt) {
     }
 
     if (this.entity.anim) {
-        this.entity.anim.setFloat("Speed", animationBlend);
+        this.entity.anim.setFloat("speed", this.speedAnimBlend);
     }
 }
 
@@ -1319,7 +1305,7 @@ Character.prototype.prepareAnimComponent = function () {
                         time: 0.2,
                         priority: 0,
                         conditions: [{
-                            parameterName: 'Speed',
+                            parameterName: 'speed',
                             predicate: pc.ANIM_GREATER_THAN,
                             value: 0
                         }]
@@ -1329,7 +1315,7 @@ Character.prototype.prepareAnimComponent = function () {
                         time: 0.2,
                         priority: 0,
                         conditions: [{
-                            parameterName: 'Speed',
+                            parameterName: 'speed',
                             predicate: pc.ANIM_LESS_THAN,
                             value: 0.01
                         }]
@@ -1340,7 +1326,7 @@ Character.prototype.prepareAnimComponent = function () {
                         time: 0.2,
                         priority: 0,
                         conditions: [{
-                            parameterName: 'Speed',
+                            parameterName: 'speed',
                             predicate: pc.ANIM_GREATER_THAN,
                             value: 0.99
                         }]
@@ -1351,7 +1337,7 @@ Character.prototype.prepareAnimComponent = function () {
                         time: 0.1,
                         priority: 0,
                         conditions: [{
-                            parameterName: 'Speed',
+                            parameterName: 'speed',
                             predicate: pc.ANIM_LESS_THAN,
                             value: 1
                         }]
@@ -1362,7 +1348,7 @@ Character.prototype.prepareAnimComponent = function () {
                         time: 0.2,
                         priority: 0,
                         conditions: [{
-                            parameterName: 'Speed',
+                            parameterName: 'speed',
                             predicate: pc.ANIM_GREATER_THAN_EQUAL_TO,
                             value: 1
                         }]
@@ -1372,8 +1358,8 @@ Character.prototype.prepareAnimComponent = function () {
             }
         ],
         parameters: {
-            Speed: {
-                name: 'Speed',
+            speed: {
+                name: 'speed',
                 type: pc.ANIM_PARAMETER_FLOAT,
                 value: 0
             },
@@ -1411,7 +1397,9 @@ Character.prototype.prepareAnimComponent = function () {
 
     // add an anim component to the entity
     this.entity.addComponent('anim', {
-        activate: true
+        activate: true,
+        rootBone: this.playerAnimationsOptions.hips && this.playerAnimationsOptions.hips
+
     });
 
     this.entity.anim.loadStateGraph(animPlayerStateGraphData);
