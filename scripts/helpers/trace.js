@@ -63,6 +63,9 @@ TracerScript.attributes.add('trenablefps', { title: "FPS Enabled", type: 'boolea
 TracerScript.attributes.add('trenable', { title: "Enabled", type: 'boolean', default: true });
 TracerScript.attributes.add('tralwaysshow', { title: "Always show", type: 'boolean', default: false });
 TracerScript.attributes.add('trordermode', { title: "Order mode", type: 'string', enum: [{ 'newlestlast': 'newlestlast' }, { 'oldestfirst': 'oldestfirst' }], default: "oldestfirst" });
+TracerScript.attributes.add('trgamesleep', { title: 'gamesleep', type: 'number', default: 0, min: 0, max: 100, precision: 0, description: "Simulates bad performance" });
+TracerScript.attributes.add('trgametimescale', { title: 'gametimescale', type: 'number', default: 1, min: 0, max: 1, precision: 2, description: "gametimescale" });
+
 
 TracerScript.linesValues = {};
 
@@ -82,6 +85,10 @@ TracerScript.prototype.initialize = function () {
     if (this.trenablefps) {
         TracerScript.fps = new FPSMeter({ heat: true, graph: true });
     }
+    TracerScript.trgamesleep = this.trgamesleep;
+    TracerScript.trgametimescale = this.trgametimescale;
+
+
 
 
     TracerScript.div = document.createElement("DIV");
@@ -140,7 +147,13 @@ TracerScript.prototype.initialize = function () {
         TracerScript.trenablefps = this.trenablefps;
     }, this);
 
+    this.on("attr:trgamesleep", function () {
+        TracerScript.trgamesleep = this.trgamesleep;
+    }, this);
 
+    this.on("attr:trgametimescale", function () {
+        TracerScript.trgametimescale = this.trgametimescale;
+    }, this);
 
 };
 
@@ -219,10 +232,19 @@ async function Tracer(text, value) {
     }
 }
 
+TracerScript.prototype.sleep = function (milliseconds) {
+    const startTime = Date.now();
+    while (Date.now() - startTime < milliseconds) { }
+}
+
 // Called every frame, dt is time in seconds since last update
 TracerScript.prototype.update = function (dt) {
     if (TracerScript.trenablefps) {
         TracerScript.fps.tick();
     }
+
+    TracerScript.trgamesleep ? this.sleep(TracerScript.trgamesleep) : null;
+    this.trgametimescale ? this.app.timeScale = this.trgametimescale : null;
+
 };
 
