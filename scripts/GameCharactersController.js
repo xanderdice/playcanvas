@@ -39,25 +39,7 @@ GameCharactersController.attributes.add('playerPersonStyle', {
 });
 
 
-GameCharactersController.attributes.add('gamesleep', {
-    title: 'gamesleep',
-    type: 'number',
-    default: 0,
-    min: 0,
-    max: 100,
-    precision: 0,
-    description: "Simulates bad performance"
-});
 
-GameCharactersController.attributes.add('gametimescale', {
-    title: 'gametimescale',
-    type: 'number',
-    default: 1,
-    min: 0,
-    max: 1,
-    precision: 2,
-    description: "gametimescale"
-});
 
 
 
@@ -124,9 +106,9 @@ GameCharactersController.attributes.add('followCamera',
             {
                 name: 'bottomClamp',
                 type: 'number',
-                default: -30,
-                min: -30,
-                max: 10,
+                default: 320,
+                min: 320,
+                max: 340,
                 precision: 0,
                 title: 'bottomClamp',
                 description: "The maximum value in angle degrees for the camera downwards movement."
@@ -190,11 +172,10 @@ GameCharactersController.attributes.add('lensflareCamera',
 // initialize code called once per entity
 GameCharactersController.prototype.initialize = function () {
 
-
+    this.app.maxDeltaTime = 0.2;
     var display = this.app.graphicsDevice;
     // Obtener el pixelRatio actual
     var currentPixelRatio = window.devicePixelRatio || 1;
-    this.app.maxDeltaTime = 0.2;
     // Calcular el ancho y alto deseados para mantener el pixelRatio en 1
     var desiredWidth = display.width / currentPixelRatio;
     var desiredHeight = display.height / currentPixelRatio;
@@ -207,8 +188,8 @@ GameCharactersController.prototype.initialize = function () {
     // Establecer el nuevo ancho y alto en la pantalla
 
     // Actualizar la resolución interna del dispositivo gráfico
-    screen_width = ((screen_width * currentPixelRatio) / 4) * 2;
-    screen_height = ((screen_height * currentPixelRatio) / 4) * 2;
+    screen_width = ((screen_width * currentPixelRatio) / 4) * 3;
+    screen_height = ((screen_height * currentPixelRatio) / 4) * 3;
 
     //console.log("screen_width" + screen_width);
     //console.log("screen_height" + screen_width);
@@ -217,10 +198,14 @@ GameCharactersController.prototype.initialize = function () {
     this.app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW, screen_width, screen_height);
 
     //var ambientColor = new pc.Color(96 / 255, 128 / 255, 128 / 255);
-    var ambientColor = new pc.Color(0 / 255, 32 / 255, 64 / 255);
+    //var ambientColor = new pc.Color(0 / 255, 32 / 255, 64 / 255);
+    var ambientColor = new pc.Color(192 / 255, 224 / 255, 255 / 255);
     this.app.scene.ambientLight = ambientColor;
 
+    //this.app.scene.lighting.debugLayer = this.app.scene.layers.getLayerByName("World").id;
+
     if (this.camera) {
+
         const currentOptions = {
             camera: this.camera.camera, // camera used to render those passes
             samples: 0, // number of samples for multi-sampling
@@ -235,10 +220,11 @@ GameCharactersController.prototype.initialize = function () {
             taaEnabled: true
         };
 
-        const renderPassCamera = new pcx.RenderPassCameraFrame(this.app, currentOptions);
+        //        const renderPassCamera = new pcx.RenderPassCameraFrame(this.app, currentOptions);
         //this.camera.camera.renderPasses = [renderPassCamera];
         //renderPassCamera.composePass.toneMapping = pc.TONEMAP_ACES;
-        this.camera.camera.jitter = 1;
+        //        this.camera.camera.jitter = 1;
+
     }
 
 
@@ -246,6 +232,10 @@ GameCharactersController.prototype.initialize = function () {
     this.selectedCharacters = [];
 
 
+
+    /*---------------*/
+    /* MOUSE EVENTS  */
+    /*---------------*/
     this.mousePointer = new pc.Entity();
     this.mousePointer.addComponent(
         'element', {
@@ -261,28 +251,34 @@ GameCharactersController.prototype.initialize = function () {
     this.mousePointer.setLocalScale(1, 1, 1);
     this.previousX = 0;
     this.previousY = 0;
-
-
     this.canvas = this.app.graphicsDevice.canvas;
+
+    this.gameMouse_busy = false;
+    this.app.mouse.on(pc.EVENT_MOUSEMOVE, this.onMouseMove, this);
+    this.app.mouse.on(pc.EVENT_MOUSEDOWN, this.onMouseDown, this);
+    this.app.mouse.on(pc.EVENT_MOUSEWHEEL, this.onMouseWheel, this);
+
     this.canvas.addEventListener('contextmenu', function (event) { event.preventDefault(); }.bind(this), false);
     this.app.mouse.disableContextMenu();
+
+    this.on("destroy", function () {
+        this.app.mouse.off(pc.EVENT_MOUSEMOVE, this.onMouseMove, this);
+        this.app.mouse.off(pc.EVENT_MOUSEDOWN, this.onMouseDown, this);
+        this.app.mouse.off(pc.EVENT_MOUSEWHEEL, this.onMouseWheel, this);
+    }, this);
+
 
 
     /*-----------*/
     /* keyboard  */
     /*-----------*/
-    this.moveForward = 0;
-    this.moveRight = 0;
-    this.interact = false;
-    this.attack = false;
-    this.jumping = false;
     this.jumping_elapsedtime = 0;
     this.jumping_availability = true;
-    this.sprinting = false;
 
     this.input = {
+        playerPersonStyle: this.playerPersonStyle,
         x: 0,
-        y: 0,
+        z: 0,
         jump: false,
         sprint: false,
         attack: false,
@@ -292,249 +288,22 @@ GameCharactersController.prototype.initialize = function () {
         mouseDx: 0,
         mouseDy: 0,
         mouseSensitivity: this.mouseOptions.mouseSensitivity,
-        cameraX: 0,
-        cameraY: 0,
-        cameraYaw: this.camera ? this.camera.getLocalEulerAngles().y : 0,
-        cameraPitch: 0
+        mousePrimaryButton: false,
+        mouseSecondaryButton: false,
+        mouseWheel: 0,
+        camera: this.camera,
+        dt: 0
     };
 
-    this.gameMouse_busy = false;
-    //this.app.mouse.on(pc.EVENT_MOUSEDOWN, function (event) {
-    this.canvas.addEventListener(pc.EVENT_MOUSEDOWN, function (event) {
 
 
-        if (!this.gameMouse_busy) {
-            this.gameMouse_busy = true;
 
 
-            this.selectedCharacters = this.getSelectedCharacters(this.characters);
-            if (this.selectedCharacters.length === 0) {
-                this.gameMouse_busy = false;
-                return;
-            }
 
-            if (this.mouseOptions.hideMousePointer) {
-                try {
-                    if (!pc.Mouse.isPointerLocked()) {
-                        this.app.mouse.enablePointerLock();
-                    }
-                } catch { }
 
-                this.gameMouse_busy = false;
-                return;
-            }
 
-            // Obtiene la posición del clic del mouse en pantalla (coordenadas normalizadas)
-            var x = event.x; // this.app.graphicsDevice.width;
-            var y = event.y; // this.app.graphicsDevice.height;
 
-            var from = this.camera.getPosition().clone();
-            var to = this.camera.camera.screenToWorld(
-                x,
-                y,
-                this.camera.camera.farClip
-            );
 
-
-            var raycast = this.app.systems.rigidbody.raycastFirst(
-                from,
-                to,
-                { lowResolution: true }
-            );
-
-            if (raycast != null && raycast.entity) {
-
-
-                var selectableCharacters = this.getSelectableCharacters(this.characters);
-
-                var isSelectableByRaycast = selectableCharacters.find(function (char) {
-                    return char._guid === raycast.entity._guid;
-                });
-
-                if (isSelectableByRaycast) {
-                    //If can select then adds
-                    var exists = this.selectedCharacters.find(function (char) {
-                        return char._guid === raycast.entity._guid;
-                    });
-
-                    raycast.entity.selected = !exists;
-
-                    this.gameMouse_busy = false;
-                    return;
-                }
-
-
-
-                var i = 0,
-                    selectedCharacters_length = this.selectedCharacters.length,
-                    threshold = 0.8,
-                    faceNormal = raycast.normal,
-                    hitPosition = raycast.point,
-                    gridSize = 1,
-                    // Redondea las coordenadas a la grilla
-                    gridX = Math.round(hitPosition.x / gridSize) * gridSize,
-                    gridY = Math.round(hitPosition.y / gridSize) * gridSize,
-                    gridZ = Math.round(hitPosition.z / gridSize) * gridSize;
-
-                raycast.calculatedPoint = new pc.Vec3(gridX, gridY, gridZ);
-
-
-                if (faceNormal.dot(new pc.Vec3(0, 1, 0)) > threshold) {
-                    for (; i < selectedCharacters_length; i++) {
-                        this.selectedCharacters[i].targetPoint = raycast.calculatedPoint;
-                    }
-                }
-
-            }
-
-            this.gameMouse_busy = false;
-        }
-
-    }.bind(this));
-
-
-
-    /* MOUSE MOVE */
-    this.app.mouse.on(pc.EVENT_MOUSEMOVE, function (event) {
-        //canvas.addEventListener(pc.EVENT_MOUSEMOVE, async function (event) {
-
-
-        if (!this.gameMouse_busy) {
-            this.gameMouse_busy = true;
-
-
-            if (this.mouseOptions.hideMousePointer && !pc.Mouse.isPointerLocked()) {
-                this.gameMouse_busy = false;
-                return;
-            }
-
-            // Actualiza las variables de posición anterior para el próximo cálculo
-            var x = event.x,
-                y = event.y,
-                deltaX = event.clientX ? event.clientX - this.previousX : event.dx,
-                deltaY = event.clientY ? event.clientY - this.previousY : event.dy;
-
-            this.input.mouseX = x;
-            this.input.mouseY = y;
-            this.input.mouseDx = deltaX;
-            this.input.mouseDy = deltaY;
-            this.input.cameraX = -this.mouseOptions.mouseSensitivity * deltaX;
-            this.input.cameraY = -this.mouseOptions.mouseSensitivity * deltaY;
-
-
-
-            if (this.mainPlayer) {
-                this.lookSpeed = 0.3;
-                if (this.lookLastDeltaX === deltaX) deltaX = 0;
-                if (this.lookLastDeltaY === deltaY) deltaY = 0;
-                //this.mainPlayer.fire("character:rotate", { x: x, y: y, deltaX: deltaX, deltaY: deltaY, lookSpeed: this.lookSpeed || 1, playerPersonStyle: this.playerPersonStyle, camera: this.camera });
-                if (this.camera && this.camera.camera) {
-                    this.onMouseMoveFollowCamera({ dx: deltaX, dy: deltaY });
-                    //this.camera.fire("camera:rotate", { x: x, deltaX: deltaX, lookSpeed: this.lookSpeed || 1, playerPersonStyle: this.playerPersonStyle, camera: this.camera });
-                }
-                this.lookLastDeltaX = deltaX;
-                this.lookLastDeltaY = deltaY;
-            } else {
-                this.mainPlayer = this.getMainPlayer(this.characters);
-            }
-
-            this.previousX = event.clientX;
-            this.previousY = event.clientY;
-
-            if (pc.Mouse.isPointerLocked()) {
-                /*if is firtsperson, extt */
-                if (this.playerPersonStyle === "FirstPerson") {
-                    var cameraEntityPosition = this.camera.getPosition();
-                    var cameraEntityForward = this.camera.forward;
-
-                    var lineDistance = 4; // 2 metros
-                    var lineEnd = new pc.Vec3().add2(cameraEntityPosition, cameraEntityForward.scale(lineDistance));
-
-                    var raycast = this.app.systems.rigidbody.raycastFirst(cameraEntityPosition, lineEnd, { lowResolution: true });
-
-
-                    // Comprueba si el rayo golpeó algo
-                    if (raycast) {
-                        this.showTextForEntity(raycast.entity, raycast.point);
-                    }
-
-                }
-
-
-                this.gameMouse_busy = false;
-                return;
-            }
-
-
-
-            //
-            //RAYCAST:
-            //
-            var selectedCharacters = this.getSelectedCharacters(this.characters);
-            if (selectedCharacters.length === 0) {
-                this.gameMouse_busy = false;
-                return;
-            }
-
-
-            var from = this.camera.getPosition().clone();
-            var to = this.camera.camera.screenToWorld(
-                x,
-                y,
-                this.camera.camera.farClip
-            );
-
-
-            var raycast = this.app.systems.rigidbody.raycastFirst(
-                from,
-                to,
-                { lowResolution: true }
-            );
-
-            if (raycast != null) {
-
-                var selectableCharacters = this.getSelectableCharacters(this.characters);
-
-                var isSelectable = selectableCharacters.find(function (char) {
-                    return char._guid === raycast.entity._guid;
-                });
-
-                //Si mueve el mouse sobre  un character:
-                if (isSelectable) {
-                    if (!this.mouseHoverCharacter) {
-                        this.mouseHoverCharacter = raycast.entity;
-                    }
-                } else {
-                    //Si mueve el mouse sobre el PISO:
-                    if (this.mouseHoverCharacter) {
-                        this.mouseHoverCharacter = null;
-                    }
-
-                    var hitPosition = raycast.point,
-                        gridSize = 1;
-                    // Redondea las coordenadas a la grilla
-                    var gridX = Math.round(hitPosition.x / gridSize) * gridSize;
-                    var gridY = Math.round(hitPosition.y / gridSize) * gridSize;
-                    var gridZ = Math.round(hitPosition.z / gridSize) * gridSize;
-
-                    //Posiona la entidad mouse pointer:
-                    this.mousePointer.setPosition(gridX, gridY, gridZ);
-
-                }
-
-            } else {
-
-                if (this.mouseHoverCharacter) {
-                    var renderComp = (this.mouseHoverCharacter.findComponents("render") || [])[0];
-                    this.mouseHoverCharacter = null;
-                }
-            }
-
-
-            this.gameMouse_busy = false;
-        }
-
-    }, this);
 
 
 
@@ -581,141 +350,265 @@ GameCharactersController.prototype.initialize = function () {
 
 
 
-    return;
-    this.camera.setRotation(pc.Vec3.ZERO);
-    this.followCamera.targetPos = new pc.Vec3();
-    this.followCamera.matrix = new pc.Mat4();
-    this.followCamera.quat = new pc.Quat();
-    this.followCamera.vec = new pc.Vec3();
-    this.followCamera.orbitRadius = 5;
-    this.followCamera.cameraPitchRotation = 0;
-    this.followCamera.cameraPitch_busy = false;
+};
 
 
-    if (this.followCamera.target) {
-        if (this.followCamera.target.isCharacter) {
-            console.error("Camera can not set directly to the character entity. you need create a target entity and set it as child of the main character entity.");
+
+/* MOUSE MOVE */
+GameCharactersController.prototype.onMouseMove = function (event) {
+
+    if (!this.gameMouse_busy) {
+        this.gameMouse_busy = true;
+
+
+        if (this.mouseOptions.hideMousePointer && !pc.Mouse.isPointerLocked()) {
+            this.gameMouse_busy = false;
             return;
         }
 
-        this.camera.on('camera:rotate', function (eventLook) {
+        // Actualiza las variables de posición anterior para el próximo cálculo
+        const x = event.x, y = event.y;
+        var deltaX = event.clientX ? event.clientX - this.previousX : event.dx,
+            deltaY = event.clientY ? event.clientY - this.previousY : event.dy;
 
-            // Obtén la diferencia de posición del mouse
-            var dx = eventLook.deltaX;
-
-
-
-            // Calcula la rotación en función de la sensibilidad y la posición del mouse
-            var rotationAmount = dx * 1;
-
-            // Obtén la rotación actual de la cámara
-            var currentRotation = this.entity.getEulerAngles();
-
-            // Ajusta la rotación en el eje Y (puedes ajustar según tus necesidades)
-            currentRotation.y -= rotationAmount;
-
-            // Aplica la nueva rotación a la cámara
-            this.camera.setEulerAngles(currentRotation);
-
-            // Calcula la nueva posición de la cámara alrededor del jugador
-            var rotation = this.followCamera.target.getRotation();
-            var orbitPosition = new pc.Vec3(0, 0, -this.followCamera.orbitRadius);
-            orbitPosition.rotate(rotation);
-
-            // Actualiza la posición de la cámara
-            this.followCamera.targetPosition.copy(this.followCamera.target.getPosition()).add(orbitPosition);
-            this.camera.setPosition(this.followCamera.targetPosition);
-
-            // Mira siempre al jugador
-            this.camera.lookAt(this.followCamera.target.getPosition());
-
-        }, this);
+        this.input.mouseX = x;
+        this.input.mouseY = y;
+        this.input.mouseDx = deltaX;
+        this.input.mouseDy = deltaY;
 
 
 
 
+        if (this.mainPlayer) {
+            if (this.lookLastDeltaX === deltaX) deltaX = 0;
+            if (this.lookLastDeltaY === deltaY) deltaY = 0;
+            if (this.camera && this.camera.camera) {
+                this.onMouseMoveFollowCamera();
+            }
+            this.lookLastDeltaX = deltaX;
+            this.lookLastDeltaY = deltaY;
+        } else {
+            this.mainPlayer = this.getMainPlayer(this.characters);
+        }
 
-        this.updateFollorCameraTargetPosition();
-        this.followCamera.currentPos = this.followCamera.targetPos.clone();
+        this.previousX = event.clientX;
+        this.previousY = event.clientY;
 
-        if (this.playerPersonStyle === "FirstPerson") {
-            this.followCamera.cameraOffset = pc.Vec3.ZERO;
-            this.followCamera.lerpAmount = 1;
+        if (pc.Mouse.isPointerLocked()) {
+            /*if is firtsperson, extt */
+            if (this.playerPersonStyle === "FirstPerson") {
+                var cameraEntityPosition = this.camera.getPosition();
+                var cameraEntityForward = this.camera.forward;
 
-            this.camera.on('camera:pitch', function (eventLook) {
-                if (!this.followCamera.cameraPitch_busy) {
-                    this.followCamera.cameraPitch_busy = true;
+                var lineDistance = 4; // 2 metros
+                var lineEnd = new pc.Vec3().add2(cameraEntityPosition, cameraEntityForward.scale(lineDistance));
 
-                    var deltaY = (eventLook.deltaY || 0) * (eventLook.lookSpeed || 1);
+                var raycast = this.app.systems.rigidbody.raycastFirst(cameraEntityPosition, lineEnd, { lowResolution: true });
 
-                    var pitch = -deltaY;
-                    this.followCamera.cameraPitchRotation += pitch;
-                    this.followCamera.cameraPitchRotation = pc.math.clamp(this.followCamera.cameraPitchRotation, -90, 80);
 
-                    this.followCamera.cameraPitch_busy = false;
+                // Comprueba si el rayo golpeó algo
+                if (raycast) {
+                    this.showTextForEntity(raycast.entity, raycast.point);
                 }
-            }, this);
+
+            }
+
+
+            this.gameMouse_busy = false;
+            return;
+        }
+
+
+
+        //
+        //RAYCAST:
+        //
+        var selectedCharacters = this.getSelectedCharacters(this.characters);
+        if (selectedCharacters.length === 0) {
+            this.gameMouse_busy = false;
+            return;
+        }
+
+
+        var from = this.camera.getPosition().clone();
+        var to = this.camera.camera.screenToWorld(
+            x,
+            y,
+            this.camera.camera.farClip
+        );
+
+
+        var raycast = this.app.systems.rigidbody.raycastFirst(
+            from,
+            to,
+            { lowResolution: true }
+        );
+
+        if (raycast != null) {
+
+            var selectableCharacters = this.getSelectableCharacters(this.characters);
+
+            var isSelectable = selectableCharacters.find(function (char) {
+                return char._guid === raycast.entity._guid;
+            });
+
+            //Si mueve el mouse sobre  un character:
+            if (isSelectable) {
+                if (!this.mouseHoverCharacter) {
+                    this.mouseHoverCharacter = raycast.entity;
+                }
+            } else {
+                //Si mueve el mouse sobre el PISO:
+                if (this.mouseHoverCharacter) {
+                    this.mouseHoverCharacter = null;
+                }
+
+                var hitPosition = raycast.point,
+                    gridSize = 1;
+                // Redondea las coordenadas a la grilla
+                var gridX = Math.round(hitPosition.x / gridSize) * gridSize;
+                var gridY = Math.round(hitPosition.y / gridSize) * gridSize;
+                var gridZ = Math.round(hitPosition.z / gridSize) * gridSize;
+
+                //Posiona la entidad mouse pointer:
+                this.mousePointer.setPosition(gridX, gridY, gridZ);
+
+            }
+
+        } else {
+
+            if (this.mouseHoverCharacter) {
+                var renderComp = (this.mouseHoverCharacter.findComponents("render") || [])[0];
+                this.mouseHoverCharacter = null;
+            }
+        }
+
+
+        this.gameMouse_busy = false;
+    }
+
+}
+
+GameCharactersController.prototype.onMouseMoveFollowCamera = function () {
+    this.followCamera.eulers.x -= ((this.mouseOptions.mouseSensitivity * this.input.mouseDx) / 60) % 360;
+    this.followCamera.eulers.y += ((this.mouseOptions.mouseSensitivity * this.input.mouseDy) / 60) % 360;
+
+    this.followCamera.eulers.x = (this.followCamera.eulers.x + 360) % 360;
+    this.followCamera.eulers.y = (this.followCamera.eulers.y + 360) % 360;
+
+
+    if (this.followCamera.eulers.y > this.followCamera.topClamp && this.followCamera.eulers.y < this.followCamera.topClamp + 180) {
+        this.followCamera.eulers.y = this.followCamera.topClamp;
+    }
+    if (this.followCamera.eulers.y < this.followCamera.bottomClamp && this.followCamera.eulers.y > this.followCamera.bottomClamp - 180) {
+        this.followCamera.eulers.y = this.followCamera.bottomClamp;
+    }
+}
+
+GameCharactersController.prototype.onMouseDown = function (event) {
+
+
+
+    if (!this.gameMouse_busy) {
+        this.gameMouse_busy = true;
+
+
+
+
+        this.selectedCharacters = this.getSelectedCharacters(this.characters);
+        if (this.selectedCharacters.length === 0) {
+            this.gameMouse_busy = false;
+            return;
+        }
+
+        if (this.mouseOptions.hideMousePointer) {
+            try {
+                if (!pc.Mouse.isPointerLocked()) {
+                    this.app.mouse.enablePointerLock();
+                }
+            } catch { }
+
+            this.gameMouse_busy = false;
+            return;
+        }
+
+        // Obtiene la posición del clic del mouse en pantalla (coordenadas normalizadas)
+        var x = event.x; // this.app.graphicsDevice.width;
+        var y = event.y; // this.app.graphicsDevice.height;
+
+        var from = this.camera.getPosition().clone();
+        var to = this.camera.camera.screenToWorld(
+            x,
+            y,
+            this.camera.camera.farClip
+        );
+
+
+        var raycast = this.app.systems.rigidbody.raycastFirst(
+            from,
+            to,
+            { lowResolution: true }
+        );
+
+        if (raycast != null && raycast.entity) {
+
+
+            var selectableCharacters = this.getSelectableCharacters(this.characters);
+
+            var isSelectableByRaycast = selectableCharacters.find(function (char) {
+                return char._guid === raycast.entity._guid;
+            });
+
+            if (isSelectableByRaycast) {
+                //If can select then adds
+                var exists = this.selectedCharacters.find(function (char) {
+                    return char._guid === raycast.entity._guid;
+                });
+
+                raycast.entity.selected = !exists;
+
+                this.gameMouse_busy = false;
+                return;
+            }
+
+
+
+            var i = 0,
+                selectedCharacters_length = this.selectedCharacters.length,
+                threshold = 0.8,
+                faceNormal = raycast.normal,
+                hitPosition = raycast.point,
+                gridSize = 1,
+                // Redondea las coordenadas a la grilla
+                gridX = Math.round(hitPosition.x / gridSize) * gridSize,
+                gridY = Math.round(hitPosition.y / gridSize) * gridSize,
+                gridZ = Math.round(hitPosition.z / gridSize) * gridSize;
+
+            raycast.calculatedPoint = new pc.Vec3(gridX, gridY, gridZ);
+
+
+            if (faceNormal.dot(new pc.Vec3(0, 1, 0)) > threshold) {
+                for (; i < selectedCharacters_length; i++) {
+                    this.selectedCharacters[i].targetPoint = raycast.calculatedPoint;
+                }
+            }
 
         }
 
-    } else {
-        this.followCamera.currentPos = this.camera.getPosition().clone();
+        this.gameMouse_busy = false;
     }
-
 
 };
 
 
+GameCharactersController.prototype.onMouseWheel = function (event) {
+    this.input.mouseWheel = event.wheelDelta;
+};
+
+
+
 GameCharactersController.prototype.onKeyboardInput = function (dt) {
     const keyboard = this.app.keyboard;
-
-    this.moveForward = 0;
-    this.moveRight = 0;
-    if (this.app.keyboard.isPressed(pc.KEY_W)) {
-        this.moveForward = 1;
-    }
-    if (this.app.keyboard.isPressed(pc.KEY_S)) {
-        this.moveForward = -1;
-    }
-    if (this.app.keyboard.isPressed(pc.KEY_D)) {
-        this.moveRight = 1;
-    }
-    if (this.app.keyboard.isPressed(pc.KEY_A)) {
-        this.moveRight = -1;
-    }
-    if (this.app.keyboard.isPressed(pc.KEY_E)) {
-        this.interact = true;
-    } else {
-        this.interact = false;
-    }
-    if (this.app.keyboard.isPressed(pc.KEY_F)) {
-        this.attack = true;
-    } else {
-        this.attack = false;
-    }
-    if (this.app.keyboard.isPressed(pc.KEY_SPACE)) {
-        this.jumping = true;
-    } else {
-        this.jumping = false;
-    }
-    if (this.app.keyboard.isPressed(pc.KEY_SHIFT)) {
-        this.sprinting = true;
-    } else {
-        this.sprinting = false;
-    }
-
-
-
-    if (!this.jumping_availability) {
-        this.jumping_elapsedtime += dt;
-        if (this.jumping_elapsedtime >= 0.1) {
-            this.jumping_elapsedtime = 0;
-            this.jumping_availability = true;
-        }
-    }
-
-
-
 
     // Movimiento horizontal
     if (keyboard.isPressed(pc.KEY_A) || keyboard.isPressed(pc.KEY_LEFT)) {
@@ -728,22 +621,37 @@ GameCharactersController.prototype.onKeyboardInput = function (dt) {
 
     // Movimiento vertical
     if (keyboard.isPressed(pc.KEY_W) || keyboard.isPressed(pc.KEY_UP)) {
-        this.input.y = 1;
+        this.input.z = 1;
     } else if (keyboard.isPressed(pc.KEY_S) || keyboard.isPressed(pc.KEY_DOWN)) {
-        this.input.y = -1;
+        this.input.z = -1;
     } else {
-        this.input.y = 0;
+        this.input.z = 0;
     }
 
+
     // Salto
-    if (keyboard.wasPressed(pc.KEY_SPACE)) {
-        this.input.jump = true;
+    if (this.jumping_availability) {
+        if (keyboard.wasPressed(pc.KEY_SPACE)) {
+            this.jumping_availability = false;
+            this.input.jump = true;
+        }
     }
 
     // Sprint
     const isShiftPressed = keyboard.isPressed(pc.KEY_SHIFT);
     //this.input.sprint = this.sprintByDefault ? !isShiftPressed : isShiftPressed;
     this.input.sprint = isShiftPressed;
+
+
+    this.input.interact = keyboard.isPressed(pc.KEY_E);
+    this.input.attack = keyboard.isPressed(pc.KEY_F);
+
+
+    this.input.mousePrimaryButton = this.app.mouse.isPressed(pc.MOUSEBUTTON_LEFT);
+    this.input.mouseSecondaryButton = this.app.mouse.isPressed(pc.MOUSEBUTTON_RIGHT);
+
+
+    this.input.playerPersonStyle = this.playerPersonStyle;
 
 }
 
@@ -754,29 +662,15 @@ GameCharactersController.prototype.updateCharactersMovement = function (dt) {
         //Moves all characters:
         this.characters = this.getCharacters(),
             characters_length = this.characters.length,
-            i = 0,
-            e = {
-                dt: dt,
-                input: this.input,
-                deviceInputKeyboard: {
-                    moveForward: this.moveForward,
-                    moveRight: this.moveRight,
-                    interact: this.interact,
-                    attack: this.attack,
-                    jumping: this.jumping,
-                    sprinting: this.sprinting,
-                    camera: this.camera,
-                    playerPersonStyle: this.playerPersonStyle
-                }
-            };
+            i = 0;
+
+
         for (; i < characters_length; i++) {
             var otherScript = this.characters[i].script.character
             if (otherScript) {
-                otherScript.applyMovement(this.input, dt);
+                otherScript.doMove(this.input, dt);
             }
 
-
-            //this.characters[i].fire("character:domove", e);
         }
 
         this.updateCharactersMovement_busy = false;
@@ -786,54 +680,32 @@ GameCharactersController.prototype.updateCharactersMovement = function (dt) {
 }
 
 
-GameCharactersController.prototype.onMouseMoveFollowCamera = function (e) {
-    if (this.playerPersonStyle === "FirstPerson") {
-    }
-    if (this.playerPersonStyle === "ThirdPerson") {
-        if (pc.Mouse.isPointerLocked() && this.followCamera.eulers) {
-            this.followCamera.eulers.x -= ((this.mouseOptions.mouseSensitivity * e.dx) / 60) % 360;
-            this.followCamera.eulers.y += ((this.mouseOptions.mouseSensitivity * e.dy) / 60) % 360;
 
-            this.followCamera.eulers.x = (this.followCamera.eulers.x + 360) % 360;
-            this.followCamera.eulers.y = (this.followCamera.eulers.y + 360) % 360;
-
-            this.mainPlayer.fire('character:cameramovement', { camera: this.camera });
-        }
-    }
-};
 
 GameCharactersController.prototype.updateCameraOrientation = function (dt) {
 
     if (this.camera && this.followCamera && this.followCamera.eulers) {
-        const targetY = this.followCamera.eulers.x + 180;
-        var targetX = this.followCamera.eulers.y;
+        this.camera.setEulerAngles(new pc.Vec3(
+            -this.followCamera.eulers.y,
+            this.followCamera.eulers.x + 180,
+            0
+        ));
 
+        if (this.playerPersonStyle === "FirstPerson") {
+            if (this.mainPlayer) {
+                var otherScript = this.mainPlayer.script.character
+                if (otherScript) {
+                    otherScript.rotateCharacter(0, 0, this.camera, 0, true);
+                }
+            }
+        };
 
-
-        const targetAng = new pc.Vec3(-targetX, targetY, 0);
-
-        this.camera.setEulerAngles(targetAng);
-
-
-        this.input.cameraYaw = targetAng.y;
-        this.input.cameraPitch += dt * this.input.cameraY;
-        this.input.cameraY = 0;
-        this.input.cameraPitch = this.clampPitchAngle(this.input.cameraPitch, this.followCamera.bottomClamp, this.followCamera.topClamp);
     }
 };
-GameCharactersController.prototype.clampPitchAngle = function (angle, minAngle, maxAngle) {
-    if (angle < -360) {
-        angle += 360;
-    } else if (angle > 360) {
-        angle -= 360;
-    }
-
-    return pc.math.clamp(angle, minAngle, maxAngle);
-};
 
 
 
-GameCharactersController.prototype.updateCameraPosition = function () {
+GameCharactersController.prototype.updateCameraPosition = function (dt) {
     if (!this.camera || !this.followCamera.target) {
         return;
     }
@@ -841,8 +713,12 @@ GameCharactersController.prototype.updateCameraPosition = function () {
         return;
     }
 
-
     var targetPosition = this.followCamera.target.getPosition();
+
+    if (this.playerPersonStyle === "FirstPerson") {
+        this.camera.setPosition(targetPosition);
+        return;
+    }
 
 
     var cameraPosition = targetPosition.clone().add(this.camera.forward.scale(-this.followCamera.orbitRadius));
@@ -855,7 +731,12 @@ GameCharactersController.prototype.updateCameraPosition = function () {
         cameraPosition = hit.point.clone().add(direction.scale(0.1));
     }
 
-    this.followCamera.smoothedPosition.lerp(this.followCamera.smoothedPosition, cameraPosition, this.followCamera.smoothFactor);
+
+
+
+    const deltaTimeAdjustment = dt / (1.0 / 60); // 60 es la tasa de frames objetivo (puedes ajustarla según tu necesidad)
+    const smoothFactor = this.followCamera.smoothFactor * deltaTimeAdjustment;
+    this.followCamera.smoothedPosition.lerp(this.followCamera.smoothedPosition, cameraPosition, smoothFactor);
 
     this.camera.setPosition(this.followCamera.smoothedPosition);
 
@@ -879,71 +760,19 @@ GameCharactersController.prototype.updateCameraPosition = function () {
 // update code called every frame
 GameCharactersController.prototype.update = function (dt) {
 
-
-    this.gamesleep ? this.sleep(this.gamesleep) : null;
-    this.gametimescale ? this.app.timeScale = this.gametimescale : null;
-
-
+    this.input.dt = dt;
     this.onKeyboardInput(dt);
-
-    if (this.followCamera.target) {
-        this.updateCameraOrientation(dt);
-        this.updateCameraPosition();
-    }
 
     this.updateCharactersMovement(dt);
 
-
-    //this.getSceneLights(dt);
-    return;
-
-
-
-    if (this.playerPersonStyle === "ThirdPerson") {
-        // Calculate where we want the camera to be
-        this.updateFollorCameraTargetPosition();
-
-        // Lerp the current camera position to where we want it to be
-        // Note that the lerping is framerate independent
-        // From: https://www.rorydriscoll.com/2016/03/07/frame-rate-independent-damping-using-lerp/
-        if (this.followCamera.lerpAmount === 1) {
-            this.followCamera.currentPos = this.followCamera.targetPos;
-        } else {
-            this.followCamera.currentPos.lerp(this.followCamera.currentPos, this.followCamera.targetPos, 1 - Math.pow(1 - this.followCamera.lerpAmount, dt));
-        }
-
-        // Set the camera's position
-        this.camera.setPosition(this.followCamera.currentPos);
-
-        this.camera.lookAt(this.followCamera.target.getPosition());
+    if (this.followCamera.target) {
+        this.updateCameraOrientation(dt);
+        this.updateCameraPosition(dt);
     }
 
-    if (this.playerPersonStyle === "FirstPerson") {
-        this.camera.setPosition(this.followCamera.target.getPosition());
-        var currentCameraRotation = this.camera.getRotation().clone();
-        var targetRotation = this.followCamera.target.getRotation().clone();  // Obtener la rotación como cuaternión
-
-
-        // Crear un cuaternión para la rotación en el eje X
-        var pitchRotation = new pc.Quat();
-        pitchRotation.setFromEulerAngles(this.followCamera.cameraPitchRotation, 0, 0);
-
-        // Multiplicar la rotación original por el pitchRotation
-        targetRotation.mul(pitchRotation);
-
-        // Realizar interpolación esférica entre las rotaciones actual y objetivo
-        //targetRotation.slerp(currentCameraRotation, this.followCamera.lerpAmount);
-
-        console.log("currentCameraRotation", currentCameraRotation);
-        console.log("targetRotation", targetRotation);
-
-        //targetRotation.slerp(currentCameraRotation, 1 - Math.pow(1 - this.followCamera.lerpAmount, dt));
-
-
-        // Aplicar la rotación resultante a la cámara
-        this.camera.setRotation(targetRotation);
-    }
-
+    const clonedObject = Object.assign({}, this.input);
+    clonedObject.camera = null;
+    Trace("input", clonedObject);
 
 };
 
@@ -1060,7 +889,7 @@ GameCharactersController.prototype.getSceneLights = function (dt) {
 
             lightEntity.lensFlareImage.addComponent('render', {
                 type: 'sphere', // Tipo de geometría (plano)
-                //material: this.lensflareCamera.material,
+                material: this.lensflareCamera.material,
                 isStatic: true,
                 layers: [pc.LAYERID_WORLD],
                 batchGroupId: this.lensflareCamera.batchGroup_lensflare_sphere.id
@@ -1098,7 +927,3 @@ GameCharactersController.prototype.getYaw = function (rotation) {
     return angleDegrees;
 }
 
-GameCharactersController.prototype.sleep = function (milliseconds) {
-    const startTime = Date.now();
-    while (Date.now() - startTime < milliseconds) { }
-}

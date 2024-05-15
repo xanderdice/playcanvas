@@ -188,13 +188,15 @@ Character.prototype.initialize = function () {
 
 
         if (this.sensorOptions.sensorDebug) {
-            const capsuleMesh = pc.createCapsule(this.app.graphicsDevice, {
+
+            const options = {
                 radius: this.characterRadius,
                 height: this.characterHeight
-            });
+            };
+            const capsuleMesh = pc.Mesh.fromGeometry(this.app.graphicsDevice, new pc.CapsuleGeometry(options));
+
+
             const transparentMaterial = new pc.StandardMaterial({
-                opacity: 0.5,
-                blendType: pc.BLEND_NORMAL,
                 diffuse: pc.Color.RED
             });
             const meshInstance = new pc.MeshInstance(capsule_collision, capsuleMesh, transparentMaterial);
@@ -231,7 +233,7 @@ Character.prototype.initialize = function () {
         this.entity.addComponent('rigidbody', {
             type: 'dynamic',         // Tipo de cuerpo rígido (puede ser 'dynamic', 'static' o 'kinematic')
             mass: mass,              // Masa del cuerpo rígido
-            friction: 0.99,          // Coeficiente de fricción
+            friction: 0.5,          // Coeficiente de fricción
             restitution: 0,       // Coeficiente de restitución (rebote)
             linearDamping: 0.0,     // Amortiguación lineal
             angularDamping: 0.0,    // Amortiguación angular
@@ -259,20 +261,6 @@ Character.prototype.initialize = function () {
             this.entity.rigidbody.teleport(this.entity.getPosition(), rotation);
         }
 
-    }, this);
-
-    this.entity.on('character:cameramovement', function (e) {
-        this.playerOptions.rotateToNewDirectionCamera = e.camera;
-        // Reinicia el temporizador
-        if (this.playerOptions.rotationTimer) {
-            clearTimeout(this.playerOptions.rotationTimer);
-        }
-
-        if (this.playerOptions.rotationEventDelay) {
-            this.playerOptions.rotationTimer = setTimeout(function () {
-                this.rotateToNewDirectionFromCameraFunc(e.camera, true); //rota y hace un teleport
-            }.bind(this), this.playerOptions.rotationEventDelay);
-        }
     }, this);
 
 
@@ -558,7 +546,10 @@ Character.prototype.applyMovement = function (input, dt) {
 
     Trace("input", input);
 
-    var moveSpeed = input.sprint ? this.speed * 2 : this.speed;
+    var moveSpeed = input.sprint ? this.speed * 2.5 : this.speed;
+
+
+
 
     const isMoving = input.x !== 0 || input.y !== 0;
     !isMoving && (moveSpeed = 0);
@@ -574,6 +565,15 @@ Character.prototype.applyMovement = function (input, dt) {
         const cameraTargetYaw = input.cameraYaw;
         const targetRotation = (Math.atan2(-input.x, input.y) * pc.math.RAD_TO_DEG + cameraTargetYaw) % 360;
         this.currenRotation = pc.math.lerpAngle(this.currenRotation ?? 0, targetRotation, this.speed * 3 * dt);
+
+
+        let angleDiff = targetRotation - this.currentRotation;
+        angleDiff = Math.abs((angleDiff + 180) % 360 - 180);
+
+        if (angleDiff >= 150) {
+            this.currentRotation = targetRotation;
+        }
+
         this.entity.setEulerAngles(0, this.currenRotation, 0);
 
 
@@ -583,12 +583,12 @@ Character.prototype.applyMovement = function (input, dt) {
         if (this.entity.rigidbody.linearVelocity.y <= 0.000001) {
             // movementVector.add(verticalMovement);
         }
-
+        this.entity.rigidbody.linearVelocity = movementVector;
 
 
         // Calculating destination position using teleport
         const destinationPosition = this.entity.getPosition().clone().add(movementVector);
-        this.entity.rigidbody.teleport(destinationPosition, this.entity.getRotation());
+        this.entity.rigidbody.teleport(destinationPosition);
     }
 
     if (this.entity.anim) {
@@ -596,7 +596,97 @@ Character.prototype.applyMovement = function (input, dt) {
     }
 }
 
+Character.prototype.doMove = function (input, dt) {
 
+    if (!this.doMoveCharacter_busy) {
+        this.doMoveCharacter_busy = true;
+
+        this.CHAR_CUR_POSITION = this.entity.getPosition();
+        this.CHAR_CUR_ROTATION = this.entity.getRotation();
+
+        this.doSensors();
+
+
+        const targetDirection = input.camera.clone();
+        const speed = this.speed;
+        var x = input.x;
+        var z = input.z;
+        if (this.playerOptions.playerControllerOnKeyRight === "Strafe") {
+            if (x !== 0) z = 0;
+            if (z !== 0) x = 0;
+        }
+
+
+
+
+        var moveSpeed = input.sprint ? speed * 2.5 : speed;
+
+
+        const isMoving = x !== 0 || z !== 0;
+        !isMoving && (moveSpeed = 0);
+
+        this.charSpeed < moveSpeed - 0.1 ? this.charSpeed = pc.math.lerp(this.charSpeed, moveSpeed, dt * speed * 4) : this.charSpeed = moveSpeed;
+
+
+        this.speedAnimBlend = input.sprint ? moveSpeed / this.speed * 5 : moveSpeed / speed - 0.3;
+        this.speedAnimBlend < 0.01 && (this.speedAnimBlend = 0);
+
+
+
+        var newPosition = this.CHAR_CUR_POSITION.clone();
+
+        if (isMoving) {
+
+            // Obtener la dirección de movimiento relativa a la cámara
+            const forwardDirection = targetDirection.forward.clone().scale(z).normalize();
+            const strafeDirection = targetDirection.right.clone().scale(x).normalize();
+
+            // Combinar las direcciones para obtener la dirección final del movimiento
+            const direction = forwardDirection.add(strafeDirection).normalize();
+            direction.y = 0;
+
+            // Calcular la nueva posición del jugador
+            newPosition = newPosition.add(direction.scale(this.charSpeed * dt));
+
+            this.entity.rigidbody.teleport(newPosition);
+
+            if (input.playerPersonStyle !== "FirstPerson") {
+                this.rotateCharacter(x, z, targetDirection, speed * 7 * dt, false);
+            }
+        }
+
+
+
+
+        if (this.entity.anim) {
+            this.entity.anim.setFloat("speed", this.speedAnimBlend);
+        }
+
+        this.doMoveCharacter_busy = false;
+    }
+}
+
+Character.prototype.rotateCharacter = function (x, z, targetDirection, rotSpeed, invert) {
+    var addAngle = 0;
+    if (this.playerOptions.playerControllerOnKeyRight === "Rotate") {
+        if (x !== 0 || z !== 0) {
+            const moveAngle = Math.atan2(z, x) * pc.math.RAD_TO_DEG;
+            addAngle = (Math.round(moveAngle / 45) * 45) + 90;
+        }
+    }
+
+    var direction;
+    if (invert) {
+        direction = new pc.Vec3(-targetDirection.forward.x, 0, -targetDirection.forward.z).normalize();
+    } else {
+        direction = new pc.Vec3(-targetDirection.forward.x, 0, -targetDirection.forward.z).normalize();
+    }
+    const angle = (Math.atan2(direction.x, direction.z) * pc.math.RAD_TO_DEG) + addAngle;
+    this.currenRotation = pc.math.lerpAngle(this.currenRotation ?? 0, angle, rotSpeed ? rotSpeed : 0.2);
+    this.entity.rigidbody.enabled = false;
+    this.entity.setEulerAngles(0, this.currenRotation, 0);
+    this.entity.rigidbody.enabled = true;
+}
 
 const CharacterLocomotionEnum = Object.freeze({
     IDLE: 0,
@@ -1178,6 +1268,7 @@ Character.prototype.addTimer = function (time, callback, scope, once) {
 }
 Character.prototype.destroyTimer = function (timerId) {
     delete this._timers[timerId];
+    return null;
 }
 
 Character.prototype.evaluateTimers = function (dt) {
@@ -1211,19 +1302,9 @@ Character.prototype.rootMotionFix = function () {
     /*root motion FIX*/
     if (this.motionrootmode === "in_place_z_axis") {
         if (this.playerAnimationsOptions.hips) {
-            const pos = this.playerAnimationsOptions.hips.getLocalPosition();
-            const startPosY = this.playerAnimationsOptions.startPosition.y;
+            var vecpos = this.playerAnimationsOptions.hips.getLocalPosition();
 
-            const deltaY = Math.abs(pos.y - startPosY);
-
-            const referenceY = Math.abs(startPosY * 0.045);
-            var vecpos = pos;
-            if (deltaY > referenceY) {
-                vecpos = new pc.Vec3(pos.x, startPosY, this.playerAnimationsOptions.startPosition.z ?? 0);
-            } else {
-                vecpos = new pc.Vec3(pos.x, pos.y, this.playerAnimationsOptions.startPosition.z ?? 0);
-            }
-            vecpos = new pc.Vec3(pos.x, pos.y, this.playerAnimationsOptions.startPosition.z ?? 0);
+            vecpos = new pc.Vec3(vecpos.x, vecpos.y, this.playerAnimationsOptions.startPosition.z ?? 0);
 
             this.playerAnimationsOptions.hips.setLocalPosition(vecpos);
         }
