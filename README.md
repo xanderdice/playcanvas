@@ -7,6 +7,7 @@ playcanvas scripts textures and more
 * //https://basis.dev.jibencaozuo.com/                        BASIS
 * //https://www.smart-page.net/smartnormal/                   ABLETO TO NORMAL MAPS
 * //cloth simulation https://playcanvas.com/project/691109/overview/cloth-simulation-demo
+* //https://cgpersia.com/tag/free FREE RESOURCES
 
 //resolutions
 * 4320p (8K): 7680x4320
