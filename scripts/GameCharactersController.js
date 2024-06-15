@@ -172,6 +172,7 @@ GameCharactersController.attributes.add('lensflareCamera',
 // initialize code called once per entity
 GameCharactersController.prototype.initialize = function () {
 
+
     this.app.maxDeltaTime = 0.2;
     var display = this.app.graphicsDevice;
     // Obtener el pixelRatio actual
@@ -180,22 +181,34 @@ GameCharactersController.prototype.initialize = function () {
     var desiredWidth = display.width / currentPixelRatio;
     var desiredHeight = display.height / currentPixelRatio;
 
-    var screen_width = screen.width;
-    var screen_height = screen.height;
+    //var screen_width = screen.width;
+    //var screen_height = screen.height;
+    var screen_width = window.screen.availWidth
+    var screen_height = window.screen.availHeight
 
-    //this.app.resizeCanvas(screen_width, screen_height);
 
-    // Establecer el nuevo ancho y alto en la pantalla
+    //720p (HD): 1280x720
+    screen_width = 1280;
+    screen_height = 720;
+
+    console.log("screen_width" + screen_width);
+    console.log("screen_height" + screen_height);
+
+    document.body.style.backgroundColor = "#000";
+
+
+
+
 
     // Actualizar la resolución interna del dispositivo gráfico
-    screen_width = ((screen_width * currentPixelRatio) / 4) * 3;
-    screen_height = ((screen_height * currentPixelRatio) / 4) * 3;
 
-    //console.log("screen_width" + screen_width);
-    //console.log("screen_height" + screen_width);
+    //screen_width = ((screen_width * currentPixelRatio) / 4) * 3;
+    //screen_height = ((screen_height * currentPixelRatio) / 4) * 3;
 
+
+    this.app.resizeCanvas(screen_width, screen_height);
     this.app.setCanvasResolution(pc.RESOLUTION_FIXED, screen_width, screen_height);
-    this.app.setCanvasFillMode(pc.FILLMODE_FILL_WINDOW, screen_width, screen_height);
+    this.app.setCanvasFillMode(pc.FILLMODE_KEEP_ASPECT, screen_width, screen_height);
 
     //var ambientColor = new pc.Color(96 / 255, 128 / 255, 128 / 255);
     //var ambientColor = new pc.Color(0 / 255, 32 / 255, 64 / 255);
@@ -666,11 +679,12 @@ GameCharactersController.prototype.updateCharactersMovement = function (dt) {
 
 
         for (; i < characters_length; i++) {
-            var otherScript = this.characters[i].script.character
+            const otherScript = this.characters[i].script.character
             if (otherScript) {
+                //if (this.characters[i].isPlayer) {
                 otherScript.doMove(this.input, dt);
+                //}
             }
-
         }
 
         this.updateCharactersMovement_busy = false;
@@ -695,7 +709,7 @@ GameCharactersController.prototype.updateCameraOrientation = function (dt) {
             if (this.mainPlayer) {
                 var otherScript = this.mainPlayer.script.character
                 if (otherScript) {
-                    otherScript.rotateCharacter(0, 0, this.camera, 0, true);
+                    otherScript.rotateCharacter(0, 0, this.camera, 0);
                 }
             }
         };
@@ -723,6 +737,7 @@ GameCharactersController.prototype.updateCameraPosition = function (dt) {
 
     var cameraPosition = targetPosition.clone().add(this.camera.forward.scale(-this.followCamera.orbitRadius));
     cameraPosition.y = pc.math.clamp(cameraPosition.y, 0.5, Number.POSITIVE_INFINITY);
+
 
     const hit = this.app.systems.rigidbody.raycastFirst(targetPosition, cameraPosition);
 
@@ -770,10 +785,7 @@ GameCharactersController.prototype.update = function (dt) {
         this.updateCameraPosition(dt);
     }
 
-    const clonedObject = Object.assign({}, this.input);
-    clonedObject.camera = null;
-    Trace("input", clonedObject);
-
+    this.getSceneLights(dt);
 };
 
 
@@ -851,6 +863,8 @@ GameCharactersController.prototype.showTextForEntity = function (entity, point) 
 
 GameCharactersController.prototype.getSceneLights = function (dt) {
 
+    if (!this.lensflareCamera.enabled) return;
+
     if (this.lensflareCamera.elapsedTime === 0) {
     }
 
@@ -864,46 +878,65 @@ GameCharactersController.prototype.getSceneLights = function (dt) {
     for (; i < lights_length; i++) {
         var lightEntity = this.lensflareCamera.lights[i];
 
-        if (!lightEntity.lensFlareImage) {
-            lightEntity.lensFlareImage = new pc.Entity();
+        if (!lightEntity.lensFlarePlane) {
+            lightEntity.lensFlarePlane = new pc.Entity();
+
+
 
             if (!this.lensflareCamera.material) {
                 this.lensflareCamera.material = new pc.StandardMaterial();
-                this.lensflareCamera.material.blendType = pc.BLEND_NORMAL; // Tipo de mezcla (puedes ajustar según tus necesidades)
-                this.lensflareCamera.material.opacity = 0.01; // Opacidad del material (0 es totalmente transparente, 1 es totalmente opaco)
+                this.lensflareCamera.material.name = "lensflareMaterial";
+                this.lensflareCamera.material.diffuseMap = this.lensflareCamera.texture.resource;
+                this.lensflareCamera.material.opacityMap = this.lensflareCamera.texture.resource;
+                this.lensflareCamera.material.opacityMapChannel = "r";
+                this.lensflareCamera.material.opacity = 0.8;
+                this.lensflareCamera.material.blendType = pc.BLEND_ADDITIVEALPHA; // Tipo de mezcla (puedes ajustar según tus necesidades)
                 this.lensflareCamera.material.update();
             }
 
-            lightEntity.lensFlareImage.addComponent('element', {
+
+
+
+            lightEntity.lensFlarePlane.addComponent('element', {
                 type: 'image', // Tipo de elemento: imagen
                 anchor: [0.5, 0.5, 0.5, 0.5], // Anclajes para ajustar la posición y tamaño de la imagen
                 pivot: [0.5, 0.5], // Pivote de la imagen
                 width: 4, // Ancho de la imagen en píxeles
                 height: 4, // Altura de la imagen en píxeles
-                opacity: 1, // Opacidad de la imagen (0 a 1)
+                //opacity: 1, // Opacidad de la imagen (0 a 1)
                 rect: [0, 0, 1, 1], // Rectángulo que define la región de la imagen (x, y, width, height)
-                textureAsset: this.lensflareCamera.texture, // Asset de textura para la imagen (puede ser null)
+                //materialAsset: this.lensflareCamera.material, // Asset de textura para la imagen (puede ser null)
+                material: this.lensflareCamera.material, // Asset de textura para la imagen (puede ser null)
                 layers: [pc.LAYERID_WORLD],
-                batchGroupId: this.lensflareCamera.batchGroup_lensflare_images.id
-            });
-
-            lightEntity.lensFlareImage.addComponent('render', {
-                type: 'sphere', // Tipo de geometría (plano)
-                material: this.lensflareCamera.material,
-                isStatic: true,
-                layers: [pc.LAYERID_WORLD],
-                batchGroupId: this.lensflareCamera.batchGroup_lensflare_sphere.id
+                //batchGroupId: this.lensflareCamera.batchGroup_lensflare_images.id
             });
 
 
-            this.app.root.addChild(lightEntity.lensFlareImage);
-            lightEntity.lensFlareImage.setPosition(lightEntity.getPosition());
+
+
+            /*
+                        lightEntity.lensFlarePlane.addComponent('render', {
+                            type: 'plane', // Tipo de geometría (plano)
+                            material: this.lensflareCamera.material,
+                            isStatic: true,
+                            layers: [pc.LAYERID_WORLD],
+                            batchGroupId: this.lensflareCamera.batchGroup_lensflare_sphere.id,
+                            normal: new pc.Vec3(0, -1, 0)
+                        });
+                        */
+
+            this.app.root.addChild(lightEntity.lensFlarePlane);
+            lightEntity.lensFlarePlane.setPosition(lightEntity.getPosition().clone());
         }
 
 
-        // Calcular la rotación necesaria utilizando la matriz de vista de la cámara
-        var rotation = new pc.Quat().setFromMat4(this.camera.camera.viewMatrix).conjugate();
-        lightEntity.lensFlareImage.setRotation(rotation);
+
+        //var rotation = new pc.Quat().setFromMat4(this.camera.camera.viewMatrix).conjugate();
+        var rotation = this.camera.getRotation();
+        lightEntity.lensFlarePlane.setRotation(rotation);
+        //lightEntity.lensFlarePlane.lookAt(this.camera.getPosition());
+
+
 
     }
 
