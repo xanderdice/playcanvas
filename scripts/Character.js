@@ -116,7 +116,7 @@ Character.prototype.initialize = function () {
         this.entity.tags.add("isPlayer");
     }
     this.entity.isSelectable = this.isSelectable;
-    if(this.entity.isSelectable) {
+    if (this.entity.isSelectable) {
         this.entity.tags.add("isSelectable");
     }
     this.entity.selected = this.entity.isPlayer;
@@ -1124,24 +1124,23 @@ Character.prototype.doSensors = function (dt) {
 
 
     if (this.sensorOptions.processstep === 3) {
-        for (var x = 0; x < 100; x++) {
-            this.CHAR_CUR_ROTATION.transformVector(forwardVector, forwardVector);
-            var origin = this.CHAR_CUR_POSITION.clone().add(new pc.Vec3(0, -0.5, 0)); // Medio metro hacia arriba
-            var destination = origin.clone().add(forwardVector.scale(1)); // Un metro hacia adelante desde el origen
+        this.CHAR_CUR_ROTATION.transformVector(forwardVector, forwardVector);
+        var origin = this.CHAR_CUR_POSITION.clone().add(new pc.Vec3(0, -0.5, 0)); // Medio metro hacia arriba
+        var destination = origin.clone().add(forwardVector.scale(1)); // Un metro hacia adelante desde el origen
 
-            // BOTON RAYCAST:
-            const raycast = this.app.systems.rigidbody.raycastFirst(origin, destination, { lowResolution: true });
-            if (raycast) {
-                const hitFraction = raycast.hitFraction;
-                const rayLength = origin.distance(destination);
-                distanceToImpact = (rayLength * hitFraction) - 0.35;
-            } else {
-                distanceToImpact = null;
-            }
-            if (this.sensorOptions.sensorJumpDebug) {
-                this.app.drawLine(origin, destination, (raycast ? pc.Color.GREEN : pc.Color.RED), 5);
-            }
+        // BOTON RAYCAST:
+        const raycast = this.app.systems.rigidbody.raycastFirst(origin, destination, { lowResolution: true });
+        if (raycast) {
+            const hitFraction = raycast.hitFraction;
+            const rayLength = origin.distance(destination);
+            distanceToImpact = (rayLength * hitFraction) - 0.35;
+        } else {
+            distanceToImpact = null;
         }
+        if (this.sensorOptions.sensorJumpDebug) {
+            this.app.drawLine(origin, destination, (raycast ? pc.Color.GREEN : pc.Color.RED), 5);
+        }
+
     }
 
 
