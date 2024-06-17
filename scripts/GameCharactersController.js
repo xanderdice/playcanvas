@@ -226,7 +226,7 @@ GameCharactersController.prototype.initialize = function () {
 
 
     this.app.resizeCanvas(screen_width, screen_height);
-    this.app.setCanvasResolution(pc.RESOLUTION_FIXED, screen_width, screen_height);
+    this.app.setCanvasResolution(pc.RESOLUTION_AUTO, screen_width, screen_height);
     this.app.setCanvasFillMode(pc.FILLMODE_KEEP_ASPECT, screen_width, screen_height);
 
     //var ambientColor = new pc.Color(96 / 255, 128 / 255, 128 / 255);
