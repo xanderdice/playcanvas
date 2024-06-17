@@ -33,7 +33,8 @@ GameCharactersController.attributes.add('playerPersonStyle', {
     type: 'string', enum: [
         { 'FirstPerson': 'FirstPerson' },
         { 'ThirdPerson': 'ThirdPerson' },
-        { 'ThirdPersonPointMove': 'ThirdPersonPointMove' }
+        { 'ThirdPersonPointMove': 'ThirdPersonPointMove' },
+        { 'FlyCamera': 'FlyCamera' }
     ], default: 'ThirdPerson',
     description: "General style of player view for this game.",
 });
@@ -142,6 +143,24 @@ GameCharactersController.attributes.add('followCamera',
         ]
     });
 
+GameCharactersController.attributes.add('flyCamera',
+    {
+        title: "Fly Camera",
+        description: "Only works for playerPersonStyle = FlyCamera.",
+        type: 'json',
+        schema: [
+            {
+                name: 'speed',
+                type: 'number',
+                default: 20,
+                title: 'speed',
+                description: 'speed',
+                min: 10,
+                max: 20,
+                precision: 1
+            },
+        ]
+    });
 
 GameCharactersController.attributes.add('lensflareCamera',
     {
@@ -332,6 +351,21 @@ GameCharactersController.prototype.initialize = function () {
     this.followCamera.initialFov = this.camera ? this.camera.camera.fov : 45;
 
 
+    /*******************************************************/
+    /*
+    /*    FLY CAMERA
+    /*
+    /*******************************************************/
+
+    this.flyCamera.moved = false;
+    this.flyCamera.ex = 0;
+    this.flyCamera.ey = 0;
+    if (this.camera) {
+        var eulers = this.camera.getLocalEulerAngles();
+        this.flyCamera.ex = eulers.x;
+        this.flyCamera.ey = eulers.y;
+    }
+
 
     /*******************************************************/
     /*
@@ -374,10 +408,32 @@ GameCharactersController.prototype.onMouseMove = function (event) {
         this.gameMouse_busy = true;
 
 
-        if (this.mouseOptions.hideMousePointer && !pc.Mouse.isPointerLocked()) {
+
+
+        if ((this.playerPersonStyle === 'FirstPerson' || this.playerPersonStyle === 'ThirdPerson')
+            && this.mouseOptions.hideMousePointer && !pc.Mouse.isPointerLocked()) {
             this.gameMouse_busy = false;
             return;
         }
+        if (this.playerPersonStyle === 'FlyCamera') {
+            if (!this.flyCamera.moved) {
+                // first move event can be very large
+                this.flyCamera.moved = true;
+                this.gameMouse_busy = false;
+                return;
+            }
+
+            if (this.mouseOptions.hideMousePointer) {
+                if (this.input.mouseSecondaryButton) {
+                    if (!pc.Mouse.isPointerLocked()) this.app.mouse.enablePointerLock();
+                } else {
+                    if (pc.Mouse.isPointerLocked()) {
+                        this.app.mouse.disablePointerLock();
+                    }
+                }
+            }
+        }
+
 
         // Actualiza las variables de posición anterior para el próximo cálculo
         const x = event.x, y = event.y;
@@ -390,22 +446,20 @@ GameCharactersController.prototype.onMouseMove = function (event) {
         this.input.mouseDy = deltaY;
 
 
-
-
-        if (this.mainPlayer) {
-            if (this.lookLastDeltaX === deltaX) deltaX = 0;
-            if (this.lookLastDeltaY === deltaY) deltaY = 0;
-            if (this.camera && this.camera.camera) {
-                this.onMouseMoveFollowCamera();
-            }
-            this.lookLastDeltaX = deltaX;
-            this.lookLastDeltaY = deltaY;
-        } else {
-            this.mainPlayer = this.getMainPlayer(this.characters);
+        if (this.lookLastDeltaX === deltaX) deltaX = 0;
+        if (this.lookLastDeltaY === deltaY) deltaY = 0;
+        if (this.camera && this.camera.camera) {
+            this.onMouseMoveFollowCamera();
         }
+        this.lookLastDeltaX = deltaX;
+        this.lookLastDeltaY = deltaY;
 
         this.previousX = event.clientX;
         this.previousY = event.clientY;
+
+        if (!this.mainPlayer) {
+            this.mainPlayer = this.getMainPlayer(this.characters);
+        }
 
         if (pc.Mouse.isPointerLocked()) {
             /*if is firtsperson, extt */
@@ -509,6 +563,9 @@ GameCharactersController.prototype.onMouseMoveFollowCamera = function () {
     this.followCamera.eulers.x = (this.followCamera.eulers.x + 360) % 360;
     this.followCamera.eulers.y = (this.followCamera.eulers.y + 360) % 360;
 
+    this.flyCamera.ex -= this.input.mouseDy / this.mouseOptions.mouseSensitivity;
+    this.flyCamera.ex = pc.math.clamp(this.flyCamera.ex, -90, 90);
+    this.flyCamera.ey -= this.input.mouseDx / this.mouseOptions.mouseSensitivity;
 
     if (this.followCamera.eulers.y > this.followCamera.topClamp && this.followCamera.eulers.y < this.followCamera.topClamp + 180) {
         this.followCamera.eulers.y = this.followCamera.topClamp;
@@ -525,22 +582,23 @@ GameCharactersController.prototype.onMouseDown = function (event) {
     if (!this.gameMouse_busy) {
         this.gameMouse_busy = true;
 
+        if (this.playerPersonStyle === 'FirstPerson' || this.playerPersonStyle === 'ThirdPerson') {
+            if (this.mouseOptions.hideMousePointer) {
+                try {
+                    if (!pc.Mouse.isPointerLocked()) {
+                        this.app.mouse.enablePointerLock();
+                    }
+                } catch { }
+
+                this.gameMouse_busy = false;
+                return;
+            }
+        }
 
 
 
         this.selectedCharacters = this.getSelectedCharacters(this.characters);
         if (this.selectedCharacters.length === 0) {
-            this.gameMouse_busy = false;
-            return;
-        }
-
-        if (this.mouseOptions.hideMousePointer) {
-            try {
-                if (!pc.Mouse.isPointerLocked()) {
-                    this.app.mouse.enablePointerLock();
-                }
-            } catch { }
-
             this.gameMouse_busy = false;
             return;
         }
@@ -697,8 +755,18 @@ GameCharactersController.prototype.updateCharactersMovement = function (dt) {
 
 
 GameCharactersController.prototype.updateCameraOrientation = function (dt) {
+    if (this.playerPersonStyle === "FlyCamera") {
+        if (this.mouseOptions.hideMousePointer) {
+            if (pc.Mouse.isPointerLocked()) {
+                this.camera.setLocalEulerAngles(this.flyCamera.ex, this.flyCamera.ey, 0);
+            }
+        } else {
+            this.camera.setLocalEulerAngles(this.flyCamera.ex, this.flyCamera.ey, 0);
+        }
+        return;
+    }
 
-    if (this.camera && this.followCamera && this.followCamera.eulers) {
+    if (this.followCamera && this.followCamera.eulers) {
         this.camera.setEulerAngles(new pc.Vec3(
             -this.followCamera.eulers.y,
             this.followCamera.eulers.x + 180,
@@ -720,12 +788,26 @@ GameCharactersController.prototype.updateCameraOrientation = function (dt) {
 
 
 GameCharactersController.prototype.updateCameraPosition = function (dt) {
-    if (!this.camera || !this.followCamera.target) {
+    if (this.playerPersonStyle === "FlyCamera") {
+
+        if (this.input.x < 0) {
+            this.camera.translateLocal(-this.flyCamera.speed * dt, 0, 0);
+        }
+        if (this.input.x > 0) {
+            this.camera.translateLocal(this.flyCamera.speed * dt, 0, 0);
+        }
+        if (this.input.z < 0) {
+            this.camera.translateLocal(0, 0, this.flyCamera.speed * dt);
+        }
+        if (this.input.z > 0) {
+            this.camera.translateLocal(0, 0, -this.flyCamera.speed * dt);
+        }
         return;
     }
-    if (!this.followCamera.smoothedPosition) {
-        return;
-    }
+
+    if (!this.followCamera.target) return;
+
+    if (!this.followCamera.smoothedPosition) return;
 
     var targetPosition = this.followCamera.target.getPosition();
 
@@ -780,7 +862,7 @@ GameCharactersController.prototype.update = function (dt) {
 
     this.updateCharactersMovement(dt);
 
-    if (this.followCamera.target) {
+    if (this.camera) {
         this.updateCameraOrientation(dt);
         this.updateCameraPosition(dt);
     }
