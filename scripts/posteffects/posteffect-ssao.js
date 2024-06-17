@@ -13,7 +13,7 @@
  */
 function SSAOEffect(graphicsDevice, ssaoScript) {
     pc.PostEffect.call(this, graphicsDevice);
-    this.times = 0;
+
     this.ssaoScript = ssaoScript;
     this.needsDepthBuffer = true;
 
@@ -194,16 +194,7 @@ function SSAOEffect(graphicsDevice, ssaoScript) {
         "    float ssDiskRadius = -(uProjectionScaleRadius / origin.z);",
         "",
         "    float occlusion = 0.0;",
-
-        // webgl1 does not handle non-constant loop, work around it
-        graphicsDevice.isWebGL2 ? (
-            "    for (float i = 0.0; i < uSampleCount.x; i += 1.0) {"
-        ) : (
-            "   const float maxSampleCount = 256.0;" +
-            "   for (float i = 0.0; i < maxSampleCount; i += 1.0) {" +
-            "       if (i >= uSampleCount.x) break;"
-        ),
-
+        "    for (float i = 0.0; i < uSampleCount.x; i += 1.0) {",
         "        computeAmbientOcclusionSAO(occlusion, i, ssDiskRadius, uv, origin, normal, tapPosition, noise);",
         "        tapPosition = angleStep * tapPosition;",
         "    }",
@@ -288,16 +279,8 @@ function SSAOEffect(graphicsDevice, ssaoScript) {
         "    float ssao = texture2D( uSSAOBuffer, vUv0 ).r;",
         "    float sum = ssao * totalWeight;",
         "",
-
-        // webgl1 does not handle non-constant loop, work around it
-        graphicsDevice.isWebGL2 ? (
-            "    for (int x = -uBilatSampleCount; x <= uBilatSampleCount; x++) {" +
-            "       for (int y = -uBilatSampleCount; y < uBilatSampleCount; y++) {"
-        ) : (
-            "    for (int x = -4; x <= 4; x++) {" +
-            "       for (int y = -4; y < 4; y++) {"
-        ),
-
+        "    for (int x = -uBilatSampleCount; x <= uBilatSampleCount; x++) {",
+        "       for (int y = -uBilatSampleCount; y < uBilatSampleCount; y++) {",
         "           float weight = 1.0;",
         "           vec2 offset = vec2(x,y)*uResolution.zw;",
         "           tap(sum, totalWeight, weight, depth, uv + offset);",
@@ -413,7 +396,7 @@ SSAOEffect.prototype._resize = function (target) {
 };
 
 Object.assign(SSAOEffect.prototype, {
-    render: async function (inputTarget, outputTarget, rect) {
+    render: function (inputTarget, outputTarget, rect) {
 
         this._resize(inputTarget);
 
@@ -470,7 +453,7 @@ var SSAO = pc.createScript('ssao');
 
 SSAO.attributes.add('radius', {
     type: 'number',
-    default: 1,
+    default: 4,
     min: 0,
     max: 20,
     title: 'Radius'
@@ -486,16 +469,16 @@ SSAO.attributes.add('brightness', {
 
 SSAO.attributes.add('samples', {
     type: 'number',
-    default: 12,
+    default: 8,
     min: 1,
-    max: 256,
+    max: 32,
     title: 'Samples'
 });
 
 SSAO.attributes.add('downscale', {
     type: 'number',
     default: 2.5,
-    min: 1,
+    min: 2,
     max: 4,
     title: "Downscale"
 });
