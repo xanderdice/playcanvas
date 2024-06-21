@@ -192,13 +192,13 @@ GameCharactersController.attributes.add('lensflareCamera',
 GameCharactersController.prototype.initialize = function () {
 
 
-    this.app.maxDeltaTime = 0.2;
+    //this.app.maxDeltaTime = 0.2;
     var display = this.app.graphicsDevice;
     // Obtener el pixelRatio actual
-    var currentPixelRatio = window.devicePixelRatio || 1;
+    //var currentPixelRatio = window.devicePixelRatio || 1;
     // Calcular el ancho y alto deseados para mantener el pixelRatio en 1
-    var desiredWidth = display.width / currentPixelRatio;
-    var desiredHeight = display.height / currentPixelRatio;
+    //var desiredWidth = display.width / currentPixelRatio;
+    //var desiredHeight = display.height / currentPixelRatio;
 
     //var screen_width = screen.width;
     //var screen_height = screen.height;
@@ -207,11 +207,11 @@ GameCharactersController.prototype.initialize = function () {
 
 
     //720p (HD): 1280x720
-    screen_width = 1280;
-    screen_height = 720;
+    //screen_width = 1280;
+    //screen_height = 720;
 
-    console.log("screen_width" + screen_width);
-    console.log("screen_height" + screen_height);
+    //console.log("screen_width" + screen_width);
+    //console.log("screen_height" + screen_height);
 
     document.body.style.backgroundColor = "#000";
 
@@ -225,14 +225,11 @@ GameCharactersController.prototype.initialize = function () {
     //screen_height = ((screen_height * currentPixelRatio) / 4) * 3;
 
 
-    this.app.resizeCanvas(screen_width, screen_height);
-    this.app.setCanvasResolution(pc.RESOLUTION_AUTO, screen_width, screen_height);
-    this.app.setCanvasFillMode(pc.FILLMODE_KEEP_ASPECT, screen_width, screen_height);
+    //    this.app.resizeCanvas(screen_width, screen_height);
+    //    this.app.setCanvasResolution(pc.RESOLUTION_AUTO, screen_width, screen_height);
+    //    this.app.setCanvasFillMode(pc.FILLMODE_KEEP_ASPECT, screen_width, screen_height);
 
-    //var ambientColor = new pc.Color(96 / 255, 128 / 255, 128 / 255);
-    //var ambientColor = new pc.Color(0 / 255, 32 / 255, 64 / 255);
-    var ambientColor = new pc.Color(192 / 255, 224 / 255, 255 / 255);
-    this.app.scene.ambientLight = ambientColor;
+
 
     //this.app.scene.lighting.debugLayer = this.app.scene.layers.getLayerByName("World").id;
 
@@ -258,6 +255,18 @@ GameCharactersController.prototype.initialize = function () {
         //        this.camera.camera.jitter = 1;
 
     }
+
+
+    this.app.on("hidemenu", function () {
+        if (this.mouseOptions.fireMenuEventOnMouseMove) {
+            if (this.mouseOptions.hideMousePointer) {
+                try {
+                    if (!pc.Mouse.isPointerLocked()) this.app.mouse.enablePointerLock();
+                } catch { }
+            }
+        }
+    }, this);
+
 
 
     this.characters = [];
@@ -407,11 +416,22 @@ GameCharactersController.prototype.onMouseMove = function (event) {
     if (!this.gameMouse_busy) {
         this.gameMouse_busy = true;
 
-
+        if (this.app.isMenuMode) {
+            this.gameMouse_busy = false;
+            return;
+        }
 
 
         if ((this.playerPersonStyle === 'FirstPerson' || this.playerPersonStyle === 'ThirdPerson')
             && this.mouseOptions.hideMousePointer && !pc.Mouse.isPointerLocked()) {
+
+            if (this.mouseOptions.fireMenuEventOnMouseMove) {
+                if (!this.app.isMenuMode) {
+                    this.app.isMenuMode = true;
+                    this.app.fire("showmenu");
+                }
+            }
+
             this.gameMouse_busy = false;
             return;
         }
@@ -582,11 +602,17 @@ GameCharactersController.prototype.onMouseDown = function (event) {
     if (!this.gameMouse_busy) {
         this.gameMouse_busy = true;
 
+        if (this.app.isMenuMode) {
+            this.gameMouse_busy = false;
+            return;
+        }
+
         if (this.playerPersonStyle === 'FirstPerson' || this.playerPersonStyle === 'ThirdPerson') {
             if (this.mouseOptions.hideMousePointer) {
                 try {
                     if (!pc.Mouse.isPointerLocked()) {
                         this.app.mouse.enablePointerLock();
+                        this.app.isMenuMode = false;
                     }
                 } catch { }
 
@@ -679,6 +705,8 @@ GameCharactersController.prototype.onMouseWheel = function (event) {
 
 
 GameCharactersController.prototype.onKeyboardInput = function (dt) {
+    if (this.app.isMenuMode) return;
+
     const keyboard = this.app.keyboard;
 
     // Movimiento horizontal
