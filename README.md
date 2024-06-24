@@ -9,6 +9,7 @@ playcanvas scripts textures and more
 * //cloth simulation https://playcanvas.com/project/691109/overview/cloth-simulation-demo
 * //https://cgpersia.com/tag/free FREE RESOURCES
 * //https://github.com/huwb/volsample?tab=readme-ov-file VOLUMETRIC SHADERS
+* //https://playcanv.as/p/5QoTo3QT/ PLAYCANVAS EXCAMPLE
 
 //resolutions
 * 4320p (8K): 7680x4320
