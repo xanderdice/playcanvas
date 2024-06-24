@@ -172,7 +172,7 @@ Character.prototype.initialize = function () {
         this.pointEntity.collision.on('triggerenter', function () {
             this.stopMovement();
         }, this);
-        this.app.root.addChild(this.pointEntity);
+        this.app.scene.root.addChild(this.pointEntity);
         this.pointEntity.setPosition(this.entity.getPosition());
         */
 
@@ -292,8 +292,18 @@ Character.prototype.initialize = function () {
     this.vec3 = new pc.Vec3;
     this.quat = new pc.Quat;
 
-};
 
+    this.on("destroy", function () {
+
+    }, this);
+
+    this.entity.on("destroy", function () {
+        //this.entity.collision.off();
+    }, this);
+
+
+
+};
 
 
 
@@ -1049,7 +1059,7 @@ Character.prototype.doSensors = function (dt) {
 
     if (this.sensorOptions.processstep === 0) {
         if (this.sensorOptions.detectableEntities_length === 0) {
-            this.sensorOptions.detectableEntities = this.app.root.findByTag("isDetectable");
+            this.sensorOptions.detectableEntities = this.app.scene.root.findByTag("isDetectable");
             this.sensorOptions.detectableEntities_length = this.sensorOptions.detectableEntities.length;
         }
         this.sensorOptions.raiseDetectedEvent = false;
@@ -1352,7 +1362,6 @@ Character.prototype.update = function (dt) {
 }
 
 Character.prototype.postUpdate = function (dt) {
-    //this.app.root.findByName("Boxy").rigidbody.system.gravity = pc.Vec3.ZERO;
     this.rootMotionFix();
     this.CHAR_LAST_POSITION = this.CHAR_CUR_POSITION.clone();
 }
@@ -1384,7 +1393,6 @@ Character.prototype.rootMotionFix = function () {
 
 
 Character.prototype.prepareAnimComponent = function () {
-
     const animPlayerStateGraphData = {
         layers: [
             {

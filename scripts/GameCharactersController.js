@@ -257,18 +257,6 @@ GameCharactersController.prototype.initialize = function () {
     }
 
 
-    this.app.on("hidemenu", function () {
-        if (this.mouseOptions.fireMenuEventOnMouseMove) {
-            if (this.mouseOptions.hideMousePointer) {
-                try {
-                    if (!pc.Mouse.isPointerLocked()) this.app.mouse.enablePointerLock();
-                } catch { }
-            }
-        }
-    }, this);
-
-
-
     this.characters = [];
     this.selectedCharacters = [];
 
@@ -287,7 +275,7 @@ GameCharactersController.prototype.initialize = function () {
         height: 1, // Ajusta la altura de la imagen
 
     });
-    this.app.root.addChild(this.mousePointer);
+    this.app.scene.root.addChild(this.mousePointer);
     this.mousePointer.setLocalRotation(0, 0, 0);
     this.mousePointer.setLocalScale(1, 1, 1);
     this.previousX = 0;
@@ -393,7 +381,7 @@ GameCharactersController.prototype.initialize = function () {
     }
 
     this.lensflareCamera.lights = [];
-    var lights = this.app.root.findComponents('light'),
+    var lights = this.app.scene.root.findComponents('light'),
         lights = lights.filter(function (li) {
             return li.isStatic;
         });
@@ -423,14 +411,7 @@ GameCharactersController.prototype.onMouseMove = function (event) {
 
 
         if ((this.playerPersonStyle === 'FirstPerson' || this.playerPersonStyle === 'ThirdPerson')
-            && this.mouseOptions.hideMousePointer && !pc.Mouse.isPointerLocked()) {
-
-            if (this.mouseOptions.fireMenuEventOnMouseMove) {
-                if (!this.app.isMenuMode) {
-                    this.app.isMenuMode = true;
-                    this.app.fire("showmenu");
-                }
-            }
+            && !pc.Mouse.isPointerLocked()) {
 
             this.gameMouse_busy = false;
             return;
@@ -606,22 +587,6 @@ GameCharactersController.prototype.onMouseDown = function (event) {
             this.gameMouse_busy = false;
             return;
         }
-
-        if (this.playerPersonStyle === 'FirstPerson' || this.playerPersonStyle === 'ThirdPerson') {
-            if (this.mouseOptions.hideMousePointer) {
-                try {
-                    if (!pc.Mouse.isPointerLocked()) {
-                        this.app.mouse.enablePointerLock();
-                        this.app.isMenuMode = false;
-                    }
-                } catch { }
-
-                this.gameMouse_busy = false;
-                return;
-            }
-        }
-
-
 
         this.selectedCharacters = this.getSelectedCharacters(this.characters);
         if (this.selectedCharacters.length === 0) {
@@ -884,6 +849,7 @@ GameCharactersController.prototype.updateCameraPosition = function (dt) {
 
 // update code called every frame
 GameCharactersController.prototype.update = function (dt) {
+    //    if (this.app.isMenuMode) return;
 
     this.input.dt = dt;
     this.onKeyboardInput(dt);
@@ -940,7 +906,7 @@ GameCharactersController.prototype.showTextForEntity = function (entity, point) 
 
     if (!this.textEntity) {
         this.textEntity = new pc.Entity();
-        this.app.root.addChild(this.textEntity);
+        this.app.scene.root.addChild(this.textEntity);
 
         this.textEntity.addComponent('element', {
             type: pc.ELEMENTTYPE_TEXT,
@@ -1035,7 +1001,7 @@ GameCharactersController.prototype.getSceneLights = function (dt) {
                         });
                         */
 
-            this.app.root.addChild(lightEntity.lensFlarePlane);
+            this.app.scene.root.addChild(lightEntity.lensFlarePlane);
             lightEntity.lensFlarePlane.setPosition(lightEntity.getPosition().clone());
         }
 
