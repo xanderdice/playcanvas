@@ -1,0 +1,72 @@
+*:not(canvas) {
+    transition: all 0.3s ease-in-out;
+    outline: none;
+}
+
+html,
+body {
+    background-color: black;
+    color: white;
+    margin: 0;
+    padding: 0;
+}
+
+
+/************************************************/
+.fade-out {
+    opacity: 0;
+    transition: opacity 1s ease-in-out;
+}
+
+/************************************************/
+.menu-center {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    position: absolute;
+    top: 0px;
+    left: 0px;
+    right: 0px;
+    bottom: 0px;
+}
+
+.menu {
+    color: white;
+    background-color: rgb(1, 1, 1);
+    /* Color de fondo del menú */
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    /* Sombra opcional */
+    text-align: center;
+    max-width: 80%;
+    /* Ancho máximo del menú para evitar que sea demasiado ancho en pantallas grandes */
+    border: 2px solid rgb(4, 4, 4);
+}
+
+.menu h1 {
+    margin-bottom: 20px;
+}
+
+.menu ul {
+    list-style-type: none;
+    padding: 0;
+}
+
+.menu ul li {
+    margin-bottom: 10px;
+}
+
+.menu ul li a {
+    text-decoration: none;
+    color: #6f6f6f;
+    /* Color del texto de las opciones */
+    font-weight: bold;
+    font-size: 18px;
+
+}
+
+.menu ul li a:hover {
+    color: #007bff;
+    /* Cambia el color al pasar el mouse por encima */
+}
