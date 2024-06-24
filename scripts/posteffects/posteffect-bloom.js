@@ -206,7 +206,7 @@ BloomEffect.prototype._resize = function (target) {
 };
 
 Object.assign(BloomEffect.prototype, {
-    render: async function (inputTarget, outputTarget, rect) {
+    render: function (inputTarget, outputTarget, rect) {
 
         this._resize(inputTarget);
 
