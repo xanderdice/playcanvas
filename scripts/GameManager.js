@@ -43,6 +43,14 @@ Timer.destroyTimer = function (timerId) {
     return null;
 }
 
+Timer.clearAllTimers = function () {
+    for (let key in this._timers) {
+        delete this._timers[key];
+    }
+    this._timers = [];
+    Timer._timercounter = 0;
+}
+
 Timer.evaluateTimers = function (dt) {
     for (let key in this._timers) {
         var timer = this._timers[key];
@@ -184,6 +192,18 @@ GameManager.attributes.add('ui', {
     ]
 });
 
+GameManager.attributes.add("subtitles", {
+    title: "subtitles",
+    type: "json",
+    schema: [
+        {
+            name: 'enableSubtitles',
+            type: 'boolean',
+            default: true,
+        },
+    ]
+});
+
 GameManager.attributes.add('tracer', {
     title: "Tracer",
     type: 'json',
@@ -235,6 +255,9 @@ GameManager.attributes.add('tracer', {
 GameManager._app = null;
 GameManager.showMenuOnEnabledPointer = true;
 GameManager.__menuchecktime = 0;
+GameManager.__subtitleTimeout = null;
+GameManager.__assetLoaderTimeout = null;
+
 
 // initialize code called once per entity
 GameManager.prototype.initialize = function () {
@@ -243,6 +266,8 @@ GameManager.prototype.initialize = function () {
     GameManager.currentScene = GameManager.mainScene;
     GameManager._app = this.app;
     GameManager._app.isMenuMode = false;
+
+    GameManager.enableSubtitles = this.subtitles.enableSubtitles;
 
     var canvas = this.app.graphicsDevice.canvas;
     TracerScript.trenable = this.tracer.trenable;
@@ -301,6 +326,7 @@ GameManager.prototype.initialize = function () {
 
     this.createMenuDIV(canvas);
     this.createSceneLoaderDIV(canvas);
+    this.createSubtitleDIV(canvas);
     this.createLoadingDIV(canvas);
 
 
@@ -363,7 +389,7 @@ GameManager.prototype.initialize = function () {
     /* ************* */
     var assets = this.app.assets;
     assets.on("load", function (asset) {
-        GameManager.loadingDIV.innerHTML = asset.name;
+        GameManager.showAssetLoader(asset.name);
     });
 
     TracerScript.initialize();
@@ -450,8 +476,10 @@ GameManager.prototype.createLoadingDIV = function (canvas) {
         GameManager.loadingDIV.style.backgroundColor = "black";
         GameManager.loadingDIV.style.color = "white";
         GameManager.loadingDIV.style.position = "absolute";
-        GameManager.loadingDIV.style.right = "20px";
-        GameManager.loadingDIV.style.bottom = "20px";
+        GameManager.loadingDIV.style.right = "0px";
+        GameManager.loadingDIV.style.bottom = "0px";
+        GameManager.loadingDIV.style.display = "none";
+        GameManager.loadingDIV.innerHTML = "<style type=\"text/css\">.loader {width: 48px; --b: 8px; aspect-ratio: 1; border-radius: 50%; background: azure; -webkit-mask: repeating-conic-gradient(#0000 0deg,#000 1deg 70deg,#0000 71deg 90deg), radial-gradient(farthest-side,#0000 calc(100% - var(--b) - 1px),#000 calc(100% - var(--b))); -webkit-mask-composite: destination-in; mask-composite: intersect; animation: l5 1s infinite;} @keyframes l5 {to{transform: rotate(.5turn)}}</style><div class=\"loader\"></div>";
         canvas.parentElement.appendChild(GameManager.loadingDIV);
     }
 }
@@ -498,6 +526,54 @@ GameManager.prototype.createSceneLoaderDIV = function (canvas) {
     }
 }
 
+GameManager.prototype.createSubtitleDIV = function (canvas) {
+    GameManager.subtitleDIV = document.getElementById("subtitleDIV");
+    if (!GameManager.subtitleDIV) {
+        GameManager.subtitleDIV = document.createElement("DIV");
+        GameManager.subtitleDIV.id = "subtitleDIV";
+        GameManager.subtitleDIV.style.position = "absolute";
+        GameManager.subtitleDIV.style.left = "2em";
+        GameManager.subtitleDIV.style.right = "2em";
+        GameManager.subtitleDIV.style.bottom = "2em";
+        GameManager.subtitleDIV.style.margin = "0px";
+        GameManager.subtitleDIV.style.display = "block";
+        GameManager.subtitleDIV.style.opacity = "1";
+        GameManager.subtitleDIV.style.justifyCcontent = "center";
+        GameManager.subtitleDIV.style.alignItems = "center";
+        GameManager.subtitleDIV.style.textAlign = "center";
+        GameManager.subtitleDIV.style.padding = "0.1em";
+
+        GameManager.subtitleBackgroundDIV = document.createElement("DIV");
+        GameManager.subtitleBackgroundDIV.style.position = "absolute";
+        GameManager.subtitleBackgroundDIV.style.left = "0px";
+        GameManager.subtitleBackgroundDIV.style.right = "0px";
+        GameManager.subtitleBackgroundDIV.style.bottom = "0px";
+        GameManager.subtitleBackgroundDIV.style.top = "0px";
+        GameManager.subtitleBackgroundDIV.style.margin = "0px";
+        GameManager.subtitleBackgroundDIV.style.padding = "0px";
+        GameManager.subtitleBackgroundDIV.style.backgroundColor = "black";
+        GameManager.subtitleBackgroundDIV.style.opacity = "0.5";
+        GameManager.subtitleDIV.appendChild(GameManager.subtitleBackgroundDIV);
+
+        GameManager.subtitleTextDIV = document.createElement("LABEL");
+        GameManager.subtitleTextDIV.style.justifyCcontent = "center";
+        GameManager.subtitleTextDIV.style.alignItems = "center";
+        GameManager.subtitleTextDIV.style.textAlign = "center";
+        GameManager.subtitleTextDIV.style.position = "relative";
+        GameManager.subtitleTextDIV.style.justifyCcontent = "center";
+        GameManager.subtitleTextDIV.style.alignItems = "center";
+        GameManager.subtitleTextDIV.style.fontSize = "1.1em";
+        GameManager.subtitleTextDIV.style.fontWeight = "bold";
+        GameManager.subtitleTextDIV.style.textShadow = "1px 1px 0px night";
+        GameManager.subtitleTextDIV.style.letterSpacing = "2px";
+        GameManager.subtitleTextDIV.style.color = "white";
+        GameManager.subtitleDIV.appendChild(GameManager.subtitleTextDIV);
+
+        document.body.appendChild(GameManager.subtitleDIV);
+    }
+}
+
+
 /*public methods*/
 /*Public methods*/
 
@@ -525,10 +601,14 @@ GameManager.loadScene = function (sceneName) {
         return;
     }
 
+
+
+
     app.autoRender = false;
 
     GameManager.showsceneloader(sceneName, function () {
 
+        Timer.clearAllTimers();/*DESTROYS ALL TIMERS IN CURRENT SCENE*/
         GameManager.freeAssets();
 
         // Obtener la entidad raíz
@@ -620,6 +700,22 @@ GameManager.freeAssets = function () {
     }
 }
 
+GameManager.showAssetLoader = function (assetname) {
+    if (GameManager.__assetLoaderTimeout) {
+        clearTimeout(GameManager.__assetLoaderTimeout);
+    }
+
+    //GameManager.loadingDIV.innerHTML = assetname;
+
+    GameManager.fadeIn(GameManager.loadingDIV, 250, function () {
+        GameManager.__assetLoaderTimeout = setTimeout(function () {
+            GameManager.fadeOut(GameManager.loadingDIV, 250, function () {
+                //GameManager.loadingDIV.innerHTML = "";
+            });
+        }, 1000);
+
+    });
+}
 
 
 
@@ -783,6 +879,29 @@ GameManager.calculateSceneAssets = function (loadedSceneRootEntity, callback) {
 
 }
 
+/********************************************** */
+/*       S U B T I T L E S                      */
+/********************************************** */
+
+GameManager.showSubtitle = function (text) {
+    if (!GameManager.enableSubtitles) return;
+
+    if (GameManager.__subtitleTimeout) {
+        clearTimeout(GameManager.__subtitleTimeout);
+    }
+
+    GameManager.subtitleTextDIV.innerHTML = text;
+    GameManager.fadeIn(GameManager.subtitleDIV, 250, function () {
+        GameManager.__subtitleTimeout = setTimeout(function () {
+            GameManager.fadeOut(GameManager.subtitleDIV, 1000, function () {
+                GameManager.subtitleTextDIV.innerHTML = "";
+            });
+        }, 5000);
+
+    });
+
+
+}
 
 /********************************************** */
 /*       T R A C E R                           */
