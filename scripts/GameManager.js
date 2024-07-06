@@ -1,7 +1,7 @@
 /*PUT THIS SCRIPT ON ROOT ENTITY */
 /*IMPORTANT:
 //Put this script in ROOT entity
-//
+// 
 //
 THE PRINCIPAL SCENE MUST BE CALLED "game". 
 THOS SCENE MUST BE SET AS DEAFULT OR AS CURRENT
@@ -221,6 +221,16 @@ GameManager.attributes.add('tracer', {
             default: true
         },
         {
+            name: 'trshowstats',
+            type: 'boolean',
+            default: false
+        },
+        {
+            name: 'trenablelightingdebugLayer',
+            type: 'boolean',
+            default: false
+        },
+        {
             name: 'tralwaysshow',
             title: "Always show",
             type: 'boolean',
@@ -274,6 +284,9 @@ GameManager.prototype.initialize = function () {
     TracerScript.tralwaysshow = this.tracer.tralwaysshow;
     TracerScript.trordermode = this.tracer.trordermode;
     TracerScript.trenablefps = this.tracer.trenablefps;
+    TracerScript.trshowstats = this.tracer.trshowstats;
+    TracerScript.trenablelightingdebugLayer = this.tracer.trenablelightingdebugLayer;
+
     if (TracerScript.trenablefps) {
         TracerScript.fps = new FPSMeter({ heat: true, graph: true });
     }
@@ -387,10 +400,9 @@ GameManager.prototype.initialize = function () {
     /* ************* */
     /* ASSETS LOADER */
     /* ************* */
-    var assets = this.app.assets;
-    assets.on("load", function (asset) {
-        GameManager.showAssetLoader(asset.name);
-    });
+    this.app.assets.on("load", function (asset) {
+        GameManager.assetLoaded(asset);
+    }, this);
 
     TracerScript.initialize();
 
@@ -414,6 +426,26 @@ GameManager.updateGameManager = function (dt) {
 
     if (TracerScript.trenablefps) {
         TracerScript.fps.tick();
+    }
+
+    if (TracerScript.trshowstats) {
+        if (window.performance && window.performance.memory) {
+            var memoryInfo = window.performance.memory;
+            Trace('totalJSHeapSize', parseInt(memoryInfo.totalJSHeapSize / 1048576) + "mb");
+            Trace('usedJSHeapSize', parseInt(memoryInfo.usedJSHeapSize / 1048576) + "mb");
+            Trace('jsHeapSizeLimit', parseInt(memoryInfo.jsHeapSizeLimit / 1048576) + "mb");
+        }
+        const vram = GameManager._app.stats.vram;
+        Trace("vram",
+            parseInt(
+                (
+                    parseInt("0" + (vram.tex || 0))
+                    + parseInt("0" + (vram.vb || 0))
+                    + parseInt("0" + (vram.ib || 0))
+                    + parseInt("0" + (vram.ub || 0))
+                    + parseInt("0" + (vram.sb || 0))
+                )
+                / 1048576) + "mb");
     }
 
     GameManager.__menuchecktime += dt;
@@ -446,18 +478,22 @@ GameManager.showhideMousePointer = function (action) {
     try {
         if (action === "show") {
             if (pc.Mouse.isPointerLocked()) {
-                GameManager._app.mouse.disablePointerLock();
-                result = true;
-                (async function () { await sleepPointerLock(500); })();
+                try {
+                    GameManager._app.mouse.disablePointerLock();
+                    result = true;
+                    (async function () { await sleepPointerLock(500); })();
+                } catch { }
             } else {
                 result = true;
             }
         }
         if (action === "hide") {
             if (!pc.Mouse.isPointerLocked()) {
-                GameManager._app.mouse.enablePointerLock();
-                result = true;
-                (async function () { await sleepPointerLock(500); })();
+                try {
+                    GameManager._app.mouse.enablePointerLock();
+                    result = true;
+                    (async function () { await sleepPointerLock(500); })();
+                } catch { }
             } else {
                 result = true;
             }
@@ -536,7 +572,7 @@ GameManager.prototype.createSubtitleDIV = function (canvas) {
         GameManager.subtitleDIV.style.right = "2em";
         GameManager.subtitleDIV.style.bottom = "2em";
         GameManager.subtitleDIV.style.margin = "0px";
-        GameManager.subtitleDIV.style.display = "block";
+        GameManager.subtitleDIV.style.display = "none";
         GameManager.subtitleDIV.style.opacity = "1";
         GameManager.subtitleDIV.style.justifyCcontent = "center";
         GameManager.subtitleDIV.style.alignItems = "center";
@@ -544,6 +580,7 @@ GameManager.prototype.createSubtitleDIV = function (canvas) {
         GameManager.subtitleDIV.style.padding = "0.1em";
 
         GameManager.subtitleBackgroundDIV = document.createElement("DIV");
+        GameManager.subtitleBackgroundDIV.id = "subtitleBackgroundDIV";
         GameManager.subtitleBackgroundDIV.style.position = "absolute";
         GameManager.subtitleBackgroundDIV.style.left = "0px";
         GameManager.subtitleBackgroundDIV.style.right = "0px";
@@ -556,6 +593,7 @@ GameManager.prototype.createSubtitleDIV = function (canvas) {
         GameManager.subtitleDIV.appendChild(GameManager.subtitleBackgroundDIV);
 
         GameManager.subtitleTextDIV = document.createElement("LABEL");
+        GameManager.subtitleTextDIV.id = "subtitleTextDIV";
         GameManager.subtitleTextDIV.style.justifyCcontent = "center";
         GameManager.subtitleTextDIV.style.alignItems = "center";
         GameManager.subtitleTextDIV.style.textAlign = "center";
@@ -578,16 +616,12 @@ GameManager.prototype.createSubtitleDIV = function (canvas) {
 /*Public methods*/
 
 GameManager.resumeGame = function () {
-    if (GameManager.currentScene !== GameManager.mainScene) {
-        var app = GameManager._app;
-        app.fire("hidemenu");
-    }
+    var app = GameManager._app;
+    app.fire("hidemenu");
 }
 
 GameManager.newGame = function () {
-    var app = GameManager._app;
     GameManager.loadScene("Untitled");
-    app.fire("hidemenu");
 }
 
 GameManager.loadScene = function (sceneName) {
@@ -608,6 +642,8 @@ GameManager.loadScene = function (sceneName) {
 
     GameManager.showsceneloader(sceneName, function () {
 
+
+        GameManager.showAssetLoader();
         Timer.clearAllTimers();/*DESTROYS ALL TIMERS IN CURRENT SCENE*/
         GameManager.freeAssets();
 
@@ -662,13 +698,25 @@ GameManager.loadScene = function (sceneName) {
                 GameManager.currentScene = sceneName;
                 GameManager.calculateSceneAssets(loadedSceneRootEntity, function () {
 
+
+                    for (let key in app.loader._cache) {
+                        if (app.loader._cache.hasOwnProperty(key)) {
+                            let value = app.loader._cache[key];
+
+                            if (value instanceof pc.Texture) {
+                                app.loader.clearCache(key, "texture");
+                            }
+
+                        }
+                    }
+
                     app.autoRender = true;
 
+                    app.fire("hidemenu");
                     GameManager.hidesceneloader();
 
-                    if (GameManager.currentScene !== GameManager.mainScene) {
-                        app.fire("hidemenu");
-                    }
+
+                    GameManager.showSubtitle("The scene " + GameManager.currentScene + " has loaded...");
 
                 });
 
@@ -717,6 +765,14 @@ GameManager.showAssetLoader = function (assetname) {
     });
 }
 
+GameManager.assetLoaded = function (asset) {
+    GameManager.showAssetLoader(asset.name);
+
+    if (asset.type === "texture") {
+
+    }
+
+}
 
 
 GameManager.fadeOut = function (element, duration, callback) {
@@ -824,7 +880,7 @@ GameManager.calculateSceneAssets = function (loadedSceneRootEntity, callback) {
                 renders.forEach(render => {
                     // Verificar el asset asociado al componente de render
                     if (render.asset !== 0 && !assetsToLoad.find(a => a.id === render.asset)) {
-                        const asset = app.assets.getAssetById(render.asset);
+                        const asset = app.assets.get(render.asset);
                         if (!asset.loaded) {
                             assetsToLoad.push(asset);
                         }
@@ -838,7 +894,7 @@ GameManager.calculateSceneAssets = function (loadedSceneRootEntity, callback) {
                             if (assetReferences.hasOwnProperty(propName)) {
                                 const assetId = ((assetReferences[propName] || {}).asset || {}).id || 0;
                                 if (assetId !== 0 && !assetsToLoad.find(a => a.id === assetId)) {
-                                    const asset = app.assets.getAssetById(assetId);
+                                    const asset = app.assets.get(assetId);
                                     if (!asset.loaded) {
                                         assetsToLoad.push(asset);
                                     }
@@ -891,10 +947,12 @@ GameManager.showSubtitle = function (text) {
     }
 
     GameManager.subtitleTextDIV.innerHTML = text;
+    GameManager.subtitleBackgroundDIV.style.display = "block";
     GameManager.fadeIn(GameManager.subtitleDIV, 250, function () {
         GameManager.__subtitleTimeout = setTimeout(function () {
             GameManager.fadeOut(GameManager.subtitleDIV, 1000, function () {
                 GameManager.subtitleTextDIV.innerHTML = "";
+                GameManager.subtitleBackgroundDIV.style.display = "none";
             });
         }, 5000);
 
@@ -934,7 +992,9 @@ TracerScript.initialize = function () {
     TracerScript.divValues.style.left = "60%";
     document.body.appendChild(TracerScript.divValues);
 
-
+    if (TracerScript.trenablelightingdebugLayer) {
+        GameManager._app.scene.lighting.debugLayer = GameManager._app.scene.layers.getLayerByName("World").id;
+    }
 
     TracerScript.__tracer_busy = false;
 

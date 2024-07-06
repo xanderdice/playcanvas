@@ -568,66 +568,11 @@ Character.prototype.doMoveCharacter = function (params) {
 }
 
 
-Character.prototype.applyMovement = function (input, dt) {
-
-    this.doSensors();
-
-    Trace("input", input);
-
-    var moveSpeed = input.sprint ? this.speed * 2.5 : this.speed;
-
-
-
-
-    const isMoving = input.x !== 0 || input.y !== 0;
-    !isMoving && (moveSpeed = 0);
-
-    this.charSpeed < moveSpeed - 0.1 ? this.charSpeed = pc.math.lerp(this.charSpeed, 1 * moveSpeed, dt * this.speed * 4) : this.charSpeed = moveSpeed;
-
-    this.speedAnimBlend = input.sprint ? moveSpeed / this.speed * 2 : moveSpeed / this.speed - 0.3;
-    this.speedAnimBlend < 0.01 && (this.speedAnimBlend = 0);
-
-
-    // Teleporting the entity to the destination
-    if (isMoving) {
-        const cameraTargetYaw = input.cameraYaw;
-        const targetRotation = (Math.atan2(-input.x, input.y) * pc.math.RAD_TO_DEG + cameraTargetYaw) % 360;
-        this.currenRotation = pc.math.lerpAngle(this.currenRotation ?? 0, targetRotation, this.speed * 3 * dt);
-
-
-        let angleDiff = targetRotation - this.currentRotation;
-        angleDiff = Math.abs((angleDiff + 180) % 360 - 180);
-
-        if (angleDiff >= 150) {
-            this.currentRotation = targetRotation;
-        }
-
-        this.entity.setEulerAngles(0, this.currenRotation, 0);
-
-
-        const forwardDirection = this.entity.forward;
-        const movementVector = forwardDirection.mulScalar(this.charSpeed * dt);
-        const verticalMovement = this.vec3.set(0, this.verticalVelocity * dt, 0);
-        if (this.entity.rigidbody.linearVelocity.y <= 0.000001) {
-            // movementVector.add(verticalMovement);
-        }
-        this.entity.rigidbody.linearVelocity = movementVector;
-
-
-        // Calculating destination position using teleport
-        const destinationPosition = this.entity.getPosition().clone().add(movementVector);
-        this.entity.rigidbody.teleport(destinationPosition);
-    }
-
-    if (this.entity.anim) {
-        this.entity.anim.setFloat("speed", this.speedAnimBlend);
-    }
-}
-
 /*              */
 /* D O  M O V E */
 /*              */
 Character.prototype.doMove = function (input, dt) {
+
 
     if (!this.doMoveCharacter_busy) {
         this.doMoveCharacter_busy = true;
@@ -635,12 +580,17 @@ Character.prototype.doMove = function (input, dt) {
         this.CHAR_CUR_POSITION = this.entity.getPosition();
         this.CHAR_CUR_ROTATION = this.entity.getRotation();
 
+
+
         this.doSensors(dt);
 
+
+
         const clonedObject = Object.assign({}, input);
+        delete clonedObject.camera;
         clonedObject.camera = null;
         Trace("input", clonedObject);
-
+        delete clonedObject;
 
 
 
@@ -649,10 +599,13 @@ Character.prototype.doMove = function (input, dt) {
         var z = 0;
         var targetDirection = this.entity;
         if (this.entity.isPlayer) {
-            var x = input.x;
-            var z = input.z;
-            targetDirection = input.camera.clone();
+            x = input.x;
+            z = input.z;
+            targetDirection = input.camera;
         }
+
+
+
 
         if (this.playerOptions.playerControllerOnKeyRight === "Strafe") {
             if (x !== 0) z = 0;
@@ -676,9 +629,12 @@ Character.prototype.doMove = function (input, dt) {
 
 
 
-        var newPosition = this.CHAR_CUR_POSITION.clone();
+
+
 
         if (isMoving) {
+
+            var newPosition = this.CHAR_CUR_POSITION.clone();
 
             // Obtener la dirección de movimiento relativa a la cámara
             const forwardDirection = targetDirection.forward.clone().scale(z).normalize();
@@ -692,11 +648,14 @@ Character.prototype.doMove = function (input, dt) {
             newPosition = newPosition.add(direction.scale(this.charSpeed * dt));
 
             this.entity.rigidbody.teleport(newPosition);
+            delete newPosition;
 
             if (input.playerPersonStyle !== "FirstPerson") {
                 this.rotateCharacter(x, z, targetDirection, this.speed * 7 * dt);
             }
         }
+
+        delete targetDirection;
 
 
         this.doInteraction(input, dt);
@@ -1336,7 +1295,7 @@ Character.prototype.doInteraction = function (input, dt) {
         for (; i < detectedEntities_length; i++) {
             detectedEntity = this.detectedEntities[i];
 
-            detectedEntity
+            //detectedEntity
 
         }
     }
