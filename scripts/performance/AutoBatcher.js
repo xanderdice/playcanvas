@@ -10,6 +10,8 @@ var Autobatcher = pc.createScript('autobatcher');
 // initialize code called once per entity
 Autobatcher.prototype.initialize = function () {
 
+    debugger;
+    this.app.batcher;
     this.autobatcher = { statics: [], dynamics: [] };
 
     this.autoBatcher_busy = false;
