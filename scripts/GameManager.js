@@ -738,11 +738,18 @@ GameManager.freeAssets = function () {
     var i = 0;
     const assets_length = assets.length,
         excludeAssets = ["gamemanager.js", "ui.js", "ammo.js", "ammo.wasm.js", "ammo.wasm.wasm", "draco.js", "draco.wasm.js", "draco.wasm.wasm", "basis.js", "basis.wasm.js", "basis.wasm.wasm"],
-        excludeTyppes = ["container", "render", "texture", "material"];
+        includeTypes = ["container", "render", "texture", "material"];
     for (; i < assets_length; i++) {
         var asset = assets[i];
-        const canUnload = excludeTyppes.some(type => type.toLowerCase() === asset.type.toLowerCase());
+        const canUnload = includeTypes.some(type => type.toLowerCase() === asset.type.toLowerCase());
         if (canUnload && asset.loaded) {
+            //debugger;
+            for (var r = 0; r < asset.resources.length; r++) {
+                //asset.resources[r].destroy();
+                asset.resources[r];
+
+            }
+
             asset.unload();
         }
     }

@@ -45,29 +45,6 @@ Character.attributes.add('playerOptions',
         ]
     });
 
-Character.attributes.add('playerAnimationsOptions',
-    {
-        title: "Player Animations Options",
-        type: 'json',
-        schema: [
-            {
-                name: 'motionrootmode',
-                title: "Motion root mode",
-                type: 'string', enum: [
-                    { "in_place_all_axis": "in_place_all_axis" },
-                    { "in_place_z_axis": "in_place_z_axis" },
-                    { "teleport": "teleport" },
-                    { "none": "none" }],
-                default: "in_place_z_axis"
-            },
-            {
-                name: 'hips',
-                title: "Hips Entity",
-                type: 'entity',
-                default: null
-            }
-        ]
-    });
 
 
 Character.attributes.add('sensorOptions',
@@ -101,6 +78,78 @@ Character.attributes.add('sensorOptions',
             }
         ]
     });
+
+Character.attributes.add('tracerOptions',
+    {
+        title: "Trace Options",
+        type: 'json',
+        schema: [
+            {
+                name: 'traceinput',
+                type: 'boolean',
+                default: false
+            }
+        ]
+    });
+
+
+Character.attributes.add('playerAnimationsOptions',
+    {
+        title: "Player Animations Options",
+        type: 'json',
+        schema: [
+            {
+                name: 'motionrootmode',
+                title: "Motion root mode",
+                type: 'string', enum: [
+                    { "in_place_all_axis": "in_place_all_axis" },
+                    { "in_place_z_axis": "in_place_z_axis" },
+                    { "teleport": "teleport" },
+                    { "none": "none" }],
+                default: "in_place_z_axis"
+            },
+            {
+                name: 'hips',
+                title: "Hips Entity",
+                type: 'entity',
+                default: null
+            }
+        ]
+    });
+
+
+Character.attributes.add('animations',
+    {
+        title: "Animations",
+        type: 'json',
+        schema: [
+            {
+                name: 'idle',
+                type: 'string',
+                default: "idle"
+            },
+            {
+                name: 'sensorDebug',
+                type: 'boolean',
+                default: false
+            },
+            {
+                name: 'sensorJumpDebug',
+                type: 'boolean',
+                default: false
+            }
+            ,
+            {
+                name: 'groundtolerance',
+                type: 'number',
+                description: 'ground tolerance for steps',
+                default: 0.15,
+                min: 0.1,
+                max: 0.5
+            }
+        ]
+    });
+
 
 
 
@@ -585,12 +634,13 @@ Character.prototype.doMove = function (input, dt) {
         this.doSensors(dt);
 
 
-
-        const clonedObject = Object.assign({}, input);
-        delete clonedObject.camera;
-        clonedObject.camera = null;
-        Trace("input", clonedObject);
-        delete clonedObject;
+        if (this.tracerOptions.traceinput && this.entity.isPlayer) {
+            const clonedObject = Object.assign({}, input);
+            delete clonedObject.camera;
+            clonedObject.camera = null;
+            Trace("input", clonedObject);
+            delete clonedObject;
+        }
 
 
 
@@ -1518,7 +1568,14 @@ Character.prototype.prepareAnimComponent = function () {
     for (; i < states_length; i++) {
         const state = states[i];
         if (state !== "START" && state !== "END" && state !== "ANY") {
-            var asset = this.app.assets.find(state);
+
+            var animName = state;
+            if (state === "idle") {
+                animName = this.animations.idle;
+            }
+
+
+            var asset = this.app.assets.find(animName);
             if (asset && asset.type === 'animation') {
                 if (asset.resource) {
                     locomotionLayer.assignAnimation(state, asset.resource);
