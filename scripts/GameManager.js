@@ -621,7 +621,7 @@ GameManager.resumeGame = function () {
 }
 
 GameManager.newGame = function () {
-    GameManager.loadScene("Untitled");
+    GameManager.loadScene("mansion");
 }
 
 GameManager.loadScene = function (sceneName) {

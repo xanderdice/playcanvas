@@ -195,7 +195,7 @@ GameCharactersController.prototype.initialize = function () {
     //this.app.maxDeltaTime = 0.2;
     var display = this.app.graphicsDevice;
     // Obtener el pixelRatio actual
-    //var currentPixelRatio = window.devicePixelRatio || 1;
+    var currentPixelRatio = window.devicePixelRatio || 1;
     // Calcular el ancho y alto deseados para mantener el pixelRatio en 1
     //var desiredWidth = display.width / currentPixelRatio;
     //var desiredHeight = display.height / currentPixelRatio;
@@ -411,7 +411,18 @@ GameCharactersController.prototype.onMouseMove = function (event) {
 
 
         if ((this.playerPersonStyle === 'FirstPerson' || this.playerPersonStyle === 'ThirdPerson')
-            && !pc.Mouse.isPointerLocked()) {
+            && !pc.Mouse.isPointerLocked()
+            && !this.app.isMenuMode) {
+
+            if (this.mouseOptions.hideMousePointer) {
+                if (this.input.mousePrimaryButton || this.input.mouseSecondaryButton) {
+                    if (!pc.Mouse.isPointerLocked()) this.app.mouse.enablePointerLock();
+                } else {
+                    if (pc.Mouse.isPointerLocked()) {
+                        this.app.mouse.disablePointerLock();
+                    }
+                }
+            }
 
             this.gameMouse_busy = false;
             return;
