@@ -827,7 +827,7 @@ GameCharactersController.prototype.updateCameraPosition = function (dt) {
 
     const hit = this.app.systems.rigidbody.raycastFirst(targetPosition, cameraPosition);
 
-    if (hit && hit.entity && !(hit.entity.isPlayer ?? false) && hit.entity.name.toLowerCase() !== "charactersensor") {
+    if (hit && hit.entity && !(hit.entity.isPlayer ?? false) && hit.entity.name.toLowerCase() !== "charactersensor" && !hit.entity.tags.has('ignore-camera-collision')) {
         var direction = this.followCamera.target.getPosition().sub(hit.point).normalize();
         cameraPosition = hit.point.clone().add(direction.scale(0.1));
     }

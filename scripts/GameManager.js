@@ -22,10 +22,28 @@ THOS SCENE MUST BE SET AS DEAFULT OR AS CURRENT
 //240p (SD): 426x240 
 */
 
+/**
+ * A namespace for managing timers.
+ *
+ * The `Timer` object provides methods and properties for creating and managing timers.
+ * 
+ * @namespace Timer
+ */
 var Timer = {};
 Timer._timers = [];
 Timer._timercounter = 0;
 
+/**
+ * Adds a new timer to the system.
+ *
+ * This function creates a timer with the specified time and a callback function that will be executed when the timer expires. The timer can be configured to execute only once or repeatedly.
+ *
+ * @param {number} time - The time in seconds until the timer expires.
+ * @param {Function} callback - The function that will be executed when the timer expires. This function should accept the argument `(scope)`, where `scope` is the provided execution context.
+ * @param {Object} [scope] - The context in which the callback function will be executed. If not provided, the default context will be `undefined`.
+ * @param {boolean} [once=false] - If `true`, the timer will execute only once. If `false`, the timer will repeat according to the specified time.
+ * @returns {string} A unique identifier for the timer. This identifier can be used to manage or cancel the timer later.
+ */
 Timer.addTimer = function (time, callback, scope, once) {
     const timerId = "t_" + this._timercounter;
     Timer._timers[timerId] = {
@@ -38,11 +56,27 @@ Timer.addTimer = function (time, callback, scope, once) {
     Timer._timercounter++;
     return timerId;
 }
+
+/**
+ * Removes a timer from the system.
+ *
+ * This function deletes the timer with the specified identifier from the list of active timers. After deletion, the timer will no longer be managed by the system.
+ *
+ * @param {string} timerId - The unique identifier of the timer to be removed. This ID was previously returned by `Timer.addTimer`.
+ * @returns {null} Always returns `null` to indicate that the operation is complete.
+ */
 Timer.destroyTimer = function (timerId) {
     delete this._timers[timerId];
     return null;
 }
 
+/**
+ * Clears all active timers from the system.
+ *
+ * This function removes all timers from the list of active timers and resets the timer counter. It effectively stops all currently running timers and clears the timer storage.
+ *
+ * @returns {void} This function does not return any value.
+ */
 Timer.clearAllTimers = function () {
     for (let key in this._timers) {
         delete this._timers[key];
@@ -51,6 +85,14 @@ Timer.clearAllTimers = function () {
     Timer._timercounter = 0;
 }
 
+/**
+ * Evaluates and updates all active timers.
+ *
+ * This function iterates through all active timers, updating their elapsed time based on the provided delta time (`dt`). If a timer's elapsed time exceeds or equals its specified duration, the timer's callback is executed. If the timer is set to execute only once, it is removed from the list of active timers. Otherwise, its elapsed time is reset to allow it to continue running.
+ *
+ * @param {number} dt - The delta time since the last evaluation. This value is added to each timer's elapsed time to track the passage of time.
+ * @returns {void} This function does not return any value.
+ */
 Timer.evaluateTimers = function (dt) {
     for (let key in this._timers) {
         var timer = this._timers[key];
@@ -65,6 +107,7 @@ Timer.evaluateTimers = function (dt) {
         }
     }
 }
+
 
 /*
 poner en cualquier entidad. Se recomienda poner en ROOT.

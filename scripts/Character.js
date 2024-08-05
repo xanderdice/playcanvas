@@ -88,6 +88,16 @@ Character.attributes.add('tracerOptions',
                 name: 'traceinput',
                 type: 'boolean',
                 default: false
+            },
+            {
+                name: 'tracedetector',
+                type: 'boolean',
+                default: false
+            },
+            {
+                name: 'traceattack',
+                type: 'boolean',
+                default: false
             }
         ]
     });
@@ -118,57 +128,145 @@ Character.attributes.add('playerAnimationsOptions',
     });
 
 
-Character.attributes.add('animations',
+Character.attributes.add('animations_unarmed',
     {
-        title: "Animations",
+        title: "Animations Unarmed",
         type: 'json',
         schema: [
             {
                 name: 'idle',
-                type: 'string',
-                default: "idle"
+                type: 'asset',
+                assetType: 'animation',
+                array: true
             },
             {
-                name: 'sensorDebug',
-                type: 'boolean',
-                default: false
+                name: 'walking',
+                type: 'asset',
+                assetType: 'animation',
+                array: false
             },
             {
-                name: 'sensorJumpDebug',
-                type: 'boolean',
-                default: false
+                name: 'running',
+                type: 'asset',
+                assetType: 'animation',
+                array: false
+            },
+            {
+                name: 'attack',
+                type: 'asset',
+                assetType: 'animation',
+                array: true
+            },
+        ]
+    });
+
+
+
+Character.attributes.add('carryWeapons',
+    {
+        title: "Carry Weapons",
+        type: 'json',
+        schema: [
+            {
+                name: 'leftHand',
+                type: 'entity',
+                default: null
+            },
+            {
+                name: 'leftHandWeaponEntity',
+                type: 'entity',
+                default: null
+            },
+            {
+                name: 'rightHand',
+                type: 'entity',
+                default: null
+            },
+            {
+                name: 'rightHandWeaponEntity',
+                type: 'entity',
+                default: null
             }
-            ,
+
+
+        ]
+    });
+
+
+Character.attributes.add('attackSystem',
+    {
+        title: "attackSystem",
+        type: 'json',
+        schema: [
             {
-                name: 'groundtolerance',
-                type: 'number',
-                description: 'ground tolerance for steps',
-                default: 0.15,
-                min: 0.1,
-                max: 0.5
+                name: 'canAttack',
+                type: 'boolean',
+                default: true
+            },
+            {
+                name: 'walkAndAttack',
+                type: 'boolean',
+                default: false
             }
         ]
     });
 
 
 
+/**
+ * Enumeration representing the various states of the character's attack system.
+ * @readonly
+ * @enum {number}
+ */
+const CharacterAttackSystemStatusEnum = Object.freeze({
+    /**
+     * No attack or damage is occurring.
+     * @type {number}
+     */
+    NONE: 0,
 
+    /**
+     * The character is in the process of attacking but is not yet causing damage.
+     * @type {number}
+     */
+    ATTACKING: 1,
+
+    /**
+     * The character is actively attacking and causing damage.
+     * @type {number}
+     */
+    DAMAGING: 2,
+
+    /**
+     * The character is ending the attack phase, possibly with a final animation or finishing move.
+     * @type {number}
+     */
+    ENDING: 3,
+});
+
+const CharacterLocomotionModeEnum = Object.freeze({
+    UNARMED: 0,
+    LIGHTER: 1,
+    ARMED: 2,
+});
 
 
 Character.prototype.initialize = function () {
     this.entity.isCharacter = true;
     if (this.entity.isCharacter) {
-        this.entity.tags.add("isCharacter");
+        this.entity.tags.add("is-character");
     }
     this.entity.isPlayer = this.isPlayer;
     if (this.entity.isPlayer) {
-        this.entity.tags.add("isPlayer");
+        this.entity.tags.add("is-player");
     }
     this.entity.isSelectable = this.isSelectable;
     if (this.entity.isSelectable) {
-        this.entity.tags.add("isSelectable");
+        this.entity.tags.add("is-selectable");
     }
     this.entity.selected = this.entity.isPlayer;
+    this.entity.tags.add("is-detectable");
+
 
     this.entity.targetPoint = null;
     this.doMoveCharacter_busy = false;
@@ -184,6 +282,9 @@ Character.prototype.initialize = function () {
 
 
     this.renderCharacterComponent = this.entity.findComponent('render');
+    this.renderCharacterComponent.entity.tags.add("uranus-instancing-exclude");
+
+
 
 
     /*internal character timers*/
@@ -193,6 +294,7 @@ Character.prototype.initialize = function () {
     this.jumping_availability = true;
 
 
+    this.animPlayerStateGraphData = null;
     if (!this.playerAnimationsOptions.hips) {
         this.playerAnimationsOptions.hips = this.entity.findByName("mixamorig:Hips");
     }
@@ -201,9 +303,31 @@ Character.prototype.initialize = function () {
     }
     this.motionrootmode = this.playerAnimationsOptions.motionrootmode;
 
+    this.renderCharacterComponent.rootBone = this.playerAnimationsOptions.hips;
+
 
     this.animatorTargetReached = true;
     this.animatorCurrentAnimId = 0;
+
+
+    if (!this.carryWeapons.leftHand) {
+        this.carryWeapons.leftHand = this.entity.findByName("mixamorig:LeftHand");
+    }
+    if (!this.carryWeapons.rightHand) {
+        this.carryWeapons.rightHand = this.entity.findByName("mixamorig:RightHand");
+    }
+
+
+    this.entity.attackSystem = {
+        canAttack: this.attackSystem.canAttack,
+        walkAndAttack: this.attackSystem.walkAndAttack,
+        status: CharacterAttackSystemStatusEnum.NONE,
+        attackInput: false,
+        attackInputOld: false,
+        canDoAttack: true,
+        __elapsedTime: 0,
+    };
+
 
     //this.pointEntity = new pc.Entity()
     /*
@@ -307,32 +431,22 @@ Character.prototype.initialize = function () {
 
 
 
-    this.entity.on('character:rotate', function (eventLook) {
-
-        this.look = eventLook;
-        if (this.entity.isPlayer) {
-            var rotation = this.entity.getLocalRotation(),
-                deltaX = ((this.look || {}).deltaX) || 0;
-            if (deltaX !== 0) {
-                var deltaY = deltaX * ((this.look || {}).lookSpeed) || 1;
-                var deltaRotation = new pc.Quat().setFromEulerAngles(0, -deltaY, 0);
-                rotation.mul(deltaRotation);
-                this.look.deltaX = 0;
-            }
-            this.entity.rigidbody.teleport(this.entity.getPosition(), rotation);
-        }
-
-    }, this);
-
 
     this.entity.on('character:detector', function (detectedEntities) {
 
-        Trace("character:detector detected entities: ", detectedEntities.length);
+        if (this.tracerOptions.tracedetector) {
+            var detEnt = [];
+            detEnt.push("" + detectedEntities.length);
+            for (var i = 0; i < detectedEntities.length; i++) {
+                detEnt.push(detectedEntities[i].name);
+            }
+            Trace("detectedEntities", detEnt);
+        }
         for (var i = 0; i < detectedEntities.length; i++) {
 
         }
 
-        Trace("character:detector -> " + detectedEntities);
+        //Trace("character:detector", detectedEntities);
     }, this);
 
 
@@ -439,183 +553,6 @@ Character.prototype.stopMovement = function () {
 
 
 
-/*******************************/
-/*   DO MOVE CHARACTER         */
-/*******************************/
-Character.prototype.doMoveCharacter = function (params) {
-
-
-
-    if (!this.entity.rigidbody) return;
-    if (!this.doMoveCharacter_busy) {
-        this.doMoveCharacter_busy = true;
-
-        this.CHAR_CUR_POSITION = this.entity.getPosition();
-        this.CHAR_CUR_ROTATION = this.entity.getRotation();
-
-        this.doSensors();
-
-        var speed = 0,
-            calculedSpeed = 0,
-            moveForward = params.deviceInputKeyboard.moveForward || 0,
-            moveRight = params.deviceInputKeyboard.moveRight || 0,
-            jumping = params.deviceInputKeyboard.jumping,
-            sprinting = params.deviceInputKeyboard.sprinting,
-            attack = params.deviceInputKeyboard.attack,
-            interact = params.deviceInputKeyboard.interact,
-            animVelocityMode = "",
-            direction = new pc.Vec3(),
-            rotation = this.entity.getLocalRotation(),
-            dt = params.dt,
-            cameraYaw = params.cameraYaw;
-
-
-        /*JUMP*/
-        if (this.jumping_availability && jumping && !this.entity.isonair) {
-            this.jumping_availability = false;
-            this.addTimer(1.2, function () {/* 1 second between jumps */
-                this.jumping_availability = true;
-            }, this, true);
-
-            this.createAnimator(new pc.Vec3(0, 1, 0), 0.5, "jump", this.speed * 2, pc.RIGIDBODY_TYPE_DYNAMIC);
-        }
-
-        /* MOVE FORWARD */
-        if (moveForward !== 0) {
-            this.entity.targetPoint = null;
-            if (this.playerOptions.rotationTimer) {
-                clearTimeout(this.playerOptions.rotationTimer);
-            }
-
-            /*ROTATES TO NEW DIRECTION CAMERA IF EXISTS */
-            if (this.playerOptions.rotateToNewDirectionCamera) {
-                var anim = this.rotateToNewDirectionFromCameraFunc(this.playerOptions.rotateToNewDirectionCamera, false);
-
-                //this.createAnimator(new pc.Vec3(0, 0, 0), 0.9, anim + "turn90");
-            }
-
-
-
-
-            direction.copy(this.entity.forward).normalize();
-            if (moveForward >= 0) {
-                speed = this.speed * moveForward;
-                animVelocityMode = "running";
-            } else if (moveForward <= 0) {
-                speed = (this.speed / 2) * moveForward;
-                animVelocityMode = "walking";
-            }
-        }
-
-
-
-
-
-        /* MOVE RIGHT */
-        if (moveRight !== 0) {
-            this.entity.targetPoint = null;
-            if ((this.playerOptions.playerControllerOnKeyRight || "") === "Rotate") {
-                var deltaY = this.speed * (this.speed / 2) * moveRight; // Puedes ajustar este valor según tus necesidades
-                // Crea un cuaternión de rotación para representar la rotación adicional en el eje Y
-                var deltaRotation = new pc.Quat().setFromEulerAngles(0, -deltaY, 0);
-                // Multiplica la rotación actual por la rotación adicional en el eje Y
-                rotation.mul(deltaRotation);
-            }
-            else if ((this.playerOptions.playerControllerOnKeyRight || "") === "Strafe") {
-                direction.copy(this.entity.right).normalize();
-                speed = this.speed * moveRight;
-                animVelocityMode = "running";
-            }
-        }
-
-        if (sprinting) {
-            speed *= 2;
-            animVelocityMode = "sprinting";
-        }
-
-
-        if (attack) {
-            if (this.animatorTargetReached) {
-                const forwardVector = new pc.Vec3(0, 1, 0);
-                this.createAnimator(forwardVector, 0.9, "climb", 2, pc.RIGIDBODY_TYPE_KINEMATIC);
-                //pc.RIGIDBODY_TYPE_KINEMATIC
-            }
-        }
-
-
-
-        if (this.entity.targetPoint) {
-
-            // Verificar si el jugador ha alcanzado el punto de destino
-            if (Math.abs(this.CHAR_CUR_POSITION.x - this.entity.targetPoint.x) > 0.1 || Math.abs(this.CHAR_CUR_POSITION.z - this.entity.targetPoint.z) > 0.1) {
-                // Calcular la dirección hacia el punto de destino
-                direction.copy(this.entity.targetPoint).sub(this.CHAR_CUR_POSITION).normalize();
-                // Calcular el ángulo de rotación
-                var angle = Math.atan2(-direction.x, -direction.z);
-
-                //this.entity.rigidbody.enabled = false;
-                var euler = new pc.Vec3(0, (angle * pc.math.RAD_TO_DEG), 0);
-                rotation = new pc.Quat().setFromEulerAngles(0, euler.y, 0);
-
-                //rotation = new pc.Quat().slerp(this.entity.getLocalRotation(), rotation, 0.9);
-
-                speed = this.speed;
-            } else {
-                speed = 0;
-                this.stopMovement();
-            }
-        }
-
-
-
-        var newPosition = this.CHAR_CUR_POSITION.clone();
-        if (speed) {
-            //rotation = new pc.Quat().slerp(this.entity.getLocalRotation(), rotation, 0.5);
-            // Calcula la distancia de teletransporte ajustada por el delta de tiempo
-            calculedSpeed = speed * dt;
-            newPosition = newPosition.add(direction.scale(calculedSpeed));
-        }
-
-
-        /*A N I M A T O R */
-        if (!this.animatorTargetReached) {
-            const progress = Math.min(1, this.animatorElapsedTime / this.animatorDuration);
-
-            const rotatedForward = this.CHAR_CUR_ROTATION.transformVector(this.animatorTargetForwardVector);
-            const movementDirection = rotatedForward.clone().scale(progress * dt * this.animatorSpeed); // Multiplicar por velocidad
-
-            // Aplicar el movimiento lineal a la posición actual del personaje
-            newPosition.add(movementDirection);
-
-            // Actualizar el tiempo acumulado
-            this.animatorElapsedTime += dt;
-
-            // Verificar si se alcanzó la posición objetivo
-            if (progress >= 1) {
-                this.destroyAnimator();
-            }
-        }
-
-
-        /* T E L E P O R T   the    E N T I T Y */
-        if (speed || !this.animatorTargetReached) {
-            this.entity.rigidbody.teleport(newPosition, rotation);
-        }
-
-
-
-
-        this.doCalculateAnimation(animVelocityMode, dt)
-
-
-
-
-
-        this.doMoveCharacter_busy = false;
-
-    }
-}
-
 
 /*              */
 /* D O  M O V E */
@@ -639,7 +576,7 @@ Character.prototype.doMove = function (input, dt) {
             delete clonedObject.camera;
             clonedObject.camera = null;
             Trace("input", clonedObject);
-            delete clonedObject;
+
         }
 
 
@@ -668,7 +605,7 @@ Character.prototype.doMove = function (input, dt) {
         var moveSpeed = input.sprint ? this.speed * 2.5 : this.speed;
 
 
-        const isMoving = x !== 0 || z !== 0;
+        var isMoving = x !== 0 || z !== 0;
         !isMoving && (moveSpeed = 0);
 
         this.charSpeed < moveSpeed - 0.1 ? this.charSpeed = pc.math.lerp(this.charSpeed, moveSpeed, dt * this.speed * 4) : this.charSpeed = moveSpeed;
@@ -676,6 +613,11 @@ Character.prototype.doMove = function (input, dt) {
 
         this.speedAnimBlend = input.sprint ? moveSpeed / this.speed * 5 : moveSpeed / this.speed - 0.3;
         this.speedAnimBlend < 0.01 && (this.speedAnimBlend = 0);
+
+
+        if (this.entity.attackSystem.canAttack && !this.entity.attackSystem.walkAndAttack && this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
+            isMoving = false;
+        }
 
 
 
@@ -715,9 +657,171 @@ Character.prototype.doMove = function (input, dt) {
             this.entity.anim.setFloat("speed", this.speedAnimBlend);
         }
 
+        this.doCarryWeapons(input, dt);
+
+        this.doAttackSystem(input, dt);
+
+
         this.doMoveCharacter_busy = false;
     }
 }
+
+/* * * * * * * * * * * * * * * * */
+/* D O  C A R R Y  W E A P O N S */
+/* * * * * * * * * * * * * * * * */
+Character.prototype.doCarryWeapons = function (input, dt) {
+
+    function setDefRigidBodyValues(r) {
+        if (!r) return;
+        r.entity.tags.add("uranus-instancing-exclude");
+        r.entity.tags.add("ignore-camera-collision");
+        r.restitution = 0;
+        r.friction = 1;
+    }
+
+    if (this.carryWeapons.rightHand) {
+        if (this.carryWeapons.leftHandWeaponEntity) {
+            this.carryWeapons.leftHandWeaponEntity.setPosition(this.carryWeapons.leftHand.getPosition());
+            this.carryWeapons.leftHandWeaponEntity.setRotation(this.carryWeapons.leftHand.getRotation());
+
+            if ((this.carryWeapons.leftHandWeaponEntity._guid || "0") !== (this.carryWeapons.leftHandWeaponEntityOld || {})._guid) {
+                this.entity.attackSystem.leftHandWeaponRigidBody = this.carryWeapons.leftHandWeaponEntity.findComponent("rigidbody");
+                setDefRigidBodyValues(this.entity.attackSystem.leftHandWeaponRigidBody);
+                var col = this.carryWeapons.leftHandWeaponEntity.findComponent("collision");
+                if (col) {
+                    col.on("collisionstart", this.onCollisionStartWeapon, this);
+                    col.on("collisionend", this.onCollisionEndWeapon, this);
+                }
+            }
+
+        } else {
+            if (this.carryWeapons.leftHandWeaponEntityOld) {
+                /*QUITAR COLISIONES*/
+                this.entity.attackSystem.leftHandWeaponRigidBody = null;
+                var col = this.carryWeapons.leftHandWeaponEntityOld.findComponent("collision");
+                if (col) {
+                    col.off("collisionstart", this.onCollisionStartWeapon);
+                    col.off("collisionend", this.onCollisionEndWeapon);
+                }
+            }
+        }
+
+        this.carryWeapons.leftHandWeaponEntityOld = this.carryWeapons.leftHandWeaponEntity;
+    }
+
+    if (this.carryWeapons.rightHand) {
+        if (this.carryWeapons.rightHandWeaponEntity) {
+            this.carryWeapons.rightHandWeaponEntity.setPosition(this.carryWeapons.rightHand.getPosition());
+            this.carryWeapons.rightHandWeaponEntity.setRotation(this.carryWeapons.rightHand.getRotation());
+
+            if ((this.carryWeapons.rightHandWeaponEntity._guid || "0") !== (this.carryWeapons.rightHandWeaponEntityOld || {})._guid) {
+                this.entity.attackSystem.rightHandWeaponRigidBody = this.carryWeapons.rightHandWeaponEntity.findComponent("rigidbody");
+                setDefRigidBodyValues(this.entity.attackSystem.rightHandWeaponRigidBody);
+                var col = this.carryWeapons.rightHandWeaponEntity.findComponent("collision");
+                if (col) {
+                    col.on("triggerenter", this.onCollisionStartRightWeapon, this);
+                    col.on("triggerleave", this.onCollisionEndRightWeapon, this);
+                }
+            }
+        } else {
+            if (this.carryWeapons.rightHandWeaponEntityOld) {
+                /*QUITAR COLISIONES*/
+                this.entity.attackSystem.rightHandWeaponRigidBody = null;
+                var col = this.carryWeapons.rightHandWeaponEntityOld.findComponent("collision");
+                if (col) {
+                    col.off("triggerenter", this.onCollisionStartRightWeapon);
+                    col.off("triggerleave", this.onCollisionEndRightWeapon);
+                }
+            }
+        }
+        this.carryWeapons.rightHandWeaponEntityOld = this.carryWeapons.rightHandWeaponEntity;
+    }
+}
+
+Character.prototype.onCollisionStartRightWeapon = function (other) {
+    if (this.entity.attackSystem.status === CharacterAttackSystemStatusEnum.DAMAGING) {
+    }
+}
+
+Character.prototype.onCollisionEndRightWeapon = function (other) {
+
+}
+
+/* * * * * * * * * * * * * * * * */
+/* D O  A T T A C K  S Y S T E M */
+/* * * * * * * * * * * * * * * * */
+Character.prototype.doAttackSystem = function (input, dt) {
+    if (!this.entity.attackSystem.canAttack) return;
+
+    this.entity.attackSystem.attackInput = input.attack || input.mousePrimaryButton;
+    if (this.entity.attackSystem.attackInput === this.entity.attackSystem.attackInputOld) {
+        /*if is playing attack animation*/
+        if (this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
+            this.entity.attackSystem.__elapsedTime += dt;
+        }
+    } else {
+        /*the player attack*/
+        if (this.entity.attackSystem.attackInput) {
+            if (this.entity.attackSystem.canDoAttack) {
+                this.entity.attackSystem.__elapsedTime = 0;
+                this.entity.attackSystem.canDoAttack = false;
+                this.entity.attackSystem.status = CharacterAttackSystemStatusEnum.ATTACKING;
+
+                Timer.addTimer(0.1, function () {
+                    this.entity.attackSystem.canDoAttack = true;
+                }, this, true);
+
+            }
+        } else {
+            this.entity.attackSystem.canDoAttack = true;
+            this.entity.attackSystem.status = CharacterAttackSystemStatusEnum.NONE;
+            this.entity.attackSystem.__elapsedTime = 0;
+        }
+
+
+    }
+    if (this.entity.attackSystem.__elapsedTime >= 2) {
+        this.entity.attackSystem.__elapsedTime = 0;
+        this.entity.attackSystem.status = CharacterAttackSystemStatusEnum.NONE;
+    }
+
+
+
+
+    this.entity.attackSystem.attackAction = 0;
+    if (this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
+        this.entity.attackSystem.attackAction = 1;
+    }
+    if (this.entity.attackSystem.status === CharacterAttackSystemStatusEnum.NONE) {
+        this.entity.attackSystem.attackAction = 0;
+    }
+
+    /* shows animation */
+    //if (this.entity.attackSystem.attackActionOld !== attackAction) {
+    this.entity.anim.setInteger("attack", this.entity.attackSystem.attackAction);
+    //}
+
+
+
+    this.entity.attackSystem.attackInputOld = this.entity.attackSystem.attackInput;
+    this.entity.attackSystem.attackActionOld = this.entity.attackSystem.attackAction;
+
+
+    if (this.tracerOptions.traceattack && this.entity.isPlayer) {
+        const clonedObject = Object.assign({}, this.entity.attackSystem);
+        clonedObject.rightHandWeaponRigidBody = null;
+        clonedObject.leftHandWeaponRigidBody = null;
+        delete clonedObject.rightHandWeaponRigidBody;
+        delete clonedObject.leftHandWeaponRigidBody;
+        Trace("attackSystem", clonedObject);
+    }
+
+
+};
+
+
+
+
 
 Character.prototype.rotateCharacter = function (x, z, targetDirection, rotSpeed) {
     var addAngle = 0;
@@ -845,64 +949,6 @@ Character.prototype.destroyAnimator = function () {
 /* ****************************************************** */
 Character.prototype.doCalculateAnimation = function (animVelocityMode, dt) {
 
-    var animation = this.animatorCurrentAnimId;
-
-    if (this.animatorAnimForce) {
-        //TODO: hacer un array claver valor para que sea mas performante.
-        //Si ya estaba la animacion seteada que no la busque de nuevo.
-        const transition = animPlayerStateGraphData.layers[0].transitions.find(function (t) { return t.to === this.animatorAnimForce }.bind(this));
-        animation = transition?.conditions[0]?.value ?? this.animatorCurrentAnimId;
-        this.animatorAnimMotionRootMode = transition?.motionRootMode;
-    } else {
-        const locoDir = this.doCalculateLocomotionDirection(dt);
-
-        if (locoDir === CharacterLocomotionEnum.IDLE) {
-            animation = 1;
-        }
-        if (locoDir === CharacterLocomotionEnum.FORWARD) {
-            if (animVelocityMode === "walking") {
-                animation = 2;
-            } else if (animVelocityMode === "running") {
-                animation = 3;
-            } else if (animVelocityMode === "sprinting") {
-                animation = 4;
-            }
-        }
-
-        if (this.entity.isonair) {
-            animation = 5;
-        }
-
-
-        if (this.entity.isteeter) {
-            animation = 7;
-        }
-
-        if (this.entity.islanding) {
-            if (animVelocityMode) {
-                this.destroyTimer(this.entity.islanding_timerid);
-                this.entity.islanding = false;
-            } else {
-                animation = 8;
-            }
-        }
-
-        Trace("locoDir -> ", locoDir);
-    }
-
-    Trace("animForce", this.animatorAnimForce ?? "");
-    Trace("animation", animation);
-
-
-
-
-
-    if (this.entity.anim && this.animatorCurrentAnimId !== animation) {
-        this.entity.anim.setInteger("animation", animation);
-    }
-
-
-    this.animatorCurrentAnimId = animation;
 }
 
 
@@ -1068,7 +1114,7 @@ Character.prototype.doSensors = function (dt) {
 
     if (this.sensorOptions.processstep === 0) {
         if (this.sensorOptions.detectableEntities_length === 0) {
-            this.sensorOptions.detectableEntities = this.app.scene.root.findByTag("isDetectable");
+            this.sensorOptions.detectableEntities = this.app.scene.root.findByTag("is-detectable");
             this.sensorOptions.detectableEntities_length = this.sensorOptions.detectableEntities.length;
         }
         this.sensorOptions.raiseDetectedEvent = false;
@@ -1106,7 +1152,7 @@ Character.prototype.doSensors = function (dt) {
         for (; d < detectedEntities_length; d++) {
             detectedEntity = this.detectedEntities[d];
 
-            if (detectedEntity.tags.has("isInteractable")) {
+            if (detectedEntity.tags.has("is-interactable")) {
                 const distance = this.CHAR_CUR_POSITION.distance(detectedEntity.getPosition()),
                     origin = this.CHAR_CUR_POSITION,
                     destination = detectedEntity.getPosition(),
@@ -1402,7 +1448,8 @@ Character.prototype.rootMotionFix = function () {
 
 
 Character.prototype.prepareAnimComponent = function () {
-    const animPlayerStateGraphData = {
+
+    const animPlayerStateGraphDataX = {
         layers: [
             {
                 name: 'unarmed',
@@ -1426,13 +1473,20 @@ Character.prototype.prepareAnimComponent = function () {
                         name: 'sprinting'
                     },
                     {
+                        name: 'attack',
+                        loop: false
+                    },
+                    {
+                        name: 'attack2',
+                        loop: false
+                    },
+                    {
                         name: 'jump',
                         loop: false
                     },
                     {
                         name: 'climb',
-                        loop: false,
-                        speed: 1
+                        loop: false
                     },
                     {
                         name: 'teeter'
@@ -1508,8 +1562,81 @@ Character.prototype.prepareAnimComponent = function () {
                             parameterName: 'speed',
                             predicate: pc.ANIM_GREATER_THAN_EQUAL_TO,
                             value: 1
+                        }
+                        ]
+                    },
+
+                    {
+                        from: 'ANY',
+                        to: 'attack',
+                        time: 0.1,
+                        priority: 0,
+                        conditions: [{
+                            parameterName: 'attack',
+                            predicate: pc.ANIM_EQUAL_TO,
+                            value: 1
                         }]
+                    },
+
+                    {
+                        from: 'attack',
+                        to: 'idle',
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [
+                            {
+                                parameterName: 'attack',
+                                predicate: pc.ANIM_EQUAL_TO,
+                                value: 0
+                            },
+                            {
+                                parameterName: 'speed',
+                                predicate: pc.ANIM_LESS_THAN,
+                                value: 0.01
+                            }]
+                    },
+
+                    {
+                        from: 'attack',
+                        to: 'walking',
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [
+                            {
+                                parameterName: 'attack',
+                                predicate: pc.ANIM_EQUAL_TO,
+                                value: 0
+                            },
+                            {
+                                parameterName: 'speed',
+                                predicate: pc.ANIM_GREATER_THAN,
+                                value: 0.01
+                            }
+                        ]
+                    },
+
+
+                    {
+                        from: 'attack',
+                        to: 'running',
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [
+                            {
+                                parameterName: 'attack',
+                                predicate: pc.ANIM_EQUAL_TO,
+                                value: 0
+                            },
+                            {
+                                parameterName: 'speed',
+                                predicate: pc.ANIM_GREATER_THAN,
+                                value: 0.99
+                            }
+                        ]
                     }
+
+
+
 
                 ]
             }
@@ -1518,6 +1645,11 @@ Character.prototype.prepareAnimComponent = function () {
             speed: {
                 name: 'speed',
                 type: pc.ANIM_PARAMETER_FLOAT,
+                value: 0
+            },
+            attack: {
+                name: 'attack',
+                type: pc.ANIM_PARAMETER_INTEGER,
                 value: 0
             },
             Jump: {
@@ -1552,41 +1684,303 @@ Character.prototype.prepareAnimComponent = function () {
     };
 
 
+    this.animPlayerStateGraphData = {
+        layers: [
+            {
+                name: 'baseLayer',
+                states: [{ name: 'START' }, { name: 'ANY' }],
+                transitions: []
+            }
+        ],
+        parameters: {
+            mode: {
+                name: 'mode',
+                type: pc.ANIM_PARAMETER_INTEGER,
+                value: 0
+            },
+            speed: {
+                name: 'speed',
+                type: pc.ANIM_PARAMETER_FLOAT,
+                value: 0
+            },
+            attack: {
+                name: 'attack',
+                type: pc.ANIM_PARAMETER_INTEGER,
+                value: 0
+            }
+        }
+    };
+
+    /*IDLE*/
+    for (let i = 0; i < this.animations_unarmed.idle.length; i++) {
+        this.animations_unarmed.idle[i].preload = true;
+        this.animPlayerStateGraphData.layers[0].states.push({ name: 'unarmed-idle' + i, assetId: this.animations_unarmed.idle[i].id });
+        this.animPlayerStateGraphData.layers[0].transitions.push({
+            from: 'START',
+            to: 'unarmed-idle' + i,
+            time: 0.2,
+            priority: 0,
+            conditions: [
+                { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 }
+            ]
+        });
+    }
+
+    /*ATTACK*/
+    for (let i = 0; i < this.animations_unarmed.attack.length; i++) {
+        this.animations_unarmed.attack[i].preload = true;
+        this.animPlayerStateGraphData.layers[0].states.push({ name: 'unarmed-attack' + (i + 1), loop: false, assetId: this.animations_unarmed.attack[i].id });
+        this.animPlayerStateGraphData.layers[0].transitions.push({
+            from: 'ANY',
+            to: 'unarmed-attack' + (i + 1),
+            time: 0.2,
+            priority: 0,
+            conditions: [
+                { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
+                { parameterName: 'attack', predicate: pc.ANIM_EQUAL_TO, value: i + 1 }
+            ]
+        });
+
+        for (let j = 0; j < this.animations_unarmed.idle.length; j++) {
+            this.animPlayerStateGraphData.layers[0].transitions.push({
+                from: 'unarmed-attack' + (i + 1),
+                to: 'unarmed-idle' + j,
+                time: 0.2,
+                priority: 0,
+                conditions: [
+                    { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
+                    { parameterName: 'attack', predicate: pc.ANIM_EQUAL_TO, value: 0 }
+                ]
+            });
+        }
+    }
+
+
+    /*WALKING*/
+    if (this.animations_unarmed.walking) {
+        this.animations_unarmed.walking.preload = true;
+        this.animPlayerStateGraphData.layers[0].states.push({ name: 'unarmed-walking', assetId: this.animations_unarmed.walking.id });
+
+        for (let i = 0; i < this.animations_unarmed.idle.length; i++) {
+            this.animPlayerStateGraphData.layers[0].transitions.push(
+                {
+                    from: 'unarmed-idle' + i,
+                    to: 'unarmed-walking',
+                    time: 0.2,
+                    priority: 0,
+                    conditions: [
+                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
+                        { parameterName: 'speed', predicate: pc.ANIM_GREATER_THAN, value: 0 },
+                    ]
+                },
+                {
+                    from: 'unarmed-walking',
+                    to: 'unarmed-idle' + i,
+                    time: 0.2,
+                    priority: 0,
+                    conditions: [
+                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
+                        { parameterName: 'speed', predicate: pc.ANIM_LESS_THAN, value: 0.01 }
+                    ]
+                }
+
+            );
+        }
+
+        for (let i = 0; i < this.animations_unarmed.attack.length; i++) {
+            this.animPlayerStateGraphData.layers[0].transitions.push({
+                from: 'unarmed-attack' + (i + 1),
+                to: 'unarmed-walking',
+                time: 0.2,
+                priority: 0,
+                conditions: [
+                    { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
+                    { parameterName: 'attack', predicate: pc.ANIM_EQUAL_TO, value: 0 },
+                    { parameterName: 'speed', predicate: pc.ANIM_GREATER_THAN, value: 0 },
+                ]
+            });
+        }
+
+    }
+
+    /*RUNNING*/
+    if (this.animations_unarmed.running) {
+        this.animations_unarmed.running.preload = true;
+        this.animPlayerStateGraphData.layers[0].states.push({ name: 'unarmed-running', assetId: this.animations_unarmed.running.id });
+        if (this.animations_unarmed.walking) {
+
+            this.animPlayerStateGraphData.layers[0].transitions.push(
+                {
+                    from: 'unarmed-walking',
+                    to: 'unarmed-running',
+                    time: 0.2,
+                    priority: 0,
+                    conditions: [
+                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
+                        { parameterName: 'speed', predicate: pc.ANIM_GREATER_THAN, value: 0.99 }
+                    ]
+                },
+                {
+                    from: 'unarmed-running',
+                    to: 'unarmed-walking',
+                    time: 0.2,
+                    priority: 0,
+                    conditions: [
+                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
+                        { parameterName: 'speed', predicate: pc.ANIM_LESS_THAN, value: 1 }
+                    ]
+                }
+            );
+
+
+        }
+
+        for (let i = 0; i < this.animations_unarmed.idle.length; i++) {
+            this.animPlayerStateGraphData.layers[0].transitions.push(
+                {
+                    from: 'unarmed-idle' + i,
+                    to: 'unarmed-running',
+                    time: 0.2,
+                    priority: 0,
+                    conditions: [
+                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
+                        { parameterName: 'speed', predicate: pc.ANIM_GREATER_THAN_EQUAL_TO, value: 1 },
+                    ]
+                },
+                {
+                    from: 'unarmed-running',
+                    to: 'unarmed-idle' + i,
+                    time: 0.2,
+                    priority: 0,
+                    conditions: [
+                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
+                        { parameterName: 'speed', predicate: pc.ANIM_LESS_THAN, value: 0.01 }
+                    ]
+                }
+
+            );
+        }
+
+
+        for (let i = 0; i < this.animations_unarmed.attack.length; i++) {
+            this.animPlayerStateGraphData.layers[0].transitions.push({
+                from: 'unarmed-attack' + (i + 1),
+                to: 'unarmed-running',
+                time: 0.2,
+                priority: 0,
+                conditions: [
+                    { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
+                    { parameterName: 'attack', predicate: pc.ANIM_EQUAL_TO, value: 0 },
+                    { parameterName: 'speed', predicate: pc.ANIM_GREATER_THAN_EQUAL_TO, value: 1 },
+                ]
+            });
+        }
+
+    }
+
+
+
+
+
+
+
     // add an anim component to the entity
     this.entity.addComponent('anim', {
         activate: true,
         rootBone: this.playerAnimationsOptions.hips && this.playerAnimationsOptions.hips
-
     });
 
-    this.entity.anim.loadStateGraph(animPlayerStateGraphData);
+    this.entity.anim.loadStateGraph(this.animPlayerStateGraphData);
+
 
     const locomotionLayer = this.entity.anim.baseLayer,
-        states = locomotionLayer.states,
+        states = this.animPlayerStateGraphData.layers[0].states,
         states_length = states.length;
     var i = 0;
     for (; i < states_length; i++) {
         const state = states[i];
-        if (state !== "START" && state !== "END" && state !== "ANY") {
-
-            var animName = state;
-            if (state === "idle") {
-                animName = this.animations.idle;
-            }
+        if (state.name !== "START" && state.name !== "END" && state.name !== "ANY") {
 
 
-            var asset = this.app.assets.find(animName);
+            var asset = this.app.assets.get(states[i].assetId);
+
             if (asset && asset.type === 'animation') {
                 if (asset.resource) {
-                    locomotionLayer.assignAnimation(state, asset.resource);
+                    locomotionLayer.assignAnimation(state.name, asset.resource);
+                    /*state.animDuration = asset.resource.duration;*/
+                    if (state.name.indexOf("attack") !== -1) {
+                        asset.resource.events = new pc.AnimEvents([
+                            {
+                                time: asset.resource.duration,
+                                name: 'attack-end-animation'
+                            },
+                            {
+                                time: asset.resource.duration * 1000 / 4 / 1000,
+                                name: 'attack-start-damage-animation'
+                            },
+                            {
+
+                                time: (3 * asset.resource.duration * 1000 / 4) / 1000,
+                                name: 'attack-end-damage-animation'
+                            }
+                        ]);
+                    }
                 } else {
                     // El asset aún no está cargado, cargarlo
-                    asset.ready(function () {
-                        locomotionLayer.assignAnimation(state, this.resource);
-                    });
+                    asset.ready(function (e) {
+                        locomotionLayer.assignAnimation(state.name, e.resource);
+
+                        /*state.animDuration = e.resource.duration;*/
+                        if (state.name.indexOf("attack") !== -1) {
+                            e.resource.events = new pc.AnimEvents([
+                                {
+                                    time: e.resource.duration,
+                                    name: 'attack-end-animation'
+                                },
+                                {
+                                    time: e.resource.duration * 1000 / 4 / 1000,
+                                    name: 'attack-start-damage-animation'
+                                },
+                                {
+                                    time: (3 * asset.resource.duration * 1000 / 4) / 1000,
+                                    name: 'attack-end-damage-animation'
+                                }
+                            ]);
+
+                            //this.entity.attackSystem.
+                        }
+
+                    }.bind(this));
                     this.app.assets.load(asset);
                 }
             }
         }
     }
+
+
+
+
+
+
+    this.entity.anim.on('attack-end-animation', function (e) {
+        this.entity.attackSystem.status = CharacterAttackSystemStatusEnum.NONE;
+    }, this);
+
+    this.entity.anim.on('attack-start-damage-animation', function (e) {
+        if (this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
+            this.entity.attackSystem.status = CharacterAttackSystemStatusEnum.DAMAGING;
+        }
+        /*console.log("attack-start-damage-animation");*/
+
+    }, this);
+
+    this.entity.anim.on('attack-end-damage-animation', function (e) {
+        if (this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
+            this.entity.attackSystem.status = CharacterAttackSystemStatusEnum.ENDING;
+        }
+        /*console.log("attack-end-damage-animation");*/
+
+    }, this);
+
+
 };
