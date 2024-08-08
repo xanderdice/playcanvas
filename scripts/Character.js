@@ -302,8 +302,8 @@ Character.prototype.initialize = function () {
     this.CHAR_LAST_POSITION = this.CHAR_CUR_POSITION.clone();
 
     this.detectedEntities = [];
-    this.sensorOptions.detectableEntities = []
-    this.sensorOptions.detectableEntities_length = 0;
+    this.sensorOptions.all_detectableEntities = []
+    this.sensorOptions.all_detectableEntities_length = 0;
 
 
 
@@ -710,18 +710,23 @@ Character.prototype.doCarryWeapons = function (input, dt) {
         r.friction = 1;
     }
 
-    if (this.carryWeapons.rightHand) {
+    if (this.carryWeapons.leftHand) {
         if (this.carryWeapons.leftHandWeaponEntity) {
             this.carryWeapons.leftHandWeaponEntity.setPosition(this.carryWeapons.leftHand.getPosition());
             this.carryWeapons.leftHandWeaponEntity.setRotation(this.carryWeapons.leftHand.getRotation());
+
+
+
+
 
             if ((this.carryWeapons.leftHandWeaponEntity._guid || "0") !== (this.carryWeapons.leftHandWeaponEntityOld || {})._guid) {
                 this.entity.attackSystem.leftHandWeaponRigidBody = this.carryWeapons.leftHandWeaponEntity.findComponent("rigidbody");
                 setDefRigidBodyValues(this.entity.attackSystem.leftHandWeaponRigidBody);
                 var col = this.carryWeapons.leftHandWeaponEntity.findComponent("collision");
                 if (col) {
-                    col.on("collisionstart", this.onCollisionStartWeapon, this);
-                    col.on("collisionend", this.onCollisionEndWeapon, this);
+                    col.entity.tags.add("is-taken");
+                    col.on("triggerenter", this.onCollisionStartLeftWeapon, this);
+                    col.on("triggerleave", this.onCollisionEndLeftWeapon, this);
                 }
             }
 
@@ -731,8 +736,9 @@ Character.prototype.doCarryWeapons = function (input, dt) {
                 this.entity.attackSystem.leftHandWeaponRigidBody = null;
                 var col = this.carryWeapons.leftHandWeaponEntityOld.findComponent("collision");
                 if (col) {
-                    col.off("collisionstart", this.onCollisionStartWeapon);
-                    col.off("collisionend", this.onCollisionEndWeapon);
+                    col.entity.tags.remove("is-taken");
+                    col.off("triggerenter", this.onCollisionStartLeftWeapon);
+                    col.off("triggerleave", this.onCollisionEndLeftWeapon);
                 }
             }
         }
@@ -746,10 +752,21 @@ Character.prototype.doCarryWeapons = function (input, dt) {
             this.carryWeapons.rightHandWeaponEntity.setRotation(this.carryWeapons.rightHand.getRotation());
 
             if ((this.carryWeapons.rightHandWeaponEntity._guid || "0") !== (this.carryWeapons.rightHandWeaponEntityOld || {})._guid) {
+
+                var r = this.carryWeapons.rightHandWeaponEntity.findComponent("render");
+                if (r) {
+                    var rotation = new pc.Quat();
+                    rotation.setFromEulerAngles(0, 270, 0);
+
+                    // Aplica la rotación a la entidad
+                    r.entity.setRotation(rotation);
+                }
+
                 this.entity.attackSystem.rightHandWeaponRigidBody = this.carryWeapons.rightHandWeaponEntity.findComponent("rigidbody");
                 setDefRigidBodyValues(this.entity.attackSystem.rightHandWeaponRigidBody);
                 var col = this.carryWeapons.rightHandWeaponEntity.findComponent("collision");
                 if (col) {
+                    col.entity.tags.add("is-taken");
                     col.on("triggerenter", this.onCollisionStartRightWeapon, this);
                     col.on("triggerleave", this.onCollisionEndRightWeapon, this);
                 }
@@ -760,6 +777,7 @@ Character.prototype.doCarryWeapons = function (input, dt) {
                 this.entity.attackSystem.rightHandWeaponRigidBody = null;
                 var col = this.carryWeapons.rightHandWeaponEntityOld.findComponent("collision");
                 if (col) {
+                    col.entity.tags.remove("is-taken");
                     col.off("triggerenter", this.onCollisionStartRightWeapon);
                     col.off("triggerleave", this.onCollisionEndRightWeapon);
                 }
@@ -770,13 +788,28 @@ Character.prototype.doCarryWeapons = function (input, dt) {
 }
 
 Character.prototype.onCollisionStartRightWeapon = function (other) {
+    this.onCollisionStartWeapon(other, "right");
+}
+Character.prototype.onCollisionEndRightWeapon = function (other) {
+}
+Character.prototype.onCollisionStartLeftWeapon = function (other) {
+    this.onCollisionStartWeapon(other, "left");
+}
+Character.prototype.onCollisionEndLeftWeapon = function (other) {
+}
+
+
+Character.prototype.onCollisionStartWeapon = function (other, hand) {
     if (this.entity.attackSystem.status === CharacterAttackSystemStatusEnum.DAMAGING) {
+        if (this.entity.tags.has("is-player") && other.tags.has("is-player")) return;
+
+        if (other.tags.has("is-character")) {
+            console.log("DAMAGIN CHARACTER !!!");
+        }
     }
 }
 
-Character.prototype.onCollisionEndRightWeapon = function (other) {
 
-}
 
 /* * * * * * * * * * * * * * * * */
 /* D O  A T T A C K  S Y S T E M */
@@ -859,7 +892,7 @@ Character.prototype.rotateCharacter = function (x, z, targetDirection, rotSpeed)
     if (this.playerOptions.playerControllerOnKeyRight === "Rotate") {
         if (x !== 0 || z !== 0) {
             const moveAngle = Math.atan2(z, x) * pc.math.RAD_TO_DEG;
-            addAngle = (Math.round(moveAngle / 45) * 45) + 90;
+            addAngle = (Math.round(moveAngle / 45) * 45) + 270;
         }
     }
 
@@ -1144,18 +1177,23 @@ Character.prototype.doSensors = function (dt) {
 
 
     if (this.sensorOptions.processstep === 0) {
-        if (this.sensorOptions.detectableEntities_length === 0) {
-            this.sensorOptions.detectableEntities = this.app.scene.root.findByTag("is-detectable");
-            this.sensorOptions.detectableEntities_length = this.sensorOptions.detectableEntities.length;
-        }
+        /*if (this.sensorOptions.all_detectableEntities_length === 0) {*/
+        this.sensorOptions.all_detectableEntities = this.app.scene.root.findByTag("is-detectable");
+        /*this.sensorOptions.all_detectableEntities = this.sensorOptions.all_detectableEntities.filter(function (ent) {
+            return ent._guid !== this.entity._guid;
+        }.bind(this));*/
+        this.sensorOptions.all_detectableEntities_length = this.sensorOptions.all_detectableEntities.length;
+        /*}*/
+
         this.sensorOptions.raiseDetectedEvent = false;
         var d = 0,
             detectableEntity = null;
         const oldLength = this.detectedEntities.length;
-        for (; d < this.sensorOptions.detectableEntities_length; d++) {
-            detectableEntity = this.sensorOptions.detectableEntities[d];
+        for (; d < this.sensorOptions.all_detectableEntities_length; d++) {
+            detectableEntity = this.sensorOptions.all_detectableEntities[d];
+            /*TODO HACER QIE NO SE DETECTE ASI MISMA*/
 
-            if (detectableEntity && detectableEntity._guid !== this.entity._guid) {
+            if (!detectableEntity.tags.has("is-taken") && detectableEntity._guid !== this.entity._guid) {
                 const distance = this.CHAR_CUR_POSITION.distance(detectableEntity.getPosition());
                 if (distance <= 5 + this.characterRadius) {
                     /*DETECTED*/
@@ -1166,6 +1204,8 @@ Character.prototype.doSensors = function (dt) {
                     /*////////REMOVE*/
                     this.detectedEntities = this.detectedEntities.filter(entity => entity._guid !== detectableEntity._guid);
                 }
+            } else {
+                this.detectedEntities = this.detectedEntities.filter(entity => entity._guid !== detectableEntity._guid);
             }
         }
 
