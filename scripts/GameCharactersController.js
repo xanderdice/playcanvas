@@ -393,6 +393,30 @@ GameCharactersController.prototype.initialize = function () {
     }
 
 
+    /*******************************************************/
+    /*
+    /*    UPDATE CHARACTERS MOVEMENT
+    /*
+    /*******************************************************/
+    setInterval(function () {
+
+        return;
+        if (!this.interv) {
+            this.interv = true;
+
+            Trace("setInterval dt", this.app.dt);
+            this.onKeyboardInput(this.dt);
+
+            const clonedObject = Object.assign({}, this.input);
+            delete clonedObject.camera;
+            clonedObject.camera = null;
+            Trace("input", clonedObject);
+
+            /*this.updateCharactersMovement(this.dt);*/
+            this.interv = false;
+        }
+    }.bind(this), 1000 / 60 * 2 + 1);
+
 
 };
 
@@ -680,9 +704,8 @@ GameCharactersController.prototype.onMouseWheel = function (event) {
 
 
 
-GameCharactersController.prototype.onKeyboardInput = function (dt) {
+GameCharactersController.prototype.onKeyboardInput = function () {
     if (this.app.isMenuMode) return;
-
     const keyboard = this.app.keyboard;
 
     // Movimiento horizontal
@@ -730,7 +753,7 @@ GameCharactersController.prototype.onKeyboardInput = function (dt) {
 
 }
 
-GameCharactersController.prototype.updateCharactersMovement = function (dt) {
+GameCharactersController.prototype.updateCharactersMovement = function () {
     if (!this.updateCharactersMovement_busy) {
         this.updateCharactersMovement_busy = true;
 
@@ -744,13 +767,14 @@ GameCharactersController.prototype.updateCharactersMovement = function (dt) {
             const otherScript = this.characters[i].script.character
             if (otherScript) {
                 //if (this.characters[i].isPlayer) {
-                otherScript.doMove(this.input, dt);
+                otherScript.doMove(this.input);
                 //}
             }
         }
 
         this.updateCharactersMovement_busy = false;
     } else {
+        console.warn("updateCharactersMovement_busy = true");
         Trace("updateCharactersMovement_busy = true");
     }
 }
@@ -758,7 +782,7 @@ GameCharactersController.prototype.updateCharactersMovement = function (dt) {
 
 
 
-GameCharactersController.prototype.updateCameraOrientation = function (dt) {
+GameCharactersController.prototype.updateCameraOrientation = function () {
     if (this.playerPersonStyle === "FlyCamera") {
         if (this.mouseOptions.hideMousePointer) {
             if (pc.Mouse.isPointerLocked()) {
@@ -792,6 +816,7 @@ GameCharactersController.prototype.updateCameraOrientation = function (dt) {
 
 
 GameCharactersController.prototype.updateCameraPosition = function (dt) {
+    /*dt = this.app.dt;*/
     if (this.playerPersonStyle === "FlyCamera") {
 
         if (this.input.x < 0) {
@@ -836,7 +861,7 @@ GameCharactersController.prototype.updateCameraPosition = function (dt) {
 
 
     const deltaTimeAdjustment = dt / (1.0 / 60); // 60 es la tasa de frames objetivo (puedes ajustarla según tu necesidad)
-    const smoothFactor = this.followCamera.smoothFactor * deltaTimeAdjustment;
+    const smoothFactor = 1; /*this.followCamera.smoothFactor * deltaTimeAdjustment;*/
     this.followCamera.smoothedPosition.lerp(this.followCamera.smoothedPosition, cameraPosition, smoothFactor);
 
     this.camera.setPosition(this.followCamera.smoothedPosition);
@@ -862,20 +887,25 @@ GameCharactersController.prototype.updateCameraPosition = function (dt) {
 GameCharactersController.prototype.update = function (dt) {
     //    if (this.app.isMenuMode) return;
 
-    this.input.dt = dt;
-    this.onKeyboardInput(dt);
 
-    this.updateCharactersMovement(dt);
+    this.onKeyboardInput();
+    this.input.dt = this.app.dt;
+    this.updateCharactersMovement();
+
 
     if (this.camera) {
-        this.updateCameraOrientation(dt);
+        this.updateCameraOrientation();
         this.updateCameraPosition(dt);
     }
 
     this.getSceneLights(dt);
+
 };
 
+GameCharactersController.prototype.postUpdate = function (dt) {
 
+
+}
 
 
 /// ------------------------------------------------------------

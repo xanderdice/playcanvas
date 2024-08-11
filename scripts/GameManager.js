@@ -463,9 +463,21 @@ GameManager.prototype.postInitialize = function () {
 
 
 }
+
+function sleep(ms) {
+    if (!ms) return;
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+        // Bloqueo del hilo principal
+    }
+}
+
 // update code called every frame
-GameManager.updateGameManager = function (dt) {
+GameManager.updateGameManager = async function (dt) {
+    GameManager._app.dt = dt;
     Timer.evaluateTimers(dt);
+
+    sleep(TracerScript.trgamesleep);
 
     if (TracerScript.trenablefps) {
         TracerScript.fps.tick();
@@ -786,7 +798,6 @@ GameManager.freeAssets = function () {
         var asset = assets[i];
         const canUnload = includeTypes.some(type => type.toLowerCase() === asset.type.toLowerCase());
         if (canUnload && asset.loaded) {
-            //debugger;
             for (var r = 0; r < asset.resources.length; r++) {
                 //asset.resources[r].destroy();
                 asset.resources[r];

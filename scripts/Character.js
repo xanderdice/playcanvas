@@ -294,12 +294,21 @@ Character.prototype.initialize = function () {
     this.entity.tags.add("is-detectable");
 
 
-    this.entity.targetPoint = null;
+    this.entity.currentTargetEntity = null;
+
+    this.pointCharacterEntity = new pc.Entity()
+    this.pointCharacterEntity.name = (this.entity.isPlayer ? "player-" : "") + "pointCharacterEntity";
+    this.pointCharacterEntity.tags.add(this.pointCharacterEntity.name);
+    this.app.scene.root.addChild(this.pointCharacterEntity);
+
+
+
     this.doMoveCharacter_busy = false;
 
     this.CHAR_CUR_POSITION = this.entity.getPosition();
     this.CHAR_CUR_ROTATION = this.entity.getRotation();
     this.CHAR_LAST_POSITION = this.CHAR_CUR_POSITION.clone();
+    this.currenRotation = 0;
 
     this.detectedEntities = [];
     this.sensorOptions.all_detectableEntities = []
@@ -411,6 +420,7 @@ Character.prototype.initialize = function () {
                 diffuse: pc.Color.RED
             });
             const meshInstance = new pc.MeshInstance(capsule_collision, capsuleMesh, transparentMaterial);
+            capsule_collision.tags.add("uranus-instancing-exclude");
             capsule_collision.addComponent('render', {
                 renderStyle: pc.RENDERSTYLE_WIREFRAME,
                 meshInstances: [meshInstance],
@@ -444,7 +454,7 @@ Character.prototype.initialize = function () {
         this.entity.addComponent('rigidbody', {
             type: 'dynamic',         // Tipo de cuerpo rígido (puede ser 'dynamic', 'static' o 'kinematic')
             mass: mass,              // Masa del cuerpo rígido
-            friction: 0.5,          // Coeficiente de fricción
+            friction: 1,          // Coeficiente de fricción
             restitution: 0,       // Coeficiente de restitución (rebote)
             linearDamping: 0.0,     // Amortiguación lineal
             angularDamping: 0.0,    // Amortiguación angular
@@ -578,7 +588,8 @@ Character.prototype.getYaw = function (rotation) {
 Character.prototype.stopMovement = function () {
 
     this.entity.rigidbody.linearVelocity = new pc.Vec3(0, this.entity.rigidbody.linearVelocity.y, 0);
-    this.entity.targetPoint = null;
+    this.entity.currentTargetEntity = null;
+
 
 }
 
@@ -588,18 +599,24 @@ Character.prototype.stopMovement = function () {
 /*              */
 /* D O  M O V E */
 /*              */
-Character.prototype.doMove = function (input, dt) {
+Character.prototype.doMove = function (input) {
 
 
     if (!this.doMoveCharacter_busy) {
         this.doMoveCharacter_busy = true;
 
+        var dt = this.app.dt;
+
         this.CHAR_CUR_POSITION = this.entity.getPosition();
         this.CHAR_CUR_ROTATION = this.entity.getRotation();
 
-
+        this.pointCharacterEntity.setPosition(this.CHAR_CUR_POSITION);
 
         this.doSensors(dt);
+
+
+        var spherePoint = this.app.scene.root.findByTag("player-pointCharacterEntity")[0];
+
 
 
         if (this.tracerOptions.traceinput && this.entity.isPlayer) {
@@ -607,7 +624,6 @@ Character.prototype.doMove = function (input, dt) {
             delete clonedObject.camera;
             clonedObject.camera = null;
             Trace("input", clonedObject);
-
         }
 
 
@@ -615,11 +631,33 @@ Character.prototype.doMove = function (input, dt) {
 
         var x = 0;
         var z = 0;
-        var targetDirection = this.entity;
+        var targetDirection = null;
+        if (spherePoint) {
+            targetDirection = spherePoint;
+        } else {
+            targetDirection = this.entity;
+        }
         if (this.entity.isPlayer) {
             x = input.x;
             z = input.z;
+            /*
+            if (spherePoint) {
+                targetDirection = spherePoint;
+            } else {
+                targetDirection = input.camera;
+            }
+            */
             targetDirection = input.camera;
+        }
+
+
+        if (spherePoint && !this.entity.isPlayer) {
+            const direction = spherePoint.getPosition().clone().sub(this.CHAR_CUR_POSITION).normalize();
+
+            x = direction.x;
+            if (x < 0.1 && x > -0.1) x = 0;
+            z = -direction.z;
+            if (z < 0.1 && z > -0.1) z = 0;
         }
 
 
@@ -633,11 +671,11 @@ Character.prototype.doMove = function (input, dt) {
 
 
 
-        var moveSpeed = input.sprint ? this.speed * 2.5 : this.speed;
+        var moveSpeed = (input.sprint ? this.speed * 2 : this.speed);
 
 
-        var isMoving = x !== 0 || z !== 0;
-        !isMoving && (moveSpeed = 0);
+        this.isMoving = x !== 0 || z !== 0;
+        !this.isMoving && (moveSpeed = 0);
 
         this.charSpeed < moveSpeed - 0.1 ? this.charSpeed = pc.math.lerp(this.charSpeed, moveSpeed, dt * this.speed * 4) : this.charSpeed = moveSpeed;
 
@@ -647,7 +685,7 @@ Character.prototype.doMove = function (input, dt) {
 
 
         if (this.entity.attackSystem.canAttack && !this.entity.attackSystem.walkAndAttack && this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
-            isMoving = false;
+            this.isMoving = false;
         }
 
 
@@ -655,7 +693,7 @@ Character.prototype.doMove = function (input, dt) {
 
 
 
-        if (isMoving) {
+        if (this.isMoving) {
 
             var newPosition = this.CHAR_CUR_POSITION.clone();
 
@@ -667,18 +705,19 @@ Character.prototype.doMove = function (input, dt) {
             const direction = forwardDirection.add(strafeDirection).normalize();
             direction.y = 0;
 
+            const velocity = direction.clone().scale(this.charSpeed);
+
+            //this.entity.rigidbody.linearVelocity = velocity;
+
             // Calcular la nueva posición del jugador
             newPosition = newPosition.add(direction.scale(this.charSpeed * dt));
 
-            this.entity.rigidbody.teleport(newPosition);
-            delete newPosition;
-
             if (input.playerPersonStyle !== "FirstPerson") {
-                this.rotateCharacter(x, z, targetDirection, this.speed * 7 * dt);
+                this.rotateCharacter(x, z, targetDirection, this.speed * 4 * dt);
             }
-        }
 
-        delete targetDirection;
+            this.entity.rigidbody.teleport(newPosition, new pc.Quat().setFromEulerAngles(0, this.currenRotation, 0));
+        }
 
 
         this.doInteraction(input, dt);
@@ -688,8 +727,6 @@ Character.prototype.doMove = function (input, dt) {
             this.entity.anim.setFloat("speed", this.speedAnimBlend);
         }
 
-        this.doCarryWeapons(input, dt);
-
         this.doAttackSystem(input, dt);
 
 
@@ -697,10 +734,12 @@ Character.prototype.doMove = function (input, dt) {
     }
 }
 
+
+
 /* * * * * * * * * * * * * * * * */
 /* D O  C A R R Y  W E A P O N S */
 /* * * * * * * * * * * * * * * * */
-Character.prototype.doCarryWeapons = function (input, dt) {
+Character.prototype.doCarryWeapons = async function () {
 
     function setDefRigidBodyValues(r) {
         if (!r) return;
@@ -756,7 +795,7 @@ Character.prototype.doCarryWeapons = function (input, dt) {
                 var r = this.carryWeapons.rightHandWeaponEntity.findComponent("render");
                 if (r) {
                     var rotation = new pc.Quat();
-                    rotation.setFromEulerAngles(0, 270, 0);
+                    rotation.setFromEulerAngles(0, 180, 0);
 
                     // Aplica la rotación a la entidad
                     r.entity.setRotation(rotation);
@@ -892,16 +931,16 @@ Character.prototype.rotateCharacter = function (x, z, targetDirection, rotSpeed)
     if (this.playerOptions.playerControllerOnKeyRight === "Rotate") {
         if (x !== 0 || z !== 0) {
             const moveAngle = Math.atan2(z, x) * pc.math.RAD_TO_DEG;
-            addAngle = (Math.round(moveAngle / 45) * 45) + 270;
+            addAngle = (Math.round(moveAngle / 45) * 45) + 630;
         }
     }
 
     const direction = new pc.Vec3(-targetDirection.forward.x, 0, -targetDirection.forward.z).normalize();
     const angle = (Math.atan2(direction.x, direction.z) * pc.math.RAD_TO_DEG) + addAngle;
-    this.currenRotation = pc.math.lerpAngle(this.currenRotation ?? 0, angle, rotSpeed ? rotSpeed : 0.2);
-    this.entity.rigidbody.enabled = false;
+    this.currenRotation = pc.math.lerpAngle(this.currenRotation, angle, rotSpeed ? rotSpeed : 0.2);
+    /*this.entity.rigidbody.enabled = false;
     this.entity.setEulerAngles(0, this.currenRotation, 0);
-    this.entity.rigidbody.enabled = true;
+    this.entity.rigidbody.enabled = true;*/
 }
 
 const CharacterLocomotionEnum = Object.freeze({
@@ -1027,7 +1066,7 @@ Character.prototype.doCalculateAnimation = function (animVelocityMode, dt) {
 
 Character.prototype.doSensors = function (dt) {
 
-    if (this.entity.isonair && this.entity.targetPoint) {
+    if (this.entity.isonair && this.entity.currentTargetEntity) {
         this.stopMovement();
     }
 
@@ -1484,12 +1523,13 @@ Character.prototype.doInteraction = function (input, dt) {
 /*******************************/
 /*-----------------------------------------------------------------------------------------*/
 Character.prototype.update = function (dt) {
-    this.CHAR_LAST_POSITION = this.CHAR_CUR_POSITION.clone();
+
 }
 
 Character.prototype.postUpdate = function (dt) {
     this.rootMotionFix();
-    this.CHAR_LAST_POSITION = this.CHAR_CUR_POSITION.clone();
+    this.doCarryWeapons(dt);
+    this.CHAR_LAST_POSITION = this.CHAR_CUR_POSITION;
 }
 
 Character.prototype.rootMotionFix = function () {
