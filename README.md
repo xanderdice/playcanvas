@@ -11,6 +11,8 @@ playcanvas scripts textures and more
 * //https://github.com/huwb/volsample?tab=readme-ov-file VOLUMETRIC SHADERS
 * //https://playcanv.as/p/5QoTo3QT/ PLAYCANVAS EXCAMPLE
 
+* https://github.com/yandongCoder/circular-menu (CIRCULAR MENU)
+
 //resolutions
 * 4320p (8K): 7680x4320
 * 2160p (4K): 3840x2160
