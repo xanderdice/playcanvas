@@ -73,11 +73,143 @@
     }
 </style>
 
+
+<style type="text/css">
+    .circular-menu {
+        font-family: "Helvetica Neue", Helvetica, "Hiragino Sans GB", "STHeitiSC-Light", "Microsoft YaHei", Arial, sans-serif;
+        /*z-index: 1040;*/
+        border-radius: 50%;
+        background: transparent;
+        opacity: 0;
+        position: fixed;
+        display: none;
+        cursor: default;
+        transform: scale(0.1);
+        pointer-events: none;
+        overflow: hidden;
+        /*cover to prevent extra space of anchors from being clickable*/
+    }
+
+
+    .circular-menu.circular-sub-menu {
+        /*transition: all 0s ease 0s;*/
+    }
+
+
+    .circular-menu.circular-sub-menu:after {
+        display: none;
+    }
+
+
+    .circular-menu:after {
+        content: ".";
+        display: block;
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        border-radius: 50%;
+        z-index: 10;
+        color: transparent;
+        box-sizing: border-box;
+    }
+
+
+    .circular-menu.opened-nav {
+        opacity: 1;
+        transform: scale(1);
+        pointer-events: auto;
+    }
+
+    .circular-menu.opened-nav li {
+        pointer-events: none;
+    }
+
+    .circular-menu.opened-nav li a {
+        pointer-events: auto;
+    }
+
+    .circular-menu.opened-nav li a .horizontal {
+        pointer-events: none;
+    }
+
+    .circular-menu ul {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+    }
+
+    .circular-menu ul li {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+        position: absolute;
+        overflow: hidden;
+        border: 1px solid transparent;
+        transform-origin: 100% 100%;
+    }
+
+    .circular-menu ul li a {
+        box-sizing: border-box;
+        position: absolute;
+        display: block;
+        border-radius: 50%;
+        cursor: pointer;
+        color: #fff;
+        padding-top: 10px;
+        text-align: center;
+        text-decoration: none;
+        backface-visibility: hidden;
+    }
+
+    .circular-menu ul li a span.cm-icon {
+        display: inline-block;
+        background-size: cover;
+    }
+
+
+    .circular-menu ul li a span.text {
+        display: block;
+        font-size: 13px;
+        line-height: 1;
+        position: relative;
+    }
+
+
+    .circular-menu ul li a .cn-icon:before {
+        display: table;
+    }
+
+
+    .circular-menu ul li a.disabled {
+        -webkit-filter: grayscale(100%);
+        pointer-events: none !important;
+        cursor: default;
+    }
+
+
+    .circular-menu ul li a:focus {
+        position: fixed;
+        /* fix the displacement bug in webkit browsers when using tab key */
+    }
+
+    .circle-menu-center {
+        position: absolute;
+        top: 0px;
+        left: 0px;
+        right: 0px;
+        bottom: 0px;
+        /**/
+    }
+</style>
+
+
 <!-- Contenedor posicionado absolutamente -->
+<!-- 
 <div class="menu-center">
-    <!-- Div para centrar el menú -->
+    
     <div class="menu" id="mainmenu">
-        <!-- Menú del juego -->
+        
         <h1>Main Menu</h1>
         <ul>
             <li><a href="javascript:GameManager.resumeGame()" id="menuresumegame">Resume</a></li>
@@ -88,4 +220,64 @@
             <li><a href="javascript:GameManager.loadScene('game')">Exit to Main Menu</a></li>
         </ul>
     </div>
+</div>
+-->
+
+<style type="text/css">
+    .cn-menu1 {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+    }
+
+    .cn-menu2 {
+        position: absolute;
+        left: 40%;
+        top: 50%;
+    }
+
+    .cn-menu3 {
+        position: absolute;
+        left: 60%;
+        top: 50%;
+    }
+
+    .cn-menu4 {
+        position: absolute;
+        left: 80%;
+        top: 50%;
+    }
+
+    .rect-icon {
+        background: #fff;
+        display: inline-block !important;
+    }
+
+    .circle-icon {
+        background: #f94321;
+        display: inline-block !important;
+        border-radius: 50%;
+    }
+
+    .my-icon {
+        background: url("./images/circular-menu.png");
+    }
+
+    .icon1 {
+        background-position: 0 0;
+    }
+
+    .icon2 {
+        background-position: 0 -56px;
+    }
+
+    .icon3 {
+        background-position: 0 -116px;
+    }
+</style>
+<div class="circle-menu-center" tabindex="-1">
+    <div id="circle-menu1" class="cn-menu1" tabindex="-1"></div>
+    <div id="circle-menu2" class="cn-menu2" tabindex="-1"></div>
+    <div id="circle-menu3" class="cn-menu3" tabindex="-1"></div>
+    <div id="circle-menu4" class="cn-menu4" tabindex="-1"></div>
 </div>
