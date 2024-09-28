@@ -743,6 +743,9 @@ GameCharactersController.prototype.onKeyboardInput = function () {
 
     this.input.interact = keyboard.isPressed(pc.KEY_E);
     this.input.attack = keyboard.isPressed(pc.KEY_F);
+    this.input.impact = keyboard.isPressed(pc.KEY_I);
+    this.input.death = keyboard.isPressed(pc.KEY_U);
+    this.input.mode = keyboard.isPressed(pc.KEY_M);
 
 
     this.input.mousePrimaryButton = this.app.mouse.isPressed(pc.MOUSEBUTTON_LEFT);
@@ -861,8 +864,13 @@ GameCharactersController.prototype.updateCameraPosition = function (dt) {
 
 
     const deltaTimeAdjustment = dt / (1.0 / 60); // 60 es la tasa de frames objetivo (puedes ajustarla según tu necesidad)
-    const smoothFactor = 1; /*this.followCamera.smoothFactor * deltaTimeAdjustment;*/
-    this.followCamera.smoothedPosition.lerp(this.followCamera.smoothedPosition, cameraPosition, smoothFactor);
+    const smoothFactor = this.followCamera.smoothFactor * deltaTimeAdjustment;
+    //const smoothFactor = 1;
+    if (smoothFactor > 0 && smoothFactor < 1) {
+        this.followCamera.smoothedPosition.lerp(this.followCamera.smoothedPosition, cameraPosition, smoothFactor);
+    } else {
+        this.followCamera.smoothedPosition = cameraPosition;
+    }
 
     this.camera.setPosition(this.followCamera.smoothedPosition);
 
@@ -886,8 +894,6 @@ GameCharactersController.prototype.updateCameraPosition = function (dt) {
 // update code called every frame
 GameCharactersController.prototype.update = function (dt) {
     //    if (this.app.isMenuMode) return;
-
-
     this.onKeyboardInput();
     this.input.dt = this.app.dt;
     this.updateCharactersMovement();
@@ -911,6 +917,12 @@ GameCharactersController.prototype.postUpdate = function (dt) {
 /// ------------------------------------------------------------
 ///FUNCTIONS
 /// ------------------------------------------------------------
+GameCharactersController.prototype.createAudioListener = function () {
+    if (!this.audiolistener) {
+        this.audiolistener = this.app.scene.root.addComponent("audiolistener");
+    }
+}
+
 
 GameCharactersController.prototype.getCharacters = function () {
     // Recorre las entidades hijas

@@ -143,45 +143,45 @@ Character.attributes.add('playerAnimationsOptions',
                     { "teleport": "teleport" },
                     { "none": "none" }],
                 default: "in_place_z_axis"
-            },
-            {
-                name: 'hips',
-                title: "Hips Entity",
-                type: 'entity',
-                default: null
             }
         ]
     });
 
 
-Character.attributes.add('animations_unarmed',
+Character.attributes.add('bones',
     {
-        title: "Animations Unarmed",
+        title: "bones",
         type: 'json',
         schema: [
             {
-                name: 'idle',
-                type: 'asset',
-                assetType: 'animation',
-                array: true
+                name: 'autodetectFromMixamoArmature',
+                type: 'boolean',
+                default: true
             },
             {
-                name: 'walking',
-                type: 'asset',
-                assetType: 'animation',
-                array: false
+                name: 'hips',
+                type: 'entity',
+                default: null
             },
             {
-                name: 'running',
-                type: 'asset',
-                assetType: 'animation',
-                array: false
+                name: 'leftHand',
+                type: 'entity',
+                default: null
             },
             {
-                name: 'attack',
-                type: 'asset',
-                assetType: 'animation',
-                array: true
+                name: 'rightHand',
+                type: 'entity',
+                default: null
+            },
+            {
+                name: 'leftFoot',
+                type: 'entity',
+                default: null
+            },
+            {
+                name: 'rightFoot',
+                type: 'entity',
+                default: null
             },
         ]
     });
@@ -193,18 +193,9 @@ Character.attributes.add('carryWeapons',
         title: "Carry Weapons",
         type: 'json',
         schema: [
-            {
-                name: 'leftHand',
-                type: 'entity',
-                default: null
-            },
+
             {
                 name: 'leftHandWeaponEntity',
-                type: 'entity',
-                default: null
-            },
-            {
-                name: 'rightHand',
                 type: 'entity',
                 default: null
             },
@@ -236,6 +227,89 @@ Character.attributes.add('attackSystem',
             }
         ]
     });
+
+
+const CharacterLocomotionModeEnum = Object.freeze({
+    UNARMED: 0,
+    TORCH: 1,
+    ARMED_2W: 2
+});
+
+Character.animation_modes = ["unarmed", "torch", "armed_2w"];
+Character.animation_idles = ["idle", "idle_searching", "idle_examine", "idle_resting", "idle_hit"];
+Character.animation_attack = ["attack1"];
+
+Character.animation_states = [
+    "death1",
+    "death2",
+    "walking",
+    "walking_backward",
+    "walking_turn_180",
+    "running",
+    "running_backward",
+    "impact_block",
+    "impact1",
+    "impact2"
+];
+
+Character.animation_custom_states = [
+    /*{
+        modeName: "unarmed",
+        name: "custom_state_name"
+    }*/
+];
+
+
+
+
+
+for (var a_s = 0; a_s < Character.animation_modes.length; a_s++) {
+    var modeName = (Character.animation_modes[a_s] || "");
+    var statesSchema = Character.animation_custom_states.filter(function (s) {
+        return s.modeName === modeName;
+    });
+
+    for (var i = 0; i < Character.animation_idles.length; i++) {
+        statesSchema.push({
+            name: modeName + "_" + Character.animation_idles[i],
+            type: "asset",
+            assetType: "animation"
+        });
+    }
+    for (var i = 0; i < Character.animation_attack.length; i++) {
+        statesSchema.push({
+            name: modeName + "_" + Character.animation_attack[i],
+            type: "asset",
+            assetType: "animation"
+        });
+    }
+    for (var i = 0; i < Character.animation_states.length; i++) {
+        statesSchema.push({
+            name: modeName + "_" + Character.animation_states[i],
+            type: "asset",
+            assetType: "animation"
+        });
+    }
+
+
+    for (var i = 0; i < statesSchema.length; i++) {
+        statesSchema[i].name = modeName + "_" + (statesSchema[i].name || "").replace(modeName + "_", "");
+        statesSchema[i].type = "asset";
+        statesSchema[i].assetType = "animation";
+    }
+
+    if (statesSchema.length > 0) {
+        Character.attributes.add('animations_' + modeName,
+            {
+                title: 'Animations ' + modeName,
+                type: 'json',
+                schema: statesSchema
+            }
+        );
+    }
+
+}
+
 
 
 
@@ -270,11 +344,6 @@ const CharacterAttackSystemStatusEnum = Object.freeze({
     ENDING: 3,
 });
 
-const CharacterLocomotionModeEnum = Object.freeze({
-    UNARMED: 0,
-    LIGHTER: 1,
-    ARMED: 2,
-});
 
 
 Character.prototype.initialize = function () {
@@ -322,35 +391,18 @@ Character.prototype.initialize = function () {
 
 
 
-    /*internal character timers*/
-    this._timers = {};
-    this._timercounter = 0;
-
     this.jumping_availability = true;
 
 
     this.animPlayerStateGraphData = null;
-    if (!this.playerAnimationsOptions.hips) {
-        this.playerAnimationsOptions.hips = this.entity.findByName("mixamorig:Hips");
-    }
-    if (this.playerAnimationsOptions.hips) {
-        this.playerAnimationsOptions.startPosition = this.playerAnimationsOptions.hips.getLocalPosition().clone();
-    }
-    this.motionrootmode = this.playerAnimationsOptions.motionrootmode;
 
-    this.renderCharacterComponent.rootBone = this.playerAnimationsOptions.hips;
 
 
     this.animatorTargetReached = true;
     this.animatorCurrentAnimId = 0;
 
 
-    if (!this.carryWeapons.leftHand) {
-        this.carryWeapons.leftHand = this.entity.findByName("mixamorig:LeftHand");
-    }
-    if (!this.carryWeapons.rightHand) {
-        this.carryWeapons.rightHand = this.entity.findByName("mixamorig:RightHand");
-    }
+
 
 
     this.entity.attackSystem = {
@@ -385,55 +437,90 @@ Character.prototype.initialize = function () {
         */
 
 
+    /* COLLITIONS BONES */
+    this.entity.collisionBones = {
+        leftFootCollision: new pc.Entity(this.entity.name + "_leftFootCollision"),
+        rightFootCollision: new pc.Entity(this.entity.name + "_rightFootCollision"),
+        leftFoot: this.entity.findByName("mixamorig:LeftFoot"),
+        rightFoot: this.entity.findByName("mixamorig:RightFoot"),
+    };
 
+
+
+    if (!this.bones.hips && this.bones.autodetectFromMixamoArmature) {
+        this.bones.hips = this.entity.findByName("mixamorig:Hips");
+    }
+    if (!this.bones.leftHand && this.bones.autodetectFromMixamoArmature) {
+        this.bones.leftHand = this.entity.findByName("mixamorig:LeftHand");
+    }
+    if (!this.bones.rightHand && this.bones.autodetectFromMixamoArmature) {
+        this.bones.rightHand = this.entity.findByName("mixamorig:RightHand");
+    }
+    if (!this.bones.leftFoot && this.bones.autodetectFromMixamoArmature) {
+        this.bones.leftFoot = this.entity.findByName("mixamorig:LeftFoot");
+    }
+    if (!this.bones.rightFoot && this.bones.autodetectFromMixamoArmature) {
+        this.bones.rightFoot = this.entity.findByName("mixamorig:RightFoot");
+    }
+
+    if (this.bones.hips) {
+        this.playerAnimationsOptions.startPosition = this.bones.hips.getLocalPosition().clone();
+    }
+    this.motionrootmode = this.playerAnimationsOptions.motionrootmode;
+    this.renderCharacterComponent.rootBone = this.bones.hips;
+
+
+    /*
+        this.entity.collisionBones.leftFoot.collision.on("collisionstart", function (entity) {
+            if (!entity.isPlayer) {
+                debugger;
+                alert("leftFoot - collisionstart");
+            }
+        }, this);
+    */
 
 
 
     this.characterHeight = 1.8;
-    this.characterRadius = 0.3;
+    this.characterRadius = 0.35;
 
     if (!this.entity.collision) {
         this.entity.addComponent('collision', {
-            type: 'compound'
+            type: "compound"
         });
-        var capsule_collision = new pc.Entity(this.entity.name + "_capsule_collision");
-        this.entity.addChild(capsule_collision);
+    }
+    this.entity.capsule_collision = new pc.Entity(this.entity.name + "_capsule_collision");
+    this.entity.capsule_collision.addComponent('collision', {
+        type: 'capsule',
+        radius: this.characterRadius,
+        height: this.characterHeight
+    });
+    this.entity.addChild(this.entity.capsule_collision);
 
-        capsule_collision.addComponent('collision', {
-            type: 'capsule',
+
+
+    if (this.sensorOptions.sensorDebug) {
+
+        const options = {
             radius: this.characterRadius,
             height: this.characterHeight
+        };
+        const capsuleMesh = pc.Mesh.fromGeometry(this.app.graphicsDevice, new pc.CapsuleGeometry(options));
+
+
+        const transparentMaterial = new pc.StandardMaterial({
+            diffuse: pc.Color.RED
         });
-
-
-
-        if (this.sensorOptions.sensorDebug) {
-
-            const options = {
-                radius: this.characterRadius,
-                height: this.characterHeight
-            };
-            const capsuleMesh = pc.Mesh.fromGeometry(this.app.graphicsDevice, new pc.CapsuleGeometry(options));
-
-
-            const transparentMaterial = new pc.StandardMaterial({
-                diffuse: pc.Color.RED
-            });
-            const meshInstance = new pc.MeshInstance(capsule_collision, capsuleMesh, transparentMaterial);
-            capsule_collision.tags.add("uranus-instancing-exclude");
-            capsule_collision.addComponent('render', {
-                renderStyle: pc.RENDERSTYLE_WIREFRAME,
-                meshInstances: [meshInstance],
-                material: transparentMaterial
-            });
-            capsule_collision.render.meshInstances[0].material = transparentMaterial;
-        }
-
-
+        const meshInstance = new pc.MeshInstance(this.entity.capsule_collision, capsuleMesh, transparentMaterial);
+        this.entity.capsule_collision.tags.add("uranus-instancing-exclude");
+        this.entity.capsule_collision.addComponent('render', {
+            renderStyle: pc.RENDERSTYLE_WIREFRAME,
+            meshInstances: [meshInstance],
+            material: transparentMaterial
+        });
+        this.entity.capsule_collision.render.meshInstances[0].material = transparentMaterial;
     }
 
-    this.entity.collision.on("collisionstart", this.sensorCollisionStartEvent, this);
-    this.entity.collision.on("collisionend", this.sensorCollisionEndEvent, this);
 
 
 
@@ -496,6 +583,9 @@ Character.prototype.initialize = function () {
     this.vec3 = new pc.Vec3;
     this.quat = new pc.Quat;
 
+    this.entity.mode = CharacterLocomotionModeEnum.UNARMED;
+    this.old_input = { x: 0, z: 0 };
+
 
     this.on("destroy", function () {
 
@@ -513,66 +603,6 @@ Character.prototype.initialize = function () {
 
 
 
-
-Character.prototype.rotateToNewDirectionFromCameraFunc = function (camera, teleport) {
-    this.playerOptions.rotateToNewDirectionCamera = null;
-    // Obtiene la posición actual del jugador y de la cámara
-    var playerPosition = this.CHAR_CUR_POSITION;
-    var cameraPosition = camera.getPosition();
-    var originalPlayerRotation = this.entity.getRotation().clone();
-
-    // Calcula la dirección desde el jugador hacia la cámara
-    var direction = cameraPosition.clone().sub(playerPosition).normalize();
-
-    // Utiliza el método lookAt para orientar al jugador hacia la cámara
-
-    this.entity.lookAt(playerPosition.x + direction.x, playerPosition.y, playerPosition.z + direction.z);
-    this.entity.rotateLocal(0, 180, 0);
-
-    // Ajusta la rotación para el rigidbody
-
-    var rigidbodyRotation = this.entity.getRotation();
-
-    // Teletransporta al jugador a la nueva posición y rotación
-    if (teleport) {
-        this.entity.rigidbody.teleport(playerPosition, rigidbodyRotation);
-    }
-
-    var originalYaw = this.getYaw(originalPlayerRotation);
-    var newYaw = this.getYaw(rigidbodyRotation);
-
-    var result = "";
-    var diff = newYaw - originalYaw;
-    if (Math.abs(diff) < 1) {
-        //Trace("rotateToNewDirectionFromCamera", "Sin cambio o Rotación mínima");
-    } else {
-        if (diff >= -180 && diff <= 180) {
-            if (diff > 0) {
-                //Trace("Derecha");
-                //result = "right";
-                result = "left";
-            } else if (diff < 0) {
-                //result = "left";
-                result = "right";
-                //Trace("Izquierda");
-            } else {
-                result = "";
-                //Trace("Sin cambio");
-            }
-        } else if (diff < -180) {
-            //result = "right";
-            result = "left";
-            //Trace("Derecha");
-        } else if (diff > 180) {
-            //result = "left";
-            result = "right";
-            //Trace("Izquierda");
-        }
-    }
-
-
-    return result;
-}
 
 
 
@@ -629,8 +659,6 @@ Character.prototype.doMove = function (input) {
 
 
 
-        var x = 0;
-        var z = 0;
         var targetDirection = null;
         if (spherePoint) {
             targetDirection = spherePoint;
@@ -638,8 +666,6 @@ Character.prototype.doMove = function (input) {
             targetDirection = this.entity;
         }
         if (this.entity.isPlayer) {
-            x = input.x;
-            z = input.z;
             /*
             if (spherePoint) {
                 targetDirection = spherePoint;
@@ -654,18 +680,18 @@ Character.prototype.doMove = function (input) {
         if (spherePoint && !this.entity.isPlayer) {
             const direction = spherePoint.getPosition().clone().sub(this.CHAR_CUR_POSITION).normalize();
 
-            x = direction.x;
-            if (x < 0.1 && x > -0.1) x = 0;
-            z = -direction.z;
-            if (z < 0.1 && z > -0.1) z = 0;
+            input.x = direction.x;
+            if (input.x < 0.1 && input.x > -0.1) input.x = 0;
+            input.z = -direction.z;
+            if (input.z < 0.1 && input.z > -0.1) input.z = 0;
         }
 
 
 
 
         if (this.playerOptions.playerControllerOnKeyRight === "Strafe") {
-            if (x !== 0) z = 0;
-            if (z !== 0) x = 0;
+            if (input.x !== 0) input.z = 0;
+            if (input.z !== 0) input.x = 0;
         }
 
 
@@ -674,7 +700,7 @@ Character.prototype.doMove = function (input) {
         var moveSpeed = (input.sprint ? this.speed * 2 : this.speed);
 
 
-        this.isMoving = x !== 0 || z !== 0;
+        this.isMoving = input.x !== 0 || input.z !== 0;
         !this.isMoving && (moveSpeed = 0);
 
         this.charSpeed < moveSpeed - 0.1 ? this.charSpeed = pc.math.lerp(this.charSpeed, moveSpeed, dt * this.speed * 4) : this.charSpeed = moveSpeed;
@@ -687,6 +713,7 @@ Character.prototype.doMove = function (input) {
         if (this.entity.attackSystem.canAttack && !this.entity.attackSystem.walkAndAttack && this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
             this.isMoving = false;
         }
+        this.isMoving = this.isMoving && this.entity.anim.getInteger("turn180") === 0;
 
 
 
@@ -698,8 +725,8 @@ Character.prototype.doMove = function (input) {
             var newPosition = this.CHAR_CUR_POSITION.clone();
 
             // Obtener la dirección de movimiento relativa a la cámara
-            const forwardDirection = targetDirection.forward.clone().scale(z).normalize();
-            const strafeDirection = targetDirection.right.clone().scale(x).normalize();
+            const forwardDirection = targetDirection.forward.clone().scale(input.z).normalize();
+            const strafeDirection = targetDirection.right.clone().scale(input.x).normalize();
 
             // Combinar las direcciones para obtener la dirección final del movimiento
             const direction = forwardDirection.add(strafeDirection).normalize();
@@ -707,29 +734,34 @@ Character.prototype.doMove = function (input) {
 
             const velocity = direction.clone().scale(this.charSpeed);
 
-            //this.entity.rigidbody.linearVelocity = velocity;
+            this.entity.rigidbody.linearVelocity = velocity;
 
             // Calcular la nueva posición del jugador
             newPosition = newPosition.add(direction.scale(this.charSpeed * dt));
 
             if (input.playerPersonStyle !== "FirstPerson") {
-                this.rotateCharacter(x, z, targetDirection, this.speed * 4 * dt);
+                this.rotateCharacter(input, this.old_input, targetDirection, this.speed * 4 * dt);
             }
 
-            this.entity.rigidbody.teleport(newPosition, new pc.Quat().setFromEulerAngles(0, this.currenRotation, 0));
+
+            this.entity.rigidbody.teleport(this.entity.getPosition(), new pc.Quat().setFromEulerAngles(0, this.currenRotation, 0));
         }
 
 
         this.doInteraction(input, dt);
 
 
-        if (this.entity.anim) {
-            this.entity.anim.setFloat("speed", this.speedAnimBlend);
-        }
+        this.entity.anim.setInteger("mode", +(input.mode));
+        this.entity.anim.setFloat("speed", this.speedAnimBlend);
+        this.entity.anim.setInteger("idle", 0);
+        this.entity.anim.setInteger("impact", input.impact ? Math.floor(Math.random() * 2) + 1 : 0);
+        this.entity.anim.setInteger("death", input.death ? Math.floor(Math.random() * 2) + 1 : 0);
+
 
         this.doAttackSystem(input, dt);
 
 
+        this.old_input = Object.assign({}, input);
         this.doMoveCharacter_busy = false;
     }
 }
@@ -749,10 +781,10 @@ Character.prototype.doCarryWeapons = async function () {
         r.friction = 1;
     }
 
-    if (this.carryWeapons.leftHand) {
+    if (this.bones.leftHand) {
         if (this.carryWeapons.leftHandWeaponEntity) {
-            this.carryWeapons.leftHandWeaponEntity.setPosition(this.carryWeapons.leftHand.getPosition());
-            this.carryWeapons.leftHandWeaponEntity.setRotation(this.carryWeapons.leftHand.getRotation());
+            this.carryWeapons.leftHandWeaponEntity.setPosition(this.bones.leftHand.getPosition());
+            this.carryWeapons.leftHandWeaponEntity.setRotation(this.bones.leftHand.getRotation());
 
 
 
@@ -785,17 +817,17 @@ Character.prototype.doCarryWeapons = async function () {
         this.carryWeapons.leftHandWeaponEntityOld = this.carryWeapons.leftHandWeaponEntity;
     }
 
-    if (this.carryWeapons.rightHand) {
+    if (this.bones.rightHand) {
         if (this.carryWeapons.rightHandWeaponEntity) {
-            this.carryWeapons.rightHandWeaponEntity.setPosition(this.carryWeapons.rightHand.getPosition());
-            this.carryWeapons.rightHandWeaponEntity.setRotation(this.carryWeapons.rightHand.getRotation());
+            this.carryWeapons.rightHandWeaponEntity.setPosition(this.bones.rightHand.getPosition());
+            this.carryWeapons.rightHandWeaponEntity.setRotation(this.bones.rightHand.getRotation());
 
             if ((this.carryWeapons.rightHandWeaponEntity._guid || "0") !== (this.carryWeapons.rightHandWeaponEntityOld || {})._guid) {
 
                 var r = this.carryWeapons.rightHandWeaponEntity.findComponent("render");
                 if (r) {
                     var rotation = new pc.Quat();
-                    rotation.setFromEulerAngles(0, 180, 0);
+                    rotation.setFromEulerAngles(0, -90, 0);
 
                     // Aplica la rotación a la entidad
                     r.entity.setRotation(rotation);
@@ -840,12 +872,20 @@ Character.prototype.onCollisionEndLeftWeapon = function (other) {
 
 Character.prototype.onCollisionStartWeapon = function (other, hand) {
     if (this.entity.attackSystem.status === CharacterAttackSystemStatusEnum.DAMAGING) {
-        if (this.entity.tags.has("is-player") && other.tags.has("is-player")) return;
+        if (this.entity.isPlayer && other.isPlayer) return;
 
-        if (other.tags.has("is-character")) {
+        if (other.isCharacter) {
             console.log("DAMAGIN CHARACTER !!!");
         }
     }
+}
+
+Character.prototype.doSensorCollisions = function () {
+    this.entity.collisionBones.leftFootCollision.setPosition(this.entity.collisionBones.leftFoot.getPosition());
+    this.entity.collisionBones.leftFootCollision.setRotation(this.entity.collisionBones.leftFoot.getRotation());
+
+    this.entity.collisionBones.rightFootCollision.setPosition(this.entity.collisionBones.rightFoot.getPosition());
+    this.entity.collisionBones.rightFootCollision.setRotation(this.entity.collisionBones.rightFoot.getRotation());
 }
 
 
@@ -926,21 +966,36 @@ Character.prototype.doAttackSystem = function (input, dt) {
 
 
 
-Character.prototype.rotateCharacter = function (x, z, targetDirection, rotSpeed) {
-    var addAngle = 0;
-    if (this.playerOptions.playerControllerOnKeyRight === "Rotate") {
-        if (x !== 0 || z !== 0) {
-            const moveAngle = Math.atan2(z, x) * pc.math.RAD_TO_DEG;
-            addAngle = (Math.round(moveAngle / 45) * 45) + 630;
+Character.prototype.rotateCharacter = function (input, old_input, targetDirection, rotSpeed) {
+    var self = this;
+    function calculateAngle(x, z) {
+        var addAngle = 0;
+        if (self.playerOptions.playerControllerOnKeyRight === "Rotate") {
+            if (x !== 0 || z !== 0) {
+                const moveAngle = Math.atan2(z, x) * pc.math.RAD_TO_DEG;
+                addAngle = (Math.round(moveAngle / 45) * 45) - 90;
+            }
         }
+        const direction = new pc.Vec3(-targetDirection.forward.x, 0, -targetDirection.forward.z).normalize();
+        const angle = (Math.atan2(direction.x, direction.z) * pc.math.RAD_TO_DEG) + addAngle;
+
+        return angle;
     }
 
-    const direction = new pc.Vec3(-targetDirection.forward.x, 0, -targetDirection.forward.z).normalize();
-    const angle = (Math.atan2(direction.x, direction.z) * pc.math.RAD_TO_DEG) + addAngle;
-    this.currenRotation = pc.math.lerpAngle(this.currenRotation, angle, rotSpeed ? rotSpeed : 0.2);
-    /*this.entity.rigidbody.enabled = false;
-    this.entity.setEulerAngles(0, this.currenRotation, 0);
-    this.entity.rigidbody.enabled = true;*/
+    var targetRotation = calculateAngle(input.x, input.z);
+
+    // Maneja la diferencia angular para evitar rotaciones abruptas
+
+    var rotationDifference = Math.abs((targetRotation - this.currenRotation + 180) % 360 - 180);
+    if (rotationDifference >= 181) {
+        // Ajusta la rotación para evitar un gran salto
+        this.currenRotation = targetRotation;
+    }
+
+    this.currenRotation = pc.math.lerpAngle(this.currenRotation, targetRotation, (rotSpeed || 0.2));
+
+
+
 }
 
 const CharacterLocomotionEnum = Object.freeze({
@@ -1162,6 +1217,28 @@ Character.prototype.doSensors = function (dt) {
 
 
 
+    var footEntity = this.entity.findByName("mixamorig:LeftToeBase");
+    debugger;
+    var position = footEntity.getPosition();
+    var rotation = footEntity.getRotation();
+
+    // Calcular la dirección del rayo en el eje Y local de la entidad
+    // La dirección en el eje Y local es (0, 1, 0), pero transformada por la rotación de la entidad
+    var direction = new pc.Vec3(0, 0, -1);
+    direction = rotation.transformVector(direction);
+
+
+    // La longitud del rayo en este caso es de un metro
+    var length = 1;
+    var endPoint = new pc.Vec3().copy(position).add(direction.scale(length));
+
+    // Lanzar el raycast desde la posición hasta el punto final
+    var result = this.app.systems.rigidbody.raycastFirst(position, endPoint, { lowResolution: true });
+    this.app.drawLine(position, endPoint, pc.Color.RED, 5);
+
+
+
+
     this.entity.isonair = (this.entity.sensorGroundDistanceCenter ?? 1) > 0 &&
         (this.entity.sensorGroundDistanceForward ?? 1) > groundTolerance &&
         (this.entity.sensorGroundDistanceBackward ?? 1) > groundTolerance;
@@ -1378,103 +1455,6 @@ Character.prototype.doSensors = function (dt) {
 
 
 
-Character.prototype.sensorCollisionStartEvent = function (result) {
-
-    var i = 0,
-        contacts_length = (result.contacts || []).length,
-        /* Calcular los vectores de los ejes principales*/
-        xAxis = new pc.Vec3(1, 0, 0),
-        yAxis = new pc.Vec3(0, 1, 0),
-        zAxis = new pc.Vec3(0, 0, 1),
-        /* Definir un umbral para determinar si la colisión es significativ */
-        threshold = 0.8;
-
-    for (; i < contacts_length; i++) {
-        var contactNormal = result.contacts[i].normal,
-            /* Calcular el ángulo entre la normal de la colisión y los ejes principales */
-            angleX = contactNormal.dot(xAxis),
-            angleY = contactNormal.dot(yAxis),
-            angleZ = contactNormal.dot(zAxis);
-
-
-
-        /* Analizar los resultados y determinar el lado de la colisión */
-        if (Math.abs(angleX) > threshold) {
-
-
-            if (angleX > 0) {
-                this.entity.sensorRightEntity = null;
-                this.entity.sensorLeftEntity = result.other;
-
-                /*Colisión en el lado izquierdo*/
-            } else {
-                this.entity.sensorRightEntity = result.other;
-                this.entity.sensorLeftEntity = null;
-                /*Colisión en el lado derecho*/
-
-            }
-        } else if (Math.abs(angleY) > threshold) {
-
-
-            if (angleY > 0) {
-                this.entity.sensorTopEntity = null;
-                this.entity.sensorBottomEntity = result.other;
-                /*Colisión en la parte inferior*/
-
-            } else {
-                this.entity.sensorTopEntity = result.other;
-                this.entity.sensorBottomEntity = null;
-                /*Colisión en la parte superior*/
-
-            }
-        } else if (Math.abs(angleZ) > threshold) {
-
-
-            if (angleZ > 0) {
-
-                this.entity.sensorFrontEntity = null;
-                /*Colisión en el lado trasero*/
-                this.entity.sensorBackEntity = result.other;
-
-            } else {
-                this.entity.sensorBackEntity = null;
-                /*Colisión en el lado frontal*/
-
-                this.entity.sensorFrontEntity = result.other;
-
-
-            }
-        }
-    }
-
-    this.sensorTrace();
-
-}
-Character.prototype.sensorCollisionEndEvent = function (entity) {
-
-    if ((this.entity.sensorRightEntity || {})._guid === entity._guid) {
-        this.entity.sensorRightEntity = null;
-    }
-    if ((this.entity.sensorLeftEntity || {})._guid === entity._guid) {
-        this.entity.sensorLeftEntity = null;
-    }
-    if ((this.entity.sensorTopEntity || {})._guid === entity._guid) {
-        this.entity.sensorTopEntity = null;
-    }
-    if ((this.entity.sensorBottomEntity || {})._guid === entity._guid) {
-        this.entity.sensorBottomEntity = null;
-    }
-    if ((this.entity.sensorFrontEntity || {})._guid === entity._guid) {
-        this.entity.sensorFrontEntity = null;
-    }
-    if ((this.entity.sensorBackEntity || {})._guid === entity._guid) {
-        this.entity.sensorBackEntity = null;
-    }
-
-    this.sensorTrace();
-
-}
-
 Character.prototype.sensorTrace = function () {
     if (!this.sensorOptions.sensorDebug) return;
     Trace("sensorRight ", (this.entity.sensorRightEntity ?? {}).name ?? "");
@@ -1483,6 +1463,13 @@ Character.prototype.sensorTrace = function () {
     Trace("sensorBottom", (this.entity.sensorBottomEntity ?? {}).name ?? "");
     Trace("sensorFront ", (this.entity.sensorFrontEntity ?? {}).name ?? "");
     Trace("sensorBack  ", (this.entity.sensorBackEntity ?? {}).name ?? "");
+}
+
+
+Character.prototype.sensorToeBaseCollisionStartEvent = function (entity) {
+    //if (!entity.isPlayer) {
+    alert("sensorToeBaseCollisionStartEvent = " + entity.name);
+    //}
 }
 
 
@@ -1528,6 +1515,7 @@ Character.prototype.update = function (dt) {
 
 Character.prototype.postUpdate = function (dt) {
     this.rootMotionFix();
+    this.doSensorCollisions();
     this.doCarryWeapons(dt);
     this.CHAR_LAST_POSITION = this.CHAR_CUR_POSITION;
 }
@@ -1535,29 +1523,45 @@ Character.prototype.postUpdate = function (dt) {
 Character.prototype.rootMotionFix = function () {
     /*root motion FIX*/
     if (this.motionrootmode === "in_place_z_axis") {
-        if (this.playerAnimationsOptions.hips) {
-            var vecpos = this.playerAnimationsOptions.hips.getLocalPosition();
+        if (this.bones.hips) {
+            var vecpos = this.bones.hips.getLocalPosition();
 
             vecpos = new pc.Vec3(vecpos.x, vecpos.y, this.playerAnimationsOptions.startPosition.z ?? 0);
 
-            this.playerAnimationsOptions.hips.setLocalPosition(vecpos);
+            this.bones.hips.setLocalPosition(vecpos);
+
+
+            isTurning180 = this.entity.anim.getInteger("turn180") !== 0;
+            if (isTurning180) {
+                var vecrot = this.bones.hips.getLocalRotation();
+                vecrot = new pc.Quat(vecrot.x, 0, vecrot.z, vecrot.w);
+
+                this.bones.hips.setLocalRotation(vecrot);
+            }
+
         }
     }
     if (this.motionrootmode === "in_place_all_axis") {
-        this.playerAnimationsOptions.hips?.setLocalPosition(this.playerAnimationsOptions.startPosition);
+        this.bones.hips?.setLocalPosition(this.playerAnimationsOptions.startPosition);
     }
 
     if (this.animatorAnimMotionRootMode) {
         this.motionrootmode = this.animatorAnimMotionRootMode;
     } else {
         if (this.motionrootmode !== this.playerAnimationsOptions.motionrootmode) {
-            this.playerAnimationsOptions.hips?.setLocalPosition(this.playerAnimationsOptions.startPosition);
+            this.bones.hips?.setLocalPosition(this.playerAnimationsOptions.startPosition);
             this.motionrootmode = this.playerAnimationsOptions.motionrootmode;
         }
     }
 }
 
-
+/*-----------------------------------------------------------------------------------------*/
+/*******************************/
+/*                             */
+/*   A N I M A T I O N S       */
+/*                             */
+/*******************************/
+/*-----------------------------------------------------------------------------------------*/
 Character.prototype.prepareAnimComponent = function () {
 
     const animPlayerStateGraphDataX = {
@@ -1795,6 +1799,7 @@ Character.prototype.prepareAnimComponent = function () {
     };
 
 
+
     this.animPlayerStateGraphData = {
         layers: [
             {
@@ -1805,188 +1810,401 @@ Character.prototype.prepareAnimComponent = function () {
         ],
         parameters: {
             mode: {
-                name: 'mode',
+                name: "mode",
+                type: pc.ANIM_PARAMETER_INTEGER,
+                value: 0
+            },
+            idle: {
+                name: "idle",
                 type: pc.ANIM_PARAMETER_INTEGER,
                 value: 0
             },
             speed: {
-                name: 'speed',
+                name: "speed",
                 type: pc.ANIM_PARAMETER_FLOAT,
                 value: 0
             },
+            turn180: {
+                name: "turn180",
+                type: pc.ANIM_PARAMETER_INTEGER,
+                value: 0
+            },
+            impact: {
+                name: "impact",
+                type: pc.ANIM_PARAMETER_INTEGER,
+                value: 0
+            },
+            death: {
+                name: "death",
+                type: pc.ANIM_PARAMETER_INTEGER,
+                value: 0
+            },
             attack: {
-                name: 'attack',
+                name: "attack",
                 type: pc.ANIM_PARAMETER_INTEGER,
                 value: 0
             }
         }
     };
 
-    /*IDLE*/
-    for (let i = 0; i < this.animations_unarmed.idle.length; i++) {
-        this.animations_unarmed.idle[i].preload = true;
-        this.animPlayerStateGraphData.layers[0].states.push({ name: 'unarmed-idle' + i, assetId: this.animations_unarmed.idle[i].id });
-        this.animPlayerStateGraphData.layers[0].transitions.push({
-            from: 'START',
-            to: 'unarmed-idle' + i,
-            time: 0.2,
-            priority: 0,
-            conditions: [
-                { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 }
-            ]
-        });
-    }
 
-    /*ATTACK*/
-    for (let i = 0; i < this.animations_unarmed.attack.length; i++) {
-        this.animations_unarmed.attack[i].preload = true;
-        this.animPlayerStateGraphData.layers[0].states.push({ name: 'unarmed-attack' + (i + 1), loop: false, assetId: this.animations_unarmed.attack[i].id });
-        this.animPlayerStateGraphData.layers[0].transitions.push({
-            from: 'ANY',
-            to: 'unarmed-attack' + (i + 1),
-            time: 0.2,
-            priority: 0,
-            conditions: [
-                { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
-                { parameterName: 'attack', predicate: pc.ANIM_EQUAL_TO, value: i + 1 }
-            ]
-        });
-
-        for (let j = 0; j < this.animations_unarmed.idle.length; j++) {
-            this.animPlayerStateGraphData.layers[0].transitions.push({
-                from: 'unarmed-attack' + (i + 1),
-                to: 'unarmed-idle' + j,
-                time: 0.2,
-                priority: 0,
-                conditions: [
-                    { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
-                    { parameterName: 'attack', predicate: pc.ANIM_EQUAL_TO, value: 0 }
-                ]
-            });
+    const statesNoLoops = ["death"];
+    const animation_modes_length = Character.animation_modes.length;
+    var m = 0;
+    for (; m < animation_modes_length; m++) {
+        const animAttr = this["animations_" + Character.animation_modes[m]], keys = Object.keys(animAttr), keys_length = keys.length;
+        var i = 0;
+        for (; i < keys_length; i++) {
+            const stateName = keys[i];
+            if (animAttr[stateName]) {
+                animAttr[stateName].preload = true;
+                const stateLoop = !statesNoLoops.some(s => stateName.includes(s));
+                this.animPlayerStateGraphData.layers[0].states.push({ name: stateName, loop: stateLoop, assetId: animAttr[stateName].id });
+            }
         }
     }
 
 
-    /*WALKING*/
-    if (this.animations_unarmed.walking) {
-        this.animations_unarmed.walking.preload = true;
-        this.animPlayerStateGraphData.layers[0].states.push({ name: 'unarmed-walking', assetId: this.animations_unarmed.walking.id });
 
-        for (let i = 0; i < this.animations_unarmed.idle.length; i++) {
-            this.animPlayerStateGraphData.layers[0].transitions.push(
-                {
-                    from: 'unarmed-idle' + i,
-                    to: 'unarmed-walking',
+
+
+
+    /* * * * * * * * * * * * * * * * * */
+    /*  IDLE                           */
+    /* * * * * * * * * * * * * * * * * */
+    var m = 0;
+    for (; m < animation_modes_length; m++) {
+        const modeName = Character.animation_modes[m];
+
+
+        var idles = Character.animation_idles;
+        for (var i = 0; i < idles.length; i++) {
+            if (this["animations_" + modeName][modeName + "_" + idles[i]]) {
+                this.animPlayerStateGraphData.layers[0].transitions.push({
+                    from: 'START',
+                    to: modeName + "_" + idles[i],
+                    time: 0.2,
+                    priority: 0,
+                    conditions: [
+                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                        { parameterName: 'idle', predicate: pc.ANIM_EQUAL_TO, value: i }
+                    ]
+                });
+            }
+        }
+
+
+        for (var i = 0; i < idles.length; i++) {
+            const isStateAnim = this.animPlayerStateGraphData.layers[0].states.find(function (s) {
+                return s.name === modeName + "_" + idles[i];
+            });
+            if (i !== 0 && isStateAnim) {
+                this.animPlayerStateGraphData.layers[0].transitions.push({
+                    from: modeName + "_" + idles[i],
+                    to: modeName + "_" + idles[i - 1],
                     time: 0.2,
                     priority: 0,
                     conditions: [
                         { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
-                        { parameterName: 'speed', predicate: pc.ANIM_GREATER_THAN, value: 0 },
+                        { parameterName: 'idle', predicate: pc.ANIM_EQUAL_TO, value: i - 1 }
+                    ]
+                });
+            }
+        }
+
+
+        /*WALKING*/
+        if (this["animations_" + modeName][modeName + "_walking"]) {
+
+            for (var i = 0; i < idles.length; i++) {
+                const isStateAnim = this.animPlayerStateGraphData.layers[0].states.find(function (s) {
+                    return s.name === modeName + "_" + idles[i];
+                });
+                if (isStateAnim) {
+                    this.animPlayerStateGraphData.layers[0].transitions.push(
+                        {
+                            from: modeName + "_" + idles[i],
+                            to: modeName + "_walking",
+                            time: 0.2,
+                            priority: 0,
+                            conditions: [
+                                { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                                { parameterName: 'speed', predicate: pc.ANIM_GREATER_THAN, value: 0 }
+                            ]
+                        },
+                        {
+                            from: modeName + '_walking',
+                            to: modeName + "_" + idles[i],
+                            time: 0.2,
+                            priority: 0,
+                            conditions: [
+                                { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                                { parameterName: 'idle', predicate: pc.ANIM_EQUAL_TO, value: i },
+                                { parameterName: 'speed', predicate: pc.ANIM_LESS_THAN, value: 0.01 }
+                            ]
+                        }
+
+
+                    );
+                }
+            }
+
+            if (this["animations_" + modeName][modeName + "_walking_turn_180"]) {
+
+                this.animPlayerStateGraphData.layers[0].transitions.push(
+                    {
+                        from: "ANY",
+                        to: modeName + "_walking_turn_180",
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [
+                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: 'speed', predicate: pc.ANIM_GREATER_THAN, value: 0 },
+                            { parameterName: 'speed', predicate: pc.ANIM_LESS_THAN_EQUAL_TO, value: 0.99 },
+                            { parameterName: 'turn180', predicate: pc.ANIM_EQUAL_TO, value: 1 }
+                        ]
+                    },
+                    {
+                        from: modeName + "_walking_turn_180",
+                        to: modeName + "_walking",
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [
+                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: 'speed', predicate: pc.ANIM_GREATER_THAN, value: 0 },
+                            { parameterName: 'speed', predicate: pc.ANIM_LESS_THAN_EQUAL_TO, value: 0.99 },
+                            { parameterName: 'turn180', predicate: pc.ANIM_EQUAL_TO, value: 0 }
+                        ]
+                    }/*,
+                {
+                    from: "unarmed_walking_turn_180",
+                    to: "START",
+                    time: 0.2,
+                    priority: 0,
+                    conditions: [
+                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
+                        { parameterName: 'turn180', predicate: pc.ANIM_EQUAL_TO, value: 0 }
+                    ]
+                }*/
+
+
+
+                );
+            }
+
+        }
+
+        /*RUNNING*/
+        if (this["animations_" + modeName][modeName + "_running"]) {
+            if (this["animations_" + modeName][modeName + "_walking"]) {
+
+                this.animPlayerStateGraphData.layers[0].transitions.push(
+                    {
+                        from: modeName + '_walking',
+                        to: modeName + '_running',
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [
+                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: 'speed', predicate: pc.ANIM_GREATER_THAN, value: 0.99 }
+                        ]
+                    },
+                    {
+                        from: modeName + '_running',
+                        to: modeName + '_walking',
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [
+                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: 'speed', predicate: pc.ANIM_LESS_THAN, value: 1 }
+                        ]
+                    }
+                );
+            }
+
+            for (var i = 0; i < idles.length; i++) {
+                const isStateAnim = this.animPlayerStateGraphData.layers[0].states.find(function (s) {
+                    return s.name === modeName + "_" + idles[i];
+                });
+                if (isStateAnim) {
+                    this.animPlayerStateGraphData.layers[0].transitions.push(
+                        {
+                            from: modeName + "_" + idles[i],
+                            to: modeName + '_running',
+                            time: 0.2,
+                            priority: 0,
+                            conditions: [
+                                { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                                { parameterName: 'speed', predicate: pc.ANIM_GREATER_THAN_EQUAL_TO, value: 1 },
+                            ]
+                        },
+                        {
+                            from: modeName + '_running',
+                            to: modeName + "_" + idles[i],
+                            time: 0.2,
+                            priority: 0,
+                            conditions: [
+                                { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                                { parameterName: 'idle', predicate: pc.ANIM_EQUAL_TO, value: i },
+                                { parameterName: 'speed', predicate: pc.ANIM_LESS_THAN, value: 0.01 }
+                            ]
+                        }
+
+                    );
+                }
+            }
+        }
+
+
+        /*IMPACT*/
+        if (this["animations_" + modeName][modeName + "_impact_block"]) {
+
+            this.animPlayerStateGraphData.layers[0].transitions.push(
+                {
+                    from: "ANY",
+                    to: modeName + "_impact_block",
+                    time: 0.2,
+                    priority: 0,
+                    conditions: [
+                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                        { parameterName: 'impact', predicate: pc.ANIM_EQUAL_TO, value: 1 }
                     ]
                 },
                 {
-                    from: 'unarmed-walking',
-                    to: 'unarmed-idle' + i,
+                    from: modeName + "_impact_block",
+                    to: modeName + "_idle",
                     time: 0.2,
                     priority: 0,
                     conditions: [
-                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
-                        { parameterName: 'speed', predicate: pc.ANIM_LESS_THAN, value: 0.01 }
+                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                        { parameterName: 'impact', predicate: pc.ANIM_EQUAL_TO, value: 0 }
                     ]
                 }
-
             );
         }
 
-        for (let i = 0; i < this.animations_unarmed.attack.length; i++) {
-            this.animPlayerStateGraphData.layers[0].transitions.push({
-                from: 'unarmed-attack' + (i + 1),
-                to: 'unarmed-walking',
-                time: 0.2,
-                priority: 0,
-                conditions: [
-                    { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
-                    { parameterName: 'attack', predicate: pc.ANIM_EQUAL_TO, value: 0 },
-                    { parameterName: 'speed', predicate: pc.ANIM_GREATER_THAN, value: 0 },
-                ]
-            });
+        for (var i = 1; i < 3; i++) {
+            if (this["animations_" + modeName][modeName + "_impact" + i]) {
+
+                this.animPlayerStateGraphData.layers[0].transitions.push(
+                    {
+                        from: "ANY",
+                        to: modeName + "_impact" + i,
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [
+                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: 'impact', predicate: pc.ANIM_EQUAL_TO, value: i + 1 }
+                        ]
+                    },
+                    {
+                        from: modeName + "_impact" + i,
+                        to: modeName + "_idle",
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [
+                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: 'impact', predicate: pc.ANIM_EQUAL_TO, value: 0 }
+                        ]
+                    }
+                );
+            }
         }
+
+
+        /*DEATH*/
+        for (var i = 1; i < 3; i++) {
+            if (this["animations_" + modeName][modeName + "_death" + i]) {
+
+                this.animPlayerStateGraphData.layers[0].transitions.push(
+                    {
+                        from: "ANY",
+                        to: modeName + "_death" + i,
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [
+                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: 'death', predicate: pc.ANIM_EQUAL_TO, value: i + 1 }
+                        ]
+                    }
+                );
+            }
+        }
+
+
+        /*ATTACK*/
+
+        for (var i = 0; i < Character.animation_attack.length; i++) {
+            if (this["animations_" + modeName][modeName + "_" + Character.animation_attack[i]]) {
+                this.animPlayerStateGraphData.layers[0].transitions.push(
+                    {
+                        from: "ANY",
+                        to: modeName + "_" + Character.animation_attack[i],
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [
+                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: 'attack', predicate: pc.ANIM_EQUAL_TO, value: i + 1 }
+                        ]
+                    },
+                    {
+                        from: modeName + "_" + Character.animation_attack[i],
+                        to: modeName + "_idle",
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [
+                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: 'attack', predicate: pc.ANIM_EQUAL_TO, value: 0 }
+                        ]
+                    }
+                );
+            }
+        }
+
+
 
     }
 
-    /*RUNNING*/
-    if (this.animations_unarmed.running) {
-        this.animations_unarmed.running.preload = true;
-        this.animPlayerStateGraphData.layers[0].states.push({ name: 'unarmed-running', assetId: this.animations_unarmed.running.id });
-        if (this.animations_unarmed.walking) {
 
-            this.animPlayerStateGraphData.layers[0].transitions.push(
-                {
-                    from: 'unarmed-walking',
-                    to: 'unarmed-running',
-                    time: 0.2,
-                    priority: 0,
-                    conditions: [
-                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
-                        { parameterName: 'speed', predicate: pc.ANIM_GREATER_THAN, value: 0.99 }
-                    ]
-                },
-                {
-                    from: 'unarmed-running',
-                    to: 'unarmed-walking',
-                    time: 0.2,
-                    priority: 0,
-                    conditions: [
-                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
-                        { parameterName: 'speed', predicate: pc.ANIM_LESS_THAN, value: 1 }
-                    ]
-                }
-            );
 
+    /***************************************************** */
+    /*TRANSITIONS MODES */
+    /***************************************************** */
+    var m = 0;
+    for (; m < animation_modes_length; m++) {
+        const modeName = Character.animation_modes[m];
+        const afterModeName = Character.animation_modes[m + 1];
+
+        const animAttr = this["animations_" + modeName], keys = Object.keys(animAttr), keys_length = keys.length;
+        var i = 0;
+        for (; i < keys_length; i++) {
+            const stateName = (keys[i] || "").replace(modeName + "_", "");
+            if (this["animations_" + modeName][modeName + "_" + stateName] && this["animations_" + afterModeName][afterModeName + "_" + stateName]) {
+
+                this.animPlayerStateGraphData.layers[0].transitions.push(
+                    {
+                        from: modeName + "_" + stateName,
+                        to: afterModeName + "_" + stateName,
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [
+                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m + 1 }
+                        ]
+                    },
+                    {
+                        from: afterModeName + "_" + stateName,
+                        to: modeName + "_" + stateName,
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [
+                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m }
+                        ]
+                    }
+                );
+
+            }
 
         }
-
-        for (let i = 0; i < this.animations_unarmed.idle.length; i++) {
-            this.animPlayerStateGraphData.layers[0].transitions.push(
-                {
-                    from: 'unarmed-idle' + i,
-                    to: 'unarmed-running',
-                    time: 0.2,
-                    priority: 0,
-                    conditions: [
-                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
-                        { parameterName: 'speed', predicate: pc.ANIM_GREATER_THAN_EQUAL_TO, value: 1 },
-                    ]
-                },
-                {
-                    from: 'unarmed-running',
-                    to: 'unarmed-idle' + i,
-                    time: 0.2,
-                    priority: 0,
-                    conditions: [
-                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
-                        { parameterName: 'speed', predicate: pc.ANIM_LESS_THAN, value: 0.01 }
-                    ]
-                }
-
-            );
-        }
-
-
-        for (let i = 0; i < this.animations_unarmed.attack.length; i++) {
-            this.animPlayerStateGraphData.layers[0].transitions.push({
-                from: 'unarmed-attack' + (i + 1),
-                to: 'unarmed-running',
-                time: 0.2,
-                priority: 0,
-                conditions: [
-                    { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
-                    { parameterName: 'attack', predicate: pc.ANIM_EQUAL_TO, value: 0 },
-                    { parameterName: 'speed', predicate: pc.ANIM_GREATER_THAN_EQUAL_TO, value: 1 },
-                ]
-            });
-        }
-
     }
 
 
@@ -2017,8 +2235,9 @@ Character.prototype.prepareAnimComponent = function () {
 
             if (asset && asset.type === 'animation') {
                 if (asset.resource) {
+
                     locomotionLayer.assignAnimation(state.name, asset.resource);
-                    /*state.animDuration = asset.resource.duration;*/
+                    state.animDuration = asset.resource.duration;
                     if (state.name.indexOf("attack") !== -1) {
                         asset.resource.events = new pc.AnimEvents([
                             {
@@ -2040,8 +2259,7 @@ Character.prototype.prepareAnimComponent = function () {
                     // El asset aún no está cargado, cargarlo
                     asset.ready(function (e) {
                         locomotionLayer.assignAnimation(state.name, e.resource);
-
-                        /*state.animDuration = e.resource.duration;*/
+                        state.animDuration = e.resource.duration;
                         if (state.name.indexOf("attack") !== -1) {
                             e.resource.events = new pc.AnimEvents([
                                 {
@@ -2081,17 +2299,16 @@ Character.prototype.prepareAnimComponent = function () {
         if (this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
             this.entity.attackSystem.status = CharacterAttackSystemStatusEnum.DAMAGING;
         }
-        /*console.log("attack-start-damage-animation");*/
-
     }, this);
 
     this.entity.anim.on('attack-end-damage-animation', function (e) {
         if (this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
             this.entity.attackSystem.status = CharacterAttackSystemStatusEnum.ENDING;
         }
-        /*console.log("attack-end-damage-animation");*/
-
     }, this);
 
 
 };
+/************************************************************************ */
+
+
