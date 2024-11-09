@@ -704,7 +704,7 @@ GameCharactersController.prototype.onMouseWheel = function (event) {
 
 
 
-GameCharactersController.prototype.onKeyboardInput = function () {
+GameCharactersController.prototype.onKeyboardInput = async function () {
     if (this.app.isMenuMode) return;
     const keyboard = this.app.keyboard;
 
@@ -756,10 +756,11 @@ GameCharactersController.prototype.onKeyboardInput = function () {
 
 }
 
-GameCharactersController.prototype.updateCharactersMovement = function () {
+GameCharactersController.prototype.updateCharactersMovement = function (dt) {
     if (!this.updateCharactersMovement_busy) {
         this.updateCharactersMovement_busy = true;
 
+        this.input.dt = dt;
         //Moves all characters:
         this.characters = this.getCharacters(),
             characters_length = this.characters.length,
@@ -892,25 +893,26 @@ GameCharactersController.prototype.updateCameraPosition = function (dt) {
 
 
 // update code called every frame
-GameCharactersController.prototype.update = function (dt) {
+GameCharactersController.prototype.postUpdate = async function (dt) {
     //    if (this.app.isMenuMode) return;
-    this.onKeyboardInput();
-    this.input.dt = this.app.dt;
-    this.updateCharactersMovement();
+    await this.onKeyboardInput();
+    this.input.dt = dt;
+    await this.updateCharactersMovement(dt);
 
 
-    if (this.camera) {
-        this.updateCameraOrientation();
-        this.updateCameraPosition(dt);
-    }
+
 
     this.getSceneLights(dt);
 
 };
 
-GameCharactersController.prototype.postUpdate = function (dt) {
 
+GameCharactersController.prototype.update = function (dt) {
 
+    if (this.camera) {
+        this.updateCameraOrientation();
+        this.updateCameraPosition(dt);
+    }
 }
 
 

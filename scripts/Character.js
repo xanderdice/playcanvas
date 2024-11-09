@@ -386,7 +386,9 @@ Character.prototype.initialize = function () {
 
 
     this.renderCharacterComponent = this.entity.findComponent('render');
-    this.renderCharacterComponent.entity.tags.add("uranus-instancing-exclude");
+    if (this.renderCharacterComponent) {
+        this.renderCharacterComponent.entity.tags.add("uranus-instancing-exclude");
+    }
 
 
 
@@ -467,13 +469,15 @@ Character.prototype.initialize = function () {
         this.playerAnimationsOptions.startPosition = this.bones.hips.getLocalPosition().clone();
     }
     this.motionrootmode = this.playerAnimationsOptions.motionrootmode;
-    this.renderCharacterComponent.rootBone = this.bones.hips;
+    if (this.renderCharacterComponent) {
+        this.renderCharacterComponent.rootBone = this.bones.hips;
+    }
 
 
     /*
         this.entity.collisionBones.leftFoot.collision.on("collisionstart", function (entity) {
             if (!entity.isPlayer) {
-                debugger;
+                
                 alert("leftFoot - collisionstart");
             }
         }, this);
@@ -629,7 +633,7 @@ Character.prototype.stopMovement = function () {
 /*              */
 /* D O  M O V E */
 /*              */
-Character.prototype.doMove = function (input) {
+Character.prototype.doMove = async function (input) {
 
 
     if (!this.doMoveCharacter_busy) {
@@ -734,7 +738,7 @@ Character.prototype.doMove = function (input) {
 
             const velocity = direction.clone().scale(this.charSpeed);
 
-            this.entity.rigidbody.linearVelocity = velocity;
+            //this.entity.rigidbody.linearVelocity = velocity;
 
             // Calcular la nueva posición del jugador
             newPosition = newPosition.add(direction.scale(this.charSpeed * dt));
@@ -744,7 +748,8 @@ Character.prototype.doMove = function (input) {
             }
 
 
-            this.entity.rigidbody.teleport(this.entity.getPosition(), new pc.Quat().setFromEulerAngles(0, this.currenRotation, 0));
+            this.entity.rigidbody.teleport(newPosition, new pc.Quat().setFromEulerAngles(0, this.currenRotation, 0));
+            //this.entity.rigidbody.teleport(this.entity.getPosition(), new pc.Quat().setFromEulerAngles(0, this.currenRotation, 0));
         }
 
 
@@ -881,11 +886,17 @@ Character.prototype.onCollisionStartWeapon = function (other, hand) {
 }
 
 Character.prototype.doSensorCollisions = function () {
-    this.entity.collisionBones.leftFootCollision.setPosition(this.entity.collisionBones.leftFoot.getPosition());
-    this.entity.collisionBones.leftFootCollision.setRotation(this.entity.collisionBones.leftFoot.getRotation());
+    return;
 
-    this.entity.collisionBones.rightFootCollision.setPosition(this.entity.collisionBones.rightFoot.getPosition());
-    this.entity.collisionBones.rightFootCollision.setRotation(this.entity.collisionBones.rightFoot.getRotation());
+    if (this.entity.collisionBones.leftFootCollision) {
+        this.entity.collisionBones.leftFootCollision.setPosition(this.entity.collisionBones.leftFoot.getPosition());
+        this.entity.collisionBones.leftFootCollision.setRotation(this.entity.collisionBones.leftFoot.getRotation());
+    }
+
+    if (this.entity.collisionBones.rightFootCollision) {
+        this.entity.collisionBones.rightFootCollision.setPosition(this.entity.collisionBones.rightFoot.getPosition());
+        this.entity.collisionBones.rightFootCollision.setRotation(this.entity.collisionBones.rightFoot.getRotation());
+    }
 }
 
 
@@ -1218,25 +1229,28 @@ Character.prototype.doSensors = function (dt) {
 
 
     var footEntity = this.entity.findByName("mixamorig:LeftToeBase");
-    debugger;
-    var position = footEntity.getPosition();
-    var rotation = footEntity.getRotation();
 
-    // Calcular la dirección del rayo en el eje Y local de la entidad
-    // La dirección en el eje Y local es (0, 1, 0), pero transformada por la rotación de la entidad
-    var direction = new pc.Vec3(0, 0, -1);
-    direction = rotation.transformVector(direction);
+    if (footEntity) {
+        var position = footEntity.getPosition();
+        var rotation = footEntity.getRotation();
 
 
-    // La longitud del rayo en este caso es de un metro
-    var length = 1;
-    var endPoint = new pc.Vec3().copy(position).add(direction.scale(length));
-
-    // Lanzar el raycast desde la posición hasta el punto final
-    var result = this.app.systems.rigidbody.raycastFirst(position, endPoint, { lowResolution: true });
-    this.app.drawLine(position, endPoint, pc.Color.RED, 5);
+        // Calcular la dirección del rayo en el eje Y local de la entidad
+        // La dirección en el eje Y local es (0, 1, 0), pero transformada por la rotación de la entidad
+        var direction = new pc.Vec3(0, 0, -1);
+        direction = rotation.transformVector(direction);
 
 
+
+        // La longitud del rayo en este caso es de un metro
+        var length = 1;
+        var endPoint = new pc.Vec3().copy(position).add(direction.scale(length));
+
+        // Lanzar el raycast desde la posición hasta el punto final
+        var result = this.app.systems.rigidbody.raycastFirst(position, endPoint, { lowResolution: true });
+        this.app.drawLine(position, endPoint, pc.Color.RED, 5);
+
+    }
 
 
     this.entity.isonair = (this.entity.sensorGroundDistanceCenter ?? 1) > 0 &&
