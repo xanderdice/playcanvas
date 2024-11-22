@@ -283,6 +283,7 @@ GameCharactersController.prototype.initialize = function () {
     this.canvas = this.app.graphicsDevice.canvas;
 
     this.gameMouse_busy = false;
+    this.gameMouseMoved = false;
     this.app.mouse.on(pc.EVENT_MOUSEMOVE, this.onMouseMove, this);
     this.app.mouse.on(pc.EVENT_MOUSEDOWN, this.onMouseDown, this);
     this.app.mouse.on(pc.EVENT_MOUSEWHEEL, this.onMouseWheel, this);
@@ -424,11 +425,13 @@ GameCharactersController.prototype.initialize = function () {
 
 /* MOUSE MOVE */
 GameCharactersController.prototype.onMouseMove = function (event) {
+    if (this.gameMouseMoved) return;
 
     if (!this.gameMouse_busy) {
         this.gameMouse_busy = true;
 
         if (this.app.isMenuMode) {
+            this.gameMouseMoved = true;
             this.gameMouse_busy = false;
             return;
         }
@@ -448,6 +451,7 @@ GameCharactersController.prototype.onMouseMove = function (event) {
                 }
             }
 
+            this.gameMouseMoved = true;
             this.gameMouse_busy = false;
             return;
         }
@@ -455,6 +459,7 @@ GameCharactersController.prototype.onMouseMove = function (event) {
             if (!this.flyCamera.moved) {
                 // first move event can be very large
                 this.flyCamera.moved = true;
+                this.gameMouseMoved = true;
                 this.gameMouse_busy = false;
                 return;
             }
@@ -518,6 +523,7 @@ GameCharactersController.prototype.onMouseMove = function (event) {
 
 
             this.gameMouse_busy = false;
+            this.gameMouseMoved = true;
             return;
         }
 
@@ -529,6 +535,7 @@ GameCharactersController.prototype.onMouseMove = function (event) {
         var selectedCharacters = this.getSelectedCharacters(this.characters);
         if (selectedCharacters.length === 0) {
             this.gameMouse_busy = false;
+            this.gameMouseMoved = true;
             return;
         }
 
@@ -586,7 +593,7 @@ GameCharactersController.prototype.onMouseMove = function (event) {
             }
         }
 
-
+        this.gameMouseMoved = true;
         this.gameMouse_busy = false;
     }
 
@@ -895,6 +902,8 @@ GameCharactersController.prototype.updateCameraPosition = function (dt) {
 // update code called every frame
 GameCharactersController.prototype.postUpdate = async function (dt) {
     //    if (this.app.isMenuMode) return;
+
+
     await this.onKeyboardInput();
     this.input.dt = dt;
     await this.updateCharactersMovement(dt);
@@ -910,6 +919,8 @@ GameCharactersController.prototype.postUpdate = async function (dt) {
 GameCharactersController.prototype.update = function (dt) {
 
     if (this.camera) {
+        this.gameMouseMoved = false;
+
         this.updateCameraOrientation();
         this.updateCameraPosition(dt);
     }
