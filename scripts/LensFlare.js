@@ -38,7 +38,23 @@ LensFlare.prototype.initialize = function () {
     this.beam.render.lightmapped = false;
     this.app.scene.root.addChild(this.beam);
 
+};
 
+// Calcula el factor de escala en función de la distancia.
+LensFlare.prototype._getScaleFactor = function (distance) {
+
+    this.minDistance = this.camera.camera.nearClip;  // Distancia mínima para el tamaño máximo.
+    this.maxDistance = this.camera.camera.farClip; // Distancia máxima para el tamaño mínimo.
+
+
+    // Asegúrate de que la distancia esté entre el rango mínimo y máximo.
+    var clampedDistance = pc.math.clamp(distance, this.minDistance, this.maxDistance);
+
+    // Invertir la relación: cuando la distancia es mayor, el plano debe ser más grande.
+    var scale = (clampedDistance - this.minDistance) / (this.maxDistance - this.minDistance);
+
+    // Ajusta la escala según tus necesidades (puedes modificar estos valores).
+    return pc.math.lerp(this.minDistance, this.maxDistance, scale); // Ajusta los valores según lo que necesites.
 };
 
 // update code called every frame
@@ -55,14 +71,13 @@ LensFlare.prototype.update = function (dt) {
 
 
 
+
     const screenWidth = this.app.graphicsDevice.width;
     const screenHeight = this.app.graphicsDevice.height;
 
     const flarePos = this.camera.camera.worldToScreen(this.entity.getPosition());
     const isInScreen = flarePos.x >= 0 && flarePos.x <= screenWidth && flarePos.y >= 0 && flarePos.y <= screenHeight;
 
-    Trace("flarePos", flarePos);
-    Trace("isInScreen", isInScreen);
 
     this.entity.render.enabled = isInScreen;
     this.beam.render.enabled = this.entity.render.enabled;
@@ -70,7 +85,28 @@ LensFlare.prototype.update = function (dt) {
 
 
     if (isInScreen) {
+        Trace("flarePos", flarePos);
+        Trace("isInScreen", isInScreen);
+
+
         // Calcular la posición opuesta en la pantalla
+
+        var cameraPosition = this.camera.getPosition();
+        var planePosition = this.entity.getPosition();
+        var distance = cameraPosition.distance(planePosition);
+
+
+
+        // Calcula la nueva escala del plano basada en la distancia.
+        var scaleFactor = this._getScaleFactor(distance);
+
+        Trace("scaleFactor", scaleFactor);
+
+        // Aplica la nueva escala.
+        this.entity.setLocalScale(scaleFactor, scaleFactor, scaleFactor);
+
+
+
 
 
         var oppositePos = new pc.Vec3(
@@ -82,7 +118,7 @@ LensFlare.prototype.update = function (dt) {
 
         // Convertir la posición opuesta a mundo
         var worldPos = this.camera.camera.screenToWorld(oppositePos.x, oppositePos.y, flarePos.z);
-
+        Trace("worldPos", worldPos);
 
         // Colocar los haces en la posición calculada
         this.beam.setPosition(worldPos);
