@@ -35,210 +35,210 @@
  ********************************************************************************************/
 
 
-(() => {
 
 
-    class Bloom2023Effect extends pc.PostEffect {
 
-        constructor(graphicDevice, params) {
-            super(graphicDevice);
+class Bloom2023Effect extends pc.PostEffect {
+
+    constructor(graphicDevice, params) {
+        super(graphicDevice);
+
+        this.width = this.device.width;
+        this.height = this.device.height;
+        this.hdr = true;
+
+        this.params =
+        {
+            blendmode: 'screen',
+            iterations: 7,
+            miplimit: 4,
+            strength: 25,
+            thresholdA: 0,
+            thresholdB: 1,
+            radius: new pc.Vec2(1, 1),
+            hdrformat: pc.PIXELFORMAT_111110F,
+            tonemapper: pc.TONEMAP_NONE,
+            gamma: pc.GAMMA_SRGB,
+            exposure: 1
+        };
+
+        this.targets =
+        {
+            downsampled: [],
+            upsampled: []
+        };
+
+        this.shader =
+        {
+            downsample: null,
+            upsample: null,
+            combine: null
+        };
+
+        this.configure(params);
+    }
+
+
+    configure(params) {
+        this.params = { ...this.params, ...params };
+
+        if (params.iterations !== undefined || params.miplimit !== undefined || params.hdrformat !== undefined) {
+            this.clearRenderTargets();
+            this.setupRenderTargets(this.params);
+        }
+
+        if (params.blendmode !== undefined || params.tonemapper !== undefined) {
+            this.setupShaders(this.params);
+        }
+    }
+
+
+    render(inputTarget, outputTarget, rect) {
+        this.checkResize();
+
+        for (let i = 0; i < this.targets.downsampled.length; i++) {
+            let input = (i == 0) ? inputTarget : this.targets.downsampled[i - 1];
+            let output = this.targets.downsampled[i];
+            let threshold = (i == 0) ? [this.params.thresholdA, this.params.thresholdB] : [0, 0];
+
+            this.device.scope.resolve('uSource').setValue(input.colorBuffer);
+            this.device.scope.resolve('uResolution').setValue([input.width, input.height]);
+            this.device.scope.resolve('uThreshold').setValue(threshold);
+            this.drawQuad(output, this.shader.downsample, rect);
+        }
+
+        for (let j = this.targets.downsampled.length - 1; j > 0; j--) {
+            let input = (j == this.targets.downsampled.length - 1) ?
+                this.targets.downsampled[j] :
+                this.targets.upsampled[j];
+            let input1 = this.targets.downsampled[j - 1];
+            let output = this.targets.upsampled[j - 1];
+            let radius = this.params.radius.clone().mulScalar(0.01);
+
+            this.device.scope.resolve('uSource').setValue(input.colorBuffer);
+            this.device.scope.resolve('uSource1').setValue(input1.colorBuffer);
+            this.device.scope.resolve('uResolution').setValue([input.width, input.height]);
+            this.device.scope.resolve('uFilterRadius').setValue([radius.x, radius.y]);
+            this.drawQuad(output, this.shader.upsample, rect);
+        }
+
+        let input = inputTarget;
+        let bloom = this.targets.upsampled[0];
+        let output = outputTarget;
+
+        this.device.scope.resolve('uSource').setValue(input.colorBuffer);
+        this.device.scope.resolve('uBloom').setValue(bloom.colorBuffer);
+        this.device.scope.resolve('uStrength').setValue(this.params.strength * 0.01);
+        this.device.scope.resolve('uGamma').setValue((this.params.gamma === pc.GAMMA_NONE) ? 1.0 : 2.2);
+        this.device.scope.resolve('exposure').setValue(this.params.exposure);
+        this.drawQuad(output, this.shader.combine, rect);
+    }
+
+
+    checkResize() {
+        if (this.device.width !== this.width || this.device.height !== this.height) {
+            this.clearRenderTargets();
+            this.setupRenderTargets(this.params);
 
             this.width = this.device.width;
             this.height = this.device.height;
-            this.hdr = true;
+        }
+    }
 
-            this.params =
+
+    setupShaders(params) {
+        this.shader =
+        {
+            downsample: this.createDownsampleShader(params),
+            upsample: this.createUpsampleShader(params),
+            combine: this.createCombineShader(params)
+        };
+    }
+
+
+    setupRenderTargets(params) {
+        this.targets.downsampled = [];
+        this.targets.upsampled = [];
+
+        for (let i = 0; i < params.iterations; i++) {
+            let width = this.device.width >> (i + 1);
+            let height = this.device.height >> (i + 1);
+
+            if (width >= params.miplimit && height >= params.miplimit) {
+                this.targets.downsampled.push(this.createRenderTarget(width, height, params.hdrformat));
+                this.targets.upsampled.push(this.createRenderTarget(width, height, params.hdrformat));
+            }
+        }
+    }
+
+
+    clearRenderTargets() {
+        for (let target of this.targets.downsampled)
+            this.destroyRenderTarget(target);
+
+        for (let target of this.targets.upsampled)
+            this.destroyRenderTarget(target);
+    }
+
+
+    createRenderTarget(width, height, format) {
+        let colorBuffer = new pc.Texture(this.device,
             {
-                blendmode: 'screen',
-                iterations: 7,
-                miplimit: 4,
-                strength: 25,
-                thresholdA: 0,
-                thresholdB: 1,
-                radius: new pc.Vec2(1, 1),
-                hdrformat: pc.PIXELFORMAT_111110F,
-                tonemapper: pc.TONEMAP_NONE,
-                gamma: pc.GAMMA_SRGB,
-                exposure: 1
-            };
+                format: this.requestHDRFormat(format),
+                width,
+                height,
+                mipmaps: false,
+                minFilter: pc.FILTER_LINEAR,
+                magFilter: pc.FILTER_LINEAR,
+                addressU: pc.ADDRESS_CLAMP_TO_EDGE,
+                addressV: pc.ADDRESS_CLAMP_TO_EDGE
+            });
 
-            this.targets =
-            {
-                downsampled: [],
-                upsampled: []
-            };
+        return new pc.RenderTarget
+            ({
+                colorBuffer: colorBuffer,
+                samples: 0,
+                depth: false
+            });
+    }
 
-            this.shader =
-            {
-                downsample: null,
-                upsample: null,
-                combine: null
-            };
 
-            this.configure(params);
+    destroyRenderTarget(target) {
+        if (target) {
+            target.destroyTextureBuffers();
+            target.destroy();
         }
+    }
 
 
-        configure(params) {
-            this.params = { ...this.params, ...params };
+    requestHDRFormat(preferred) {
 
-            if (params.iterations !== undefined || params.miplimit !== undefined || params.hdrformat !== undefined) {
-                this.clearRenderTargets();
-                this.setupRenderTargets(this.params);
-            }
+        const valid16 = (this.device.hasOwnProperty("extTextureHalfFloat") ? this.device.extTextureHalfFloat : true) && this.device.textureHalfFloatRenderable;
+        const valid32 = (this.device.hasOwnProperty("extTextureFloat") ? this.device.extTextureFloat : true) && this.device.textureFloatRenderable;
 
-            if (params.blendmode !== undefined || params.tonemapper !== undefined) {
-                this.setupShaders(this.params);
-            }
+        if (preferred === pc.PIXELFORMAT_RGBA32F) {
+            if (valid32) return pc.PIXELFORMAT_RGBA32F;
+            else if (valid16) return pc.PIXELFORMAT_RGBA16F;
+            else return pc.PIXELFORMAT_111110F;
         }
-
-
-        render(inputTarget, outputTarget, rect) {
-            this.checkResize();
-
-            for (let i = 0; i < this.targets.downsampled.length; i++) {
-                let input = (i == 0) ? inputTarget : this.targets.downsampled[i - 1];
-                let output = this.targets.downsampled[i];
-                let threshold = (i == 0) ? [this.params.thresholdA, this.params.thresholdB] : [0, 0];
-
-                this.device.scope.resolve('uSource').setValue(input.colorBuffer);
-                this.device.scope.resolve('uResolution').setValue([input.width, input.height]);
-                this.device.scope.resolve('uThreshold').setValue(threshold);
-                this.drawQuad(output, this.shader.downsample, rect);
-            }
-
-            for (let j = this.targets.downsampled.length - 1; j > 0; j--) {
-                let input = (j == this.targets.downsampled.length - 1) ?
-                    this.targets.downsampled[j] :
-                    this.targets.upsampled[j];
-                let input1 = this.targets.downsampled[j - 1];
-                let output = this.targets.upsampled[j - 1];
-                let radius = this.params.radius.clone().mulScalar(0.01);
-
-                this.device.scope.resolve('uSource').setValue(input.colorBuffer);
-                this.device.scope.resolve('uSource1').setValue(input1.colorBuffer);
-                this.device.scope.resolve('uResolution').setValue([input.width, input.height]);
-                this.device.scope.resolve('uFilterRadius').setValue([radius.x, radius.y]);
-                this.drawQuad(output, this.shader.upsample, rect);
-            }
-
-            let input = inputTarget;
-            let bloom = this.targets.upsampled[0];
-            let output = outputTarget;
-
-            this.device.scope.resolve('uSource').setValue(input.colorBuffer);
-            this.device.scope.resolve('uBloom').setValue(bloom.colorBuffer);
-            this.device.scope.resolve('uStrength').setValue(this.params.strength * 0.01);
-            this.device.scope.resolve('uGamma').setValue((this.params.gamma === pc.GAMMA_NONE) ? 1.0 : 2.2);
-            this.device.scope.resolve('exposure').setValue(this.params.exposure);
-            this.drawQuad(output, this.shader.combine, rect);
+        else if (preferred === pc.PIXELFORMAT_RGBA16F) {
+            if (valid16) return pc.PIXELFORMAT_RGBA16F;
+            else return pc.PIXELFORMAT_111110F;
         }
-
-
-        checkResize() {
-            if (this.device.width !== this.width || this.device.height !== this.height) {
-                this.clearRenderTargets();
-                this.setupRenderTargets(this.params);
-
-                this.width = this.device.width;
-                this.height = this.device.height;
-            }
+        else {
+            return pc.PIXELFORMAT_111110F;
         }
+    }
 
 
-        setupShaders(params) {
-            this.shader =
-            {
-                downsample: this.createDownsampleShader(params),
-                upsample: this.createUpsampleShader(params),
-                combine: this.createCombineShader(params)
-            };
-        }
+    destroy() {
+        this.clearRenderTargets();
+    }
 
 
-        setupRenderTargets(params) {
-            this.targets.downsampled = [];
-            this.targets.upsampled = [];
-
-            for (let i = 0; i < params.iterations; i++) {
-                let width = this.device.width >> (i + 1);
-                let height = this.device.height >> (i + 1);
-
-                if (width >= params.miplimit && height >= params.miplimit) {
-                    this.targets.downsampled.push(this.createRenderTarget(width, height, params.hdrformat));
-                    this.targets.upsampled.push(this.createRenderTarget(width, height, params.hdrformat));
-                }
-            }
-        }
-
-
-        clearRenderTargets() {
-            for (let target of this.targets.downsampled)
-                this.destroyRenderTarget(target);
-
-            for (let target of this.targets.upsampled)
-                this.destroyRenderTarget(target);
-        }
-
-
-        createRenderTarget(width, height, format) {
-            let colorBuffer = new pc.Texture(this.device,
-                {
-                    format: this.requestHDRFormat(format),
-                    width,
-                    height,
-                    mipmaps: false,
-                    minFilter: pc.FILTER_LINEAR,
-                    magFilter: pc.FILTER_LINEAR,
-                    addressU: pc.ADDRESS_CLAMP_TO_EDGE,
-                    addressV: pc.ADDRESS_CLAMP_TO_EDGE
-                });
-
-            return new pc.RenderTarget
-                ({
-                    colorBuffer: colorBuffer,
-                    samples: 0,
-                    depth: false
-                });
-        }
-
-
-        destroyRenderTarget(target) {
-            if (target) {
-                target.destroyTextureBuffers();
-                target.destroy();
-            }
-        }
-
-
-        requestHDRFormat(preferred) {
-
-            const valid16 = (this.device.hasOwnProperty("extTextureHalfFloat") ? this.device.extTextureHalfFloat : true) && this.device.textureHalfFloatRenderable;
-            const valid32 = (this.device.hasOwnProperty("extTextureFloat") ? this.device.extTextureFloat : true) && this.device.textureFloatRenderable;
-
-            if (preferred === pc.PIXELFORMAT_RGBA32F) {
-                if (valid32) return pc.PIXELFORMAT_RGBA32F;
-                else if (valid16) return pc.PIXELFORMAT_RGBA16F;
-                else return pc.PIXELFORMAT_111110F;
-            }
-            else if (preferred === pc.PIXELFORMAT_RGBA16F) {
-                if (valid16) return pc.PIXELFORMAT_RGBA16F;
-                else return pc.PIXELFORMAT_111110F;
-            }
-            else {
-                return pc.PIXELFORMAT_111110F;
-            }
-        }
-
-
-        destroy() {
-            this.clearRenderTargets();
-        }
-
-
-        createDownsampleShader(params) {
-            const downsampleShader =
-                `
+    createDownsampleShader(params) {
+        const downsampleShader =
+            `
             precision ${this.device.precision} float;
 
             uniform sampler2D uSource;
@@ -289,20 +289,20 @@
             }
         `;
 
-            return pc.createShaderFromCode
-                (
-                    this.device,
-                    pc.PostEffect.quadVertexShader,
-                    downsampleShader,
-                    `Bloom_Downsample_${Date.now()}`,
-                    { aPosition: pc.SEMANTIC_POSITION }
-                );
-        }
+        return pc.createShaderFromCode
+            (
+                this.device,
+                pc.PostEffect.quadVertexShader,
+                downsampleShader,
+                `Bloom_Downsample_${Date.now()}`,
+                { aPosition: pc.SEMANTIC_POSITION }
+            );
+    }
 
 
-        createUpsampleShader(params) {
-            const upsampleShader =
-                `
+    createUpsampleShader(params) {
+        const upsampleShader =
+            `
             precision ${this.device.precision} float;
 
             uniform sampler2D uSource;
@@ -340,60 +340,60 @@
             }
         `;
 
-            return pc.createShaderFromCode
-                (
-                    this.device,
-                    pc.PostEffect.quadVertexShader,
-                    upsampleShader,
-                    `Bloom_Upsample_${Date.now()}`,
-                    { aPosition: pc.SEMANTIC_POSITION }
-                );
+        return pc.createShaderFromCode
+            (
+                this.device,
+                pc.PostEffect.quadVertexShader,
+                upsampleShader,
+                `Bloom_Upsample_${Date.now()}`,
+                { aPosition: pc.SEMANTIC_POSITION }
+            );
+    }
+
+
+    createCombineShader(params) {
+        let blendmode, tonemapper;
+
+        switch (params && params.blendmode) {
+            case 'add':
+                blendmode = '#define BLENDMODE_ADD';
+                break;
+
+            case 'screen':
+                blendmode = '#define BLENDMODE_SCREEN';
+                break;
+
+            default:
+                blendmode = '#define BLENDMODE_ADD';
         }
 
+        switch (params && params.tonemapper) {
+            case pc.TONEMAP_LINEAR:
+                tonemapper = pc.shaderChunks.tonemappingLinearPS;
+                break;
 
-        createCombineShader(params) {
-            let blendmode, tonemapper;
+            case pc.TONEMAP_FILMIC:
+                tonemapper = pc.shaderChunks.tonemappingFilmicPS;
+                break;
 
-            switch (params && params.blendmode) {
-                case 'add':
-                    blendmode = '#define BLENDMODE_ADD';
-                    break;
+            case pc.TONEMAP_HEJL:
+                tonemapper = pc.shaderChunks.tonemappingHejlPS;
+                break;
 
-                case 'screen':
-                    blendmode = '#define BLENDMODE_SCREEN';
-                    break;
+            case pc.TONEMAP_ACES:
+                tonemapper = pc.shaderChunks.tonemappingAcesPS;
+                break;
 
-                default:
-                    blendmode = '#define BLENDMODE_ADD';
-            }
+            case pc.TONEMAP_ACES2:
+                tonemapper = pc.shaderChunks.tonemappingAces2PS;
+                break;
 
-            switch (params && params.tonemapper) {
-                case pc.TONEMAP_LINEAR:
-                    tonemapper = pc.shaderChunks.tonemappingLinearPS;
-                    break;
+            default:
+                tonemapper = pc.shaderChunks.tonemappingNonePS;
+        };
 
-                case pc.TONEMAP_FILMIC:
-                    tonemapper = pc.shaderChunks.tonemappingFilmicPS;
-                    break;
-
-                case pc.TONEMAP_HEJL:
-                    tonemapper = pc.shaderChunks.tonemappingHejlPS;
-                    break;
-
-                case pc.TONEMAP_ACES:
-                    tonemapper = pc.shaderChunks.tonemappingAcesPS;
-                    break;
-
-                case pc.TONEMAP_ACES2:
-                    tonemapper = pc.shaderChunks.tonemappingAces2PS;
-                    break;
-
-                default:
-                    tonemapper = pc.shaderChunks.tonemappingNonePS;
-            };
-
-            const combineShader =
-                `
+        const combineShader =
+            `
             precision ${this.device.precision} float;
 
             uniform sampler2D uSource;
@@ -427,239 +427,238 @@
             }
         `;
 
-            return pc.createShaderFromCode
-                (
-                    this.device,
-                    pc.PostEffect.quadVertexShader,
-                    combineShader,
-                    `Bloom_Combine_${Date.now()}`,
-                    { aPosition: pc.SEMANTIC_POSITION }
-                );
-        }
+        return pc.createShaderFromCode
+            (
+                this.device,
+                pc.PostEffect.quadVertexShader,
+                combineShader,
+                `Bloom_Combine_${Date.now()}`,
+                { aPosition: pc.SEMANTIC_POSITION }
+            );
+    }
 
-    };
-
-
-    //--------------------------------------------------------------------------------------------
-    //                         Physically Based HDR Bloom - Editor Script                         
-    //--------------------------------------------------------------------------------------------
+};
 
 
-    const Bloom2023 = pc.createScript('HDR Bloom 2023');
+//--------------------------------------------------------------------------------------------
+//                         Physically Based HDR Bloom - Editor Script                         
+//--------------------------------------------------------------------------------------------
 
 
-    Bloom2023.attributes.add('camera',
-        {
-            title: 'Camera (Optional)', type: 'entity',
-            description: `The camera object to apply Bloom2023 effect to. If no camera is provided the script tries
+const Bloom2023 = pc.createScript('HDR Bloom 2023');
+
+
+Bloom2023.attributes.add('camera',
+    {
+        title: 'Camera (Optional)', type: 'entity',
+        description: `The camera object to apply Bloom2023 effect to. If no camera is provided the script tries
     to use camera component on its current entity. Eventually if no camera is found there as well -
     the first camera in pc.app.systems.camera.cameras is used.`
-        });
-    Bloom2023.attributes.add('blendmode',
-        {
-            title: 'Blend Mode', type: 'string', default: 'screen', enum: [{ Add: 'add' }, { Screen: 'screen' }],
-            description: `Bloom2023 blending mode. [Add] is using standard additive mixing, [Screen] results in higher
+    });
+Bloom2023.attributes.add('blendmode',
+    {
+        title: 'Blend Mode', type: 'string', default: 'screen', enum: [{ Add: 'add' }, { Screen: 'screen' }],
+        description: `Bloom2023 blending mode. [Add] is using standard additive mixing, [Screen] results in higher
     contrast in extreme cases like super bright lights, maxed out iterations and low mip limit.`
-        });
-    Bloom2023.attributes.add('iterations',
-        {
-            title: 'Iterations', type: 'number', default: 7, min: 1, max: 12, precision: 0,
-            description: `Richness of Bloom2023 effect. The difference between 1 and 12 in terms of performance is
+    });
+Bloom2023.attributes.add('iterations',
+    {
+        title: 'Iterations', type: 'number', default: 7, min: 1, max: 12, precision: 0,
+        description: `Richness of Bloom2023 effect. The difference between 1 and 12 in terms of performance is
     truly negligible so it's recommended to leave it at maximum unless you're targeting specific artistic
     look. Not all iterations may be used internally since downscaling stops at Mip Limit resolution. Low
     and medium number of iterations may produce different results on retina and non-retina displays
     (pc.app.graphicsDevice.maxPixelRatio = 2 or 1), especially with non-zero filter radius.`
-        });
-    Bloom2023.attributes.add('strength',
-        {
-            title: 'Strength', type: 'number', default: 25, min: 0, max: 100, precision: 1,
-            description: `Blending factor. High values together with bright lights result in a steam room look! :D`
-        });
-    Bloom2023.attributes.add('miplimit',
-        {
-            title: 'Mip Limit', type: 'number', default: 4, min: 1, max: 16, precision: 0,
-            description: `This parameter controls the depth of the mip chain by limiting the lowest resolution
+    });
+Bloom2023.attributes.add('strength',
+    {
+        title: 'Strength', type: 'number', default: 25, min: 0, max: 100, precision: 1,
+        description: `Blending factor. High values together with bright lights result in a steam room look! :D`
+    });
+Bloom2023.attributes.add('miplimit',
+    {
+        title: 'Mip Limit', type: 'number', default: 4, min: 1, max: 16, precision: 0,
+        description: `This parameter controls the depth of the mip chain by limiting the lowest resolution
     allowed during downscaling. Going below 4 with maxed out iterations may result in a beautiful full
     screen glow which is possible only at sufficiently high resolutions (1024 and up at pixel ratio 1).`
-        });
-    Bloom2023.attributes.add('thresholdA',
-        {
-            title: 'Threshold A', type: 'number', default: 0, min: 0, max: 10, precision: 1,
-            description: `Thresholding function lower limit. Pixels dimmer than A do not contribute to Bloom2023,
+    });
+Bloom2023.attributes.add('thresholdA',
+    {
+        title: 'Threshold A', type: 'number', default: 0, min: 0, max: 10, precision: 1,
+        description: `Thresholding function lower limit. Pixels dimmer than A do not contribute to Bloom2023,
     pixels brighter than B contribute fully, pixels in (A, B) range contribute with smoothstep curve.`
-        });
-    Bloom2023.attributes.add('thresholdB',
-        {
-            title: 'Threshold B', type: 'number', default: 1, min: 0, max: 10, precision: 1,
-            description: `Thresholding function upper limit. Pixels dimmer than A do not contribute to bloom,
+    });
+Bloom2023.attributes.add('thresholdB',
+    {
+        title: 'Threshold B', type: 'number', default: 1, min: 0, max: 10, precision: 1,
+        description: `Thresholding function upper limit. Pixels dimmer than A do not contribute to bloom,
     pixels brighter than B contribute fully, pixels in (A, B) range contribute with smoothstep curve.`
-        });
-    Bloom2023.attributes.add('radius',
-        {
-            title: 'Filter Radius', type: 'vec2', default: [1, 1],
-            description: `Radius of additional blur applied during upsampling stage. It's mostly used to
+    });
+Bloom2023.attributes.add('radius',
+    {
+        title: 'Filter Radius', type: 'vec2', default: [1, 1],
+        description: `Radius of additional blur applied during upsampling stage. It's mostly used to
     dilute a minor moire artefact that is visible at radius (0, 0). Due to the nature of texture
     filtering Filter Radius may produce slightly different Bloom2023 kernel depending on device pixel
     ratio (i.e. retina and non-retina displays), so you may want to adjust it dynamically depending
     on window.devicePixelRatio or pc.app.graphicsDevice.maxPixelRatio.`
-        });
-    Bloom2023.attributes.add('hdrformat',
-        {
-            title: 'HDR Format', type: 'number', default: pc.PIXELFORMAT_111110F,
-            enum: [{ '11 bit': pc.PIXELFORMAT_111110F },
-            { '16 bit': pc.PIXELFORMAT_RGBA16F },
-            { '32 bit': pc.PIXELFORMAT_RGBA32F }],
-            description: `Preferred HDR format. Actual format chosen by system may differ due to hardware
+    });
+Bloom2023.attributes.add('hdrformat',
+    {
+        title: 'HDR Format', type: 'number', default: pc.PIXELFORMAT_111110F,
+        enum: [{ '11 bit': pc.PIXELFORMAT_111110F },
+        { '16 bit': pc.PIXELFORMAT_RGBA16F },
+        { '32 bit': pc.PIXELFORMAT_RGBA32F }],
+        description: `Preferred HDR format. Actual format chosen by system may differ due to hardware
     compatibility. 11 bit is the best choice overall, it provides tangible performance benefits and
     is also widely supported even on old devices like iPhone 8. If selected format is not supported
     by target system the first valid lower format will be used.`
-        });
+    });
 
 
-    Bloom2023.prototype.initialize = function () {
+Bloom2023.prototype.initialize = function () {
+    this.effect = null;
+    this.camcam = null;
+
+    this.on('enable', this.handleEnable, this);
+    this.on('disable', this.handleDisable, this);
+    this.on('attr', this.handleAttribute, this);
+    this.once('destroy', this.destroy, this);
+};
+
+
+Bloom2023.prototype.postInitialize = function () {
+    this.handleEnable();
+};
+
+
+Bloom2023.prototype.handleEnable = function () {
+    this.camcam = (this.camera && this.camera.camera) ||
+        this.entity.camera ||
+        this.app.systems.camera.cameras[0];
+
+    if (!this.effect && this.camcam) {
+        this.effect = this.createEffect();
+        this.camcam.postEffects.addEffect(this.effect);
+    }
+};
+
+
+Bloom2023.prototype.handleDisable = function () {
+    if (this.effect) {
+        this.camcam && this.camcam.postEffects.removeEffect(this.effect);
+        this.destroyEffect(this.effect);
         this.effect = null;
-        this.camcam = null;
-
-        this.on('enable', this.handleEnable, this);
-        this.on('disable', this.handleDisable, this);
-        this.on('attr', this.handleAttribute, this);
-        this.once('destroy', this.destroy, this);
-    };
+    }
+};
 
 
-    Bloom2023.prototype.postInitialize = function () {
-        this.handleEnable();
-    };
-
-
-    Bloom2023.prototype.handleEnable = function () {
-        this.camcam = (this.camera && this.camera.camera) ||
-            this.entity.camera ||
-            this.app.systems.camera.cameras[0];
-
-        if (!this.effect && this.camcam) {
-            this.effect = this.createEffect();
-            this.camcam.postEffects.addEffect(this.effect);
+Bloom2023.prototype.handleAttribute = function (name, value) {
+    if (this.effect) {
+        if (name === 'camera') {
+            this.handleDisable();
+            this.handleEnable();
         }
-    };
-
-
-    Bloom2023.prototype.handleDisable = function () {
-        if (this.effect) {
-            this.camcam && this.camcam.postEffects.removeEffect(this.effect);
-            this.destroyEffect(this.effect);
-            this.effect = null;
+        else {
+            this.effect.configure({ [name]: value });
         }
-    };
+    }
+};
 
 
-    Bloom2023.prototype.handleAttribute = function (name, value) {
-        if (this.effect) {
-            if (name === 'camera') {
-                this.handleDisable();
-                this.handleEnable();
-            }
-            else {
-                this.effect.configure({ [name]: value });
-            }
+Bloom2023.prototype.update = function () {
+    if (this.effect)
+        this.updateEffect(this.effect);
+};
+
+
+Bloom2023.prototype.createEffect = function () {
+
+    var tonemapper = pc.TONEMAP_LINEAR;
+    var gamma = pc.GAMMA_NONE;
+    if (this.app.scene.hasOwnProperty('toneMapping')) {
+        tonemapper = this.app.scene.toneMapping;
+    } else {
+        tonemapper = this.camcam.toneMapping;
+    }
+
+    if (this.app.scene.hasOwnProperty('gammaCorrection')) {
+        gamma = this.app.scene.gammaCorrection;
+    } else {
+        gamma = this.camcam.gammaCorrection;
+    }
+
+    var exposure = this.app.scene.exposure;
+
+    return new Bloom2023Effect(this.app.graphicsDevice,
+        {
+            blendmode: this.blendmode,
+            iterations: this.iterations,
+            strength: this.strength,
+            miplimit: this.miplimit,
+            thresholdA: this.thresholdA,
+            thresholdB: this.thresholdB,
+            radius: this.radius,
+            hdrformat: this.hdrformat,
+            tonemapper: tonemapper,
+            exposure: exposure,
+            gamma: gamma
+        });
+};
+
+
+Bloom2023.prototype.updateEffect = function (effect) {
+
+    if (this.app.scene.hasOwnProperty('toneMapping')) {
+        if (this.app.scene.toneMapping !== pc.TONEMAP_NONE) {
+            effect.configure({ tonemapper: this.app.scene.toneMapping });
+            this.app.scene.toneMapping = pc.TONEMAP_NONE;
         }
-    };
-
-
-    Bloom2023.prototype.update = function () {
-        if (this.effect)
-            this.updateEffect(this.effect);
-    };
-
-
-    Bloom2023.prototype.createEffect = function () {
-
-        var tonemapper = pc.TONEMAP_LINEAR;
-        var gamma = pc.GAMMA_NONE;
-        if (this.app.scene.hasOwnProperty('toneMapping')) {
-            tonemapper = this.app.scene.toneMapping;
-        } else {
-            tonemapper = this.camcam.toneMapping;
+    } else {
+        if (this.camcam.toneMapping !== pc.TONEMAP_NONE) {
+            effect.configure({ tonemapper: this.camcam.toneMapping });
+            this.camcam.toneMapping = pc.TONEMAP_NONE;
         }
+    }
 
-        if (this.app.scene.hasOwnProperty('gammaCorrection')) {
-            gamma = this.app.scene.gammaCorrection;
-        } else {
-            gamma = this.camcam.gammaCorrection;
+    if (this.app.scene.hasOwnProperty('gammaCorrection')) {
+        if (this.app.scene.gammaCorrection === pc.GAMMA_SRGB ||
+            this.app.scene.gammaCorrection === pc.GAMMA_SRGBFAST) {
+            effect.configure({ gamma: this.app.scene.gammaCorrection });
+            this.app.scene.gammaCorrection = pc.GAMMA_SRGBHDR;
         }
-
-        var exposure = this.app.scene.exposure;
-
-        return new Bloom2023Effect(this.app.graphicsDevice,
-            {
-                blendmode: this.blendmode,
-                iterations: this.iterations,
-                strength: this.strength,
-                miplimit: this.miplimit,
-                thresholdA: this.thresholdA,
-                thresholdB: this.thresholdB,
-                radius: this.radius,
-                hdrformat: this.hdrformat,
-                tonemapper: tonemapper,
-                exposure: exposure,
-                gamma: gamma
-            });
-    };
-
-
-    Bloom2023.prototype.updateEffect = function (effect) {
-
-        if (this.app.scene.hasOwnProperty('toneMapping')) {
-            if (this.app.scene.toneMapping !== pc.TONEMAP_NONE) {
-                effect.configure({ tonemapper: this.app.scene.toneMapping });
-                this.app.scene.toneMapping = pc.TONEMAP_NONE;
-            }
-        } else {
-            if (this.camcam.toneMapping !== pc.TONEMAP_NONE) {
-                effect.configure({ tonemapper: this.camcam.toneMapping });
-                this.camcam.toneMapping = pc.TONEMAP_NONE;
-            }
+        else if (this.app.scene.gammaCorrection === pc.GAMMA_NONE) {
+            effect.configure({ gamma: pc.GAMMA_NONE });
         }
-
-        if (this.app.scene.hasOwnProperty('gammaCorrection')) {
-            if (this.app.scene.gammaCorrection === pc.GAMMA_SRGB ||
-                this.app.scene.gammaCorrection === pc.GAMMA_SRGBFAST) {
-                effect.configure({ gamma: this.app.scene.gammaCorrection });
-                this.app.scene.gammaCorrection = pc.GAMMA_SRGBHDR;
-            }
-            else if (this.app.scene.gammaCorrection === pc.GAMMA_NONE) {
-                effect.configure({ gamma: pc.GAMMA_NONE });
-            }
-        } else {
-            if (this.camcam.gammaCorrection === pc.GAMMA_SRGB ||
-                this.camcam.gammaCorrection === pc.GAMMA_SRGBFAST) {
-                effect.configure({ gamma: this.camcam.gammaCorrection });
-                this.camcam.gammaCorrection = pc.GAMMA_SRGBHDR;
-            }
-            else if (this.camcam.gammaCorrection === pc.GAMMA_NONE) {
-                effect.configure({ gamma: pc.GAMMA_NONE });
-            }
+    } else {
+        if (this.camcam.gammaCorrection === pc.GAMMA_SRGB ||
+            this.camcam.gammaCorrection === pc.GAMMA_SRGBFAST) {
+            effect.configure({ gamma: this.camcam.gammaCorrection });
+            this.camcam.gammaCorrection = pc.GAMMA_SRGBHDR;
         }
+        else if (this.camcam.gammaCorrection === pc.GAMMA_NONE) {
+            effect.configure({ gamma: pc.GAMMA_NONE });
+        }
+    }
 
-        effect.configure({ exposure: this.app.scene.exposure });
-    };
-
-
-    Bloom2023.prototype.destroyEffect = function (effect) {
-        this.app.scene.toneMapping = effect.params.tonemapper;
-        this.app.scene.gammaCorrection = effect.params.gamma;
-
-        effect.destroy();
-    };
+    effect.configure({ exposure: this.app.scene.exposure });
+};
 
 
-    Bloom2023.prototype.destroy = function () {
-        this.off('enable', this.handleEnable, this);
-        this.off('disable', this.handleDisable, this);
-        this.off('attr', this.handleAttribute, this);
+Bloom2023.prototype.destroyEffect = function (effect) {
+    this.app.scene.toneMapping = effect.params.tonemapper;
+    this.app.scene.gammaCorrection = effect.params.gamma;
 
-        this.handleDisable();
-    };
+    effect.destroy();
+};
 
 
-})();
+Bloom2023.prototype.destroy = function () {
+    this.off('enable', this.handleEnable, this);
+    this.off('disable', this.handleDisable, this);
+    this.off('attr', this.handleAttribute, this);
+
+    this.handleDisable();
+};
+
+
