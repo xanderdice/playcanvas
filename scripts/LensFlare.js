@@ -1,18 +1,40 @@
 var LensFlare = pc.createScript('lensFlare');
 
+LensFlare.attributes.add("flaresTexture", {
+    type: "asset",
+    assetType: "texture",  // Especificamos que este atributo es de tipo textura
+    title: "Flares Texture"    // Un título opcional para la interfaz de usuario del editor
+});
 
-
+LensFlare.attributes.add('flaresMaterial', {
+    type: 'asset',
+    assetType: 'material',  // Especificamos que este atributo es de tipo material
+    title: 'Flares Material'    // Un título opcional para la interfaz de usuario del editor
+});
 
 
 
 // initialize code called once per entity
 LensFlare.prototype.initialize = function () {
+
+    if (!this.app.LensFlareManager) {
+        this.app.LensFlareManager = {};
+    }
+
     this.camera = null;
 
 
     // Obtener el material del plano
     this.material = this.entity.render.material;
+
     if (this.material) {
+        this.material.depthWhite = true;
+        this.material.depthTest = false;
+        this.material.useFog = false;
+        this.material.useLighting = false;
+        this.material.useSkybox = false;
+        this.material.useGammaTonemap = false;
+
         this.beamsMaterial = this.material.clone();
         this.beamsMaterial.depthWhite = false;
         this.beamsMaterial.useFog = false;
@@ -21,7 +43,6 @@ LensFlare.prototype.initialize = function () {
         this.beamsMaterial.emissiveMap = null;
         this.beamsMaterial.emissive = pc.Color.WHITE;
         this.beamsMaterial.emissiveIntensity = 1;
-
     }
 
     this.beam = new pc.Entity();
@@ -85,13 +106,39 @@ LensFlare.prototype.update = function (dt) {
 
 
     if (isInScreen) {
-        Trace("flarePos", flarePos);
-        Trace("isInScreen", isInScreen);
 
+        var cameraPosition = this.camera.getPosition();
+        var lensFlarePos = this.entity.getPosition();
+
+        // Dirección del raycast hacia la cámara
+        //var direction = cameraPosition.clone().sub(lensFlarePos).normalize(); // Vector de dirección hacia la cámara
+
+
+        var direction = lensFlarePos.clone().sub(cameraPosition).normalize();
+        Tracer("direction", direction);
+
+        // Realizar el raycast
+        //var result = this.app.systems.rigidbody.raycastFirst(lensFlarePos, direction);
+        var result = this.app.systems.rigidbody.raycastFirst(cameraPosition, direction);
+
+
+        var distance = 10; // 10 metros
+        var destination = lensFlarePos.clone().add(direction.scale(distance)); // Sumar la dirección escalada por 10 metros
+
+        this.app.drawLine(lensFlarePos, destination, pc.Color.RED);
+
+
+        Tracer("result", result);
+
+        if (result) {
+            //alert("Raycast hit:" + result.entity);
+        } else {
+            console.log('No hit');
+        }
 
         // Calcular la posición opuesta en la pantalla
 
-        var cameraPosition = this.camera.getPosition();
+
         var planePosition = this.entity.getPosition();
         var distance = cameraPosition.distance(planePosition);
 
@@ -100,7 +147,6 @@ LensFlare.prototype.update = function (dt) {
         // Calcula la nueva escala del plano basada en la distancia.
         var scaleFactor = this._getScaleFactor(distance);
 
-        Trace("scaleFactor", scaleFactor);
 
         // Aplica la nueva escala.
         this.entity.setLocalScale(scaleFactor, scaleFactor, scaleFactor);
@@ -118,7 +164,7 @@ LensFlare.prototype.update = function (dt) {
 
         // Convertir la posición opuesta a mundo
         var worldPos = this.camera.camera.screenToWorld(oppositePos.x, oppositePos.y, flarePos.z);
-        Trace("worldPos", worldPos);
+
 
         // Colocar los haces en la posición calculada
         this.beam.setPosition(worldPos);
