@@ -1,6 +1,6 @@
 /*********************************************************************************************
  * MIT License
- * Copyright (c) 2023 Anton Matrosov
+ * Copyright (c) 2025 Anton Matrosov
  * https://www.linkedin.com/in/antonmatrosov/
  * https://forum.playcanvas.com/u/underlight/summary
  * https://ko-fi.com/antonmatrosov
@@ -38,7 +38,7 @@
 
 
 
-class Bloom2023Effect extends pc.PostEffect {
+class Bloom2025Effect extends pc.PostEffect {
 
     constructor(graphicDevice, params) {
         super(graphicDevice);
@@ -590,7 +590,7 @@ Bloom2023.prototype.createEffect = function () {
 
     var exposure = this.app.scene.exposure;
 
-    return new Bloom2023Effect(this.app.graphicsDevice,
+    return new Bloom2025Effect(this.app.graphicsDevice,
         {
             blendmode: this.blendmode,
             iterations: this.iterations,
