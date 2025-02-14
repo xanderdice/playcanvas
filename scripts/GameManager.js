@@ -237,10 +237,34 @@ GameManager.attributes.add('ui', {
     ]
 });
 
+
+GameManager.attributes.add("camerarenderpass", {
+    title: "camerarenderpass",
+    type: "json",
+    schema: [
+        {
+            name: 'enabled',
+            type: 'boolean',
+            default: true,
+            title: 'enabled',
+            description: 'enables camerarenderpass'
+        }
+    ]
+});
+
 GameManager.attributes.add("subtitles", {
     title: "subtitles",
     type: "json",
     schema: [
+
+        {
+            name: 'enabled',
+            type: 'boolean',
+            default: true,
+            title: 'enabled',
+            description: 'enables subtitles'
+        },
+
         {
             name: 'enableSubtitles',
             type: 'boolean',
@@ -254,14 +278,16 @@ GameManager.attributes.add('tracer', {
     type: 'json',
     schema: [
         {
+            name: 'enabled',
+            type: 'boolean',
+            default: false,
+            title: 'enabled',
+            description: 'enables Tracer'
+        },
+
+        {
             name: 'trenablefps',
             title: "FPS Enabled",
-            type: 'boolean',
-            default: true
-        },
-        {
-            name: 'trenable',
-            title: "TR Enable",
             type: 'boolean',
             default: true
         },
@@ -334,22 +360,33 @@ GameManager.prototype.initialize = function () {
     GameManager.currentScene = GameManager.mainScene;
     GameManager._app = this.app;
     GameManager._app.isMenuMode = false;
+    GameManager.camerarenderpassEnabled = this.camerarenderpass.enabled;
+    GameManager.currentCamera = GameManager.calculateCameraScene();
 
-    GameManager.enableSubtitles = this.subtitles.enableSubtitles;
+
+
+
+
+    GameManager.enableSubtitles = this.subtitles.enabled;
 
     var canvas = this.app.graphicsDevice.canvas;
-    TracerScript.trenable = this.tracer.trenable;
+    TracerScript.trenable = this.tracer.enabled;
     TracerScript.tralwaysshow = this.tracer.tralwaysshow;
     TracerScript.trordermode = this.tracer.trordermode;
-    TracerScript.trenablefps = this.tracer.trenablefps;
-    TracerScript.trshowstats = this.tracer.trshowstats;
-    TracerScript.trenablelightingdebugLayer = this.tracer.trenablelightingdebugLayer;
+    TracerScript.trenablefps = TracerScript.trenable ? this.tracer.trenablefps : false;
+    TracerScript.trshowstats = TracerScript.trenable ? this.tracer.trshowstats : false;
+    TracerScript.trenablelightingdebugLayer = TracerScript.trenable ? this.tracer.trenablelightingdebugLayer : false;
 
     if (TracerScript.trenablefps) {
         TracerScript.fps = new FPSMeter({ heat: true, graph: true });
     }
-    TracerScript.trgamesleep = this.tracer.trgamesleep;
-    TracerScript.trgametimescale = this.tracer.trgametimescale;
+    if (TracerScript.trenable) {
+        TracerScript.trgamesleep = this.tracer.trgamesleep;
+        TracerScript.trgametimescale = this.tracer.trgametimescale;
+    } else {
+        TracerScript.trgamesleep = 0;
+        TracerScript.trgametimescale = 1;
+    }
 
 
 
@@ -823,6 +860,8 @@ GameManager.loadScene = function (sceneName) {
                         }
                     }
 
+                    GameManager.currentCamera = GameManager.calculateCameraScene();
+
                     app.autoRender = true;
 
                     app.fire("hidemenu");
@@ -830,6 +869,9 @@ GameManager.loadScene = function (sceneName) {
 
 
                     GameManager.showSubtitle("The scene " + GameManager.currentScene + " has loaded...");
+
+
+
 
                 });
 
@@ -842,6 +884,65 @@ GameManager.loadScene = function (sceneName) {
     });
 
 }
+
+GameManager.calculateCameraScene = function () {
+    var app = GameManager._app;
+    if (!app) return null;
+
+    var cameras = app.scene.root.findComponents("camera");
+    cameras = cameras.sort((a, b) => a.priority - b.priority);
+    if (cameras.length) {
+
+        var camera = cameras[0];
+        //app.scene.exposure = 0.1;
+
+        if (GameManager.camerarenderpassEnabled) {
+
+            var cameraFrame = new pc.CameraFrame(app, camera);
+
+            app.scene.skyboxHighlightMultiplier = 100;
+            //cameraFrame.rendering.samples = 32;
+            cameraFrame.rendering.toneMapping = pc.TONEMAP_NEUTRAL;
+
+            cameraFrame.bloom.enabled = false;
+            cameraFrame.bloom.intensity = 0.03;
+            //cameraFrame.bloom.blur = 4;
+
+
+            cameraFrame.vignette.inner = 0.5;
+            cameraFrame.vignette.outer = 1;
+            cameraFrame.vignette.curvature = 0.5;
+            cameraFrame.vignette.intensity = 0.5;
+
+            cameraFrame.taa.enabled = true;
+            cameraFrame.taa.jitter = 1;
+            //cameraFrame.rendering.sharpness = 1;
+            //cameraFrame.debug = "scene";
+
+
+            cameraFrame.ssao.type = "combine";
+            cameraFrame.ssao.blurEnabled = true;
+            cameraFrame.ssao.intensity = 1;
+            cameraFrame.ssao.power = 10;
+            cameraFrame.ssao.radius = 1;
+            cameraFrame.ssao.samples = 4;
+            cameraFrame.ssao.minAngle = 0;
+            cameraFrame.ssao.scale = 1;
+
+            //cameraFrame.grading.enabled = true;
+            //cameraFrame.grading.saturation = 1.1;
+
+
+            cameraFrame.update();
+
+        } else {
+            camera.renderPasses = [];
+        }
+
+        return camera;
+    }
+}
+
 
 GameManager.freeAssets = function () {
     var app = GameManager._app;
