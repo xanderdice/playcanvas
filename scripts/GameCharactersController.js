@@ -21,12 +21,6 @@
 
 var GameCharactersController = pc.createScript('gameCharactersController');
 
-GameCharactersController.attributes.add('camera', {
-    type: 'entity',
-    title: "camera",
-    description: "General camera for this game.",
-    default: null
-});
 
 GameCharactersController.attributes.add('playerPersonStyle', {
     title: 'Player Person Style',
@@ -52,6 +46,13 @@ GameCharactersController.attributes.add('fontAsset', {
     assetType: "font",
     default: null,
     description: "Font."
+});
+
+GameCharactersController.attributes.add('interv', {
+    title: 'interv',
+    type: 'boolean',
+    default: true,
+    description: "interv"
 });
 
 
@@ -213,7 +214,7 @@ GameCharactersController.prototype.initialize = function () {
     //console.log("screen_width" + screen_width);
     //console.log("screen_height" + screen_height);
 
-    document.body.style.backgroundColor = "#000";
+
 
 
 
@@ -233,28 +234,6 @@ GameCharactersController.prototype.initialize = function () {
 
     //this.app.scene.lighting.debugLayer = this.app.scene.layers.getLayerByName("World").id;
 
-    if (this.camera) {
-
-        const currentOptions = {
-            camera: this.camera.camera, // camera used to render those passes
-            samples: 0, // number of samples for multi-sampling
-            // sceneColorMap: true, // true if the scene color should be captured
-            sceneColorMap: false,
-
-            // enable the pre-pass to generate the depth buffer, which is needed by the TAA
-            prepassEnabled: true,
-            /*tonemapping: pc.TONEMAP_ACES,*/
-
-            // enable temporal anti-aliasing
-            taaEnabled: true
-        };
-
-        //        const renderPassCamera = new pcx.RenderPassCameraFrame(this.app, currentOptions);
-        //this.camera.camera.renderPasses = [renderPassCamera];
-        //renderPassCamera.composePass.toneMapping = pc.TONEMAP_ACES;
-        //        this.camera.camera.jitter = 1;
-
-    }
 
 
     this.characters = [];
@@ -284,18 +263,6 @@ GameCharactersController.prototype.initialize = function () {
 
     this.gameMouse_busy = false;
     this.gameMouseMoved = false;
-    this.app.mouse.on(pc.EVENT_MOUSEMOVE, this.onMouseMove, this);
-    this.app.mouse.on(pc.EVENT_MOUSEDOWN, this.onMouseDown, this);
-    this.app.mouse.on(pc.EVENT_MOUSEWHEEL, this.onMouseWheel, this);
-
-    this.canvas.addEventListener('contextmenu', function (event) { event.preventDefault(); }.bind(this), false);
-    this.app.mouse.disableContextMenu();
-
-    this.on("destroy", function () {
-        this.app.mouse.off(pc.EVENT_MOUSEMOVE, this.onMouseMove, this);
-        this.app.mouse.off(pc.EVENT_MOUSEDOWN, this.onMouseDown, this);
-        this.app.mouse.off(pc.EVENT_MOUSEWHEEL, this.onMouseWheel, this);
-    }, this);
 
 
 
@@ -305,25 +272,7 @@ GameCharactersController.prototype.initialize = function () {
     this.jumping_elapsedtime = 0;
     this.jumping_availability = true;
 
-    this.input = {
-        playerPersonStyle: this.playerPersonStyle,
-        x: 0,
-        z: 0,
-        jump: false,
-        sprint: false,
-        attack: false,
-        interact: false,
-        mouseX: 0,
-        mouseY: 0,
-        mouseDx: 0,
-        mouseDy: 0,
-        mouseSensitivity: this.mouseOptions.mouseSensitivity,
-        mousePrimaryButton: false,
-        mouseSecondaryButton: false,
-        mouseWheel: 0,
-        camera: this.camera,
-        dt: 0
-    };
+
 
 
 
@@ -399,26 +348,38 @@ GameCharactersController.prototype.initialize = function () {
     /*    UPDATE CHARACTERS MOVEMENT
     /*
     /*******************************************************/
-    setInterval(function () {
+    this.updateCharactersMovementStep = 0;
+    this.updateCharactersMovementAIStep = [0, 0];
+    if (this.interv) {
+        this.interval_accumul = 1;
+        this.interval_time = 1000 / 60;
+        this.interval_deltatime = this.interval_time;
 
-        return;
-        if (!this.interv) {
-            this.interv = true;
+        this.setInterval_busy = false;
+        Timer.addTimer(0.016, this.setInterval, this, false);
 
-            Trace("setInterval dt", this.app.dt);
-            this.onKeyboardInput(this.dt);
+    }
 
-            const clonedObject = Object.assign({}, this.input);
-            delete clonedObject.camera;
-            clonedObject.camera = null;
-            Trace("input", clonedObject);
 
-            /*this.updateCharactersMovement(this.dt);*/
-            this.interv = false;
+};
+
+GameCharactersController.prototype.setInterval = async function () {
+    if (this.setInterval_busy) {
+        this.interval_accumul++;
+        Tracer("updateCharactersMovement", "ACUMUL");
+    } else {
+        this.setInterval_busy = true;
+        const startTime = performance.now();
+        this.updateCharactersMovement();
+        const endTime = performance.now();    // Toma el tiempo de finalización
+        const elapsedTime = endTime - startTime;
+        if (elapsedTime > 0.2) {
+            Tracer("updateCharactersMovement", elapsedTime);
         }
-    }.bind(this), 1000 / 60 * 2 + 1);
 
-
+        this.interval_accumul = 1;
+        this.setInterval_busy = false;
+    }
 };
 
 
@@ -532,7 +493,7 @@ GameCharactersController.prototype.onMouseMove = function (event) {
         //
         //RAYCAST:
         //
-        var selectedCharacters = this.getSelectedCharacters(this.characters);
+        var selectedCharacters = this.getSelectedCharacters();
         if (selectedCharacters.length === 0) {
             this.gameMouse_busy = false;
             this.gameMouseMoved = true;
@@ -556,7 +517,7 @@ GameCharactersController.prototype.onMouseMove = function (event) {
 
         if (raycast != null) {
 
-            var selectableCharacters = this.getSelectableCharacters(this.characters);
+            var selectableCharacters = this.getSelectableCharacters();
 
             var isSelectable = selectableCharacters.find(function (char) {
                 return char._guid === raycast.entity._guid;
@@ -630,7 +591,7 @@ GameCharactersController.prototype.onMouseDown = function (event) {
             return;
         }
 
-        this.selectedCharacters = this.getSelectedCharacters(this.characters);
+        this.selectedCharacters = this.getSelectedCharacters();
         if (this.selectedCharacters.length === 0) {
             this.gameMouse_busy = false;
             return;
@@ -657,7 +618,7 @@ GameCharactersController.prototype.onMouseDown = function (event) {
         if (raycast != null && raycast.entity) {
 
 
-            var selectableCharacters = this.getSelectableCharacters(this.characters);
+            var selectableCharacters = this.getSelectableCharacters();
 
             var isSelectableByRaycast = selectableCharacters.find(function (char) {
                 return char._guid === raycast.entity._guid;
@@ -705,89 +666,65 @@ GameCharactersController.prototype.onMouseDown = function (event) {
 };
 
 
-GameCharactersController.prototype.onMouseWheel = function (event) {
-    this.input.mouseWheel = event.wheelDelta;
-};
+GameCharactersController.prototype.updateCharactersMovement = async function () {
 
-
-
-GameCharactersController.prototype.onKeyboardInput = async function () {
-    if (this.app.isMenuMode) return;
-    const keyboard = this.app.keyboard;
-
-    // Movimiento horizontal
-    if (keyboard.isPressed(pc.KEY_A) || keyboard.isPressed(pc.KEY_LEFT)) {
-        this.input.x = -1;
-    } else if (keyboard.isPressed(pc.KEY_D) || keyboard.isPressed(pc.KEY_RIGHT)) {
-        this.input.x = 1;
-    } else {
-        this.input.x = 0;
-    }
-
-    // Movimiento vertical
-    if (keyboard.isPressed(pc.KEY_W) || keyboard.isPressed(pc.KEY_UP)) {
-        this.input.z = 1;
-    } else if (keyboard.isPressed(pc.KEY_S) || keyboard.isPressed(pc.KEY_DOWN)) {
-        this.input.z = -1;
-    } else {
-        this.input.z = 0;
-    }
-
-
-    // Salto
-    if (this.jumping_availability) {
-        if (keyboard.wasPressed(pc.KEY_SPACE)) {
-            this.jumping_availability = false;
-            this.input.jump = true;
-        }
-    }
-
-    // Sprint
-    const isShiftPressed = keyboard.isPressed(pc.KEY_SHIFT);
-    //this.input.sprint = this.sprintByDefault ? !isShiftPressed : isShiftPressed;
-    this.input.sprint = isShiftPressed;
-
-
-    this.input.interact = keyboard.isPressed(pc.KEY_E);
-    this.input.attack = keyboard.isPressed(pc.KEY_F);
-    this.input.impact = keyboard.isPressed(pc.KEY_I);
-    this.input.death = keyboard.isPressed(pc.KEY_U);
-    this.input.mode = keyboard.isPressed(pc.KEY_M);
-
-
-    this.input.mousePrimaryButton = this.app.mouse.isPressed(pc.MOUSEBUTTON_LEFT);
-    this.input.mouseSecondaryButton = this.app.mouse.isPressed(pc.MOUSEBUTTON_RIGHT);
-
-
-    this.input.playerPersonStyle = this.playerPersonStyle;
-
-}
-
-GameCharactersController.prototype.updateCharactersMovement = function (dt) {
     if (!this.updateCharactersMovement_busy) {
         this.updateCharactersMovement_busy = true;
 
-        this.input.dt = dt;
+
         //Moves all characters:
-        this.characters = this.getCharacters(),
-            characters_length = this.characters.length,
-            i = 0;
+        const characters = this.dividirArray(this.getCharacters())[this.updateCharactersMovementStep] || [],
+            characters_length = characters.length;
+        var i = 0;
 
 
         for (; i < characters_length; i++) {
-            const otherScript = this.characters[i].script.character
-            if (otherScript) {
-                //if (this.characters[i].isPlayer) {
-                otherScript.doMove(this.input);
-                //}
+
+            //visibleThisFrame
+            if (characters[i].enabled) {
+                const otherScript = characters[i].script.character
+
+                if (otherScript) {
+                    if (characters[i].isPlayer) {
+                        characters[i].input = GameManager.input;
+                    } else {
+                        characters[i].input.dt = GameManager.input.dt;
+                        if (this.updateCharactersMovementAIStep[this.updateCharactersMovementStep] === i) {
+                            otherScript.doAI();
+                        }
+                    }
+                    otherScript.doMove();
+                }
             }
         }
+        this.updateCharactersMovementAIStep[this.updateCharactersMovementStep]++;
+        this.updateCharactersMovementStep++;
+
+
+        if (this.updateCharactersMovementStep > 1) this.updateCharactersMovementStep = 0;
+        if (this.updateCharactersMovementAIStep[this.updateCharactersMovementStep] > characters_length) this.updateCharactersMovementAIStep[this.updateCharactersMovementStep] = 0;
+
+        /*Tracer(" ", this.updateCharactersMovementStep + "-" + this.updateCharactersMovementAIStep[0]);
+        Tracer(" ", this.updateCharactersMovementStep + "-" + this.updateCharactersMovementAIStep[1]);
+        Tracer("characters_length", characters_length);*/
+
+
+
 
         this.updateCharactersMovement_busy = false;
     } else {
         console.warn("updateCharactersMovement_busy = true");
         Trace("updateCharactersMovement_busy = true");
     }
+}
+
+
+GameCharactersController.prototype.dividirArray = function (arr) {
+    const mitad = Math.ceil(arr.length / 2); // Si es impar, la mitad será el siguiente número entero
+    const primeraMitad = arr.slice(0, mitad);  // Toma la primera mitad (inclusive hasta el punto medio)
+    const segundaMitad = arr.slice(mitad);     // Toma la segunda mitad desde el punto medio
+
+    return [primeraMitad, segundaMitad];
 }
 
 
@@ -816,7 +753,7 @@ GameCharactersController.prototype.updateCameraOrientation = function () {
             if (this.mainPlayer) {
                 var otherScript = this.mainPlayer.script.character
                 if (otherScript) {
-                    otherScript.rotateCharacter(0, 0, this.camera, 0);
+                    otherScript.calculateCharacterCurrentRotation(0, 0, this.camera, 0);
                 }
             }
         };
@@ -901,29 +838,15 @@ GameCharactersController.prototype.updateCameraPosition = function (dt) {
 
 // update code called every frame
 GameCharactersController.prototype.postUpdate = async function (dt) {
-    //    if (this.app.isMenuMode) return;
-
-
-    await this.onKeyboardInput();
-    this.input.dt = dt;
-    await this.updateCharactersMovement(dt);
-
-
-
-
-    this.getSceneLights(dt);
 
 };
 
 
-GameCharactersController.prototype.update = function (dt) {
-
-    if (this.camera) {
-        this.gameMouseMoved = false;
-
-        this.updateCameraOrientation();
-        this.updateCameraPosition(dt);
+GameCharactersController.prototype.update = async function (dt) {
+    if (!this.interv) {
+        await this.updateCharactersMovement();
     }
+    this.gameMouseMoved = false;
 }
 
 
@@ -938,29 +861,31 @@ GameCharactersController.prototype.createAudioListener = function () {
 
 
 GameCharactersController.prototype.getCharacters = function () {
-    // Recorre las entidades hijas
-    var characters = this.entity.children.filter(function (char) {
-        return (char.enabled && char.isCharacter)
-    });
 
-    return characters;
+    if (!this.sceneCharacters) {
+        this.sceneCharacters = this.app.scene.root.children.filter(function (char) {
+            return (char.isCharacter)
+        });
+    }
+
+    return this.sceneCharacters;
 }
 
-GameCharactersController.prototype.getSelectedCharacters = function (characters) {
-    var characters = characters.filter(function (char) {
+GameCharactersController.prototype.getSelectedCharacters = function () {
+    const characters = this.getCharacters().filter(function (char) {
         return char.selected;
     });
     return characters;
 }
-GameCharactersController.prototype.getSelectableCharacters = function (characters) {
-    var characters = characters.filter(function (char) {
+GameCharactersController.prototype.getSelectableCharacters = function () {
+    const characters = this.getCharacters().filter(function (char) {
         return char.isSelectable;
     });
     return characters;
 }
 
 GameCharactersController.prototype.getMainPlayer = function (characters) {
-    var mainPlayer = characters.find(function (char) {
+    const mainPlayer = this.getCharacters().find(function (char) {
         return char.isPlayer;
     });
     return mainPlayer;

@@ -24,6 +24,9 @@ THOS SCENE MUST BE SET AS DEAFULT OR AS CURRENT
 //240p (SD): 426x240 
 */
 
+
+
+
 /**
  * A namespace for managing timers.
  *
@@ -59,6 +62,26 @@ Timer.addTimer = function (time, callback, scope, once) {
     return timerId;
 }
 
+Timer.addTimerManually = function (time) {
+    const timerId = "t_" + this._timercounter;
+    Timer._timers[timerId] = {
+        time: time || 0,
+        __elapsedTime: 0
+    };
+    Timer._timercounter++;
+    return timerId;
+}
+
+Timer.checkElapsed = function (timerId) {
+    const timer = this._timers[timerId];
+    if (timer.time && timer.__elapsedTime >= timer.time) {
+        timer.__elapsedTime = 0;
+        return true;
+    } else {
+        return false;
+    }
+}
+
 /**
  * Removes a timer from the system.
  *
@@ -81,7 +104,7 @@ Timer.destroyTimer = function (timerId) {
  */
 Timer.clearAllTimers = function () {
     for (let key in this._timers) {
-        delete this._timers[key];
+        this.destroyTimer(key);
     }
     this._timers = [];
     Timer._timercounter = 0;
@@ -99,10 +122,10 @@ Timer.evaluateTimers = function (dt) {
     for (let key in this._timers) {
         var timer = this._timers[key];
         timer.__elapsedTime += dt;
-        if (timer.__elapsedTime >= timer.time) {
+        if (timer.time && timer.__elapsedTime >= timer.time) {
             timer.callback.call(timer.scope);
             if (timer.once) {
-                delete this._timers[key];
+                this.destroyTimer(key);
             } else {
                 timer.__elapsedTime = 0;
             }
@@ -198,6 +221,33 @@ GameManager.attributes.add('scenesConfig', {
     ]
 });
 
+GameManager.attributes.add('mouseOptions', {
+    title: "Mouse Options",
+    type: 'json',
+    schema: [
+        {
+            name: 'hideMousePointer',
+            title: 'hideMousePointer',
+            type: 'boolean',
+            default: false,
+            description: 'hideMousePointer'
+        },
+        {
+            name: 'fireMenuEventOnMouseMove',
+            title: 'fireMenuEventOnMouseMove',
+            type: 'boolean',
+            default: false,
+            description: 'fireMenuEventOnMouseMove'
+        },
+        {
+            name: "mouseSensitivity",
+            type: 'number',
+            default: 10,
+            title: 'Mouse Sensitivity'
+        }
+
+    ]
+});
 
 
 GameManager.attributes.add('ui', {
@@ -238,19 +288,109 @@ GameManager.attributes.add('ui', {
 });
 
 
-GameManager.attributes.add("camerarenderpass", {
-    title: "camerarenderpass",
-    type: "json",
+GameManager.attributes.add('cameraOptions', {
+    title: "Camera Options",
+    type: 'json',
     schema: [
+
         {
-            name: 'enabled',
+            name: 'renderpass',
             type: 'boolean',
             default: true,
-            title: 'enabled',
+            title: 'renderpass',
             description: 'enables camerarenderpass'
+        },
+        {
+            name: 'cameratype',
+            title: "cameratype",
+            type: 'string', enum: [
+                { 'FirstPerson': 'FirstPerson' },
+                { 'ThirdPerson': 'ThirdPerson' },
+                { 'ThirdPersonPointMove': 'ThirdPersonPointMove' },
+                { 'FlyCamera': 'FlyCamera' }
+            ], default: 'ThirdPerson',
+            description: "General style of player view for this game.",
         }
     ]
 });
+
+
+GameManager.attributes.add('followCamera',
+    {
+        title: "Follow Camera",
+        type: 'json',
+        schema: [
+            {
+                name: 'targetName',
+                type: 'string',
+                default: "targetEntity",
+                title: 'Target Entity Name',
+                description: "Select the entity name around which the camera will orbit. recoment use: 'targetEntity'. "
+            },
+            {
+                name: 'orbitRadius',
+                type: 'number',
+                default: 3,
+                title: 'Orbit Radius'
+            },
+            {
+                name: 'bottomClamp',
+                type: 'number',
+                default: 320,
+                min: 320,
+                max: 340,
+                precision: 0,
+                title: 'bottomClamp',
+                description: "The maximum value in angle degrees for the camera downwards movement."
+            },
+            {
+                name: 'topClamp',
+                type: 'number',
+                default: 70,
+                min: 50,
+                max: 70,
+                precision: 0,
+                title: 'topClamp',
+                description: "The maximum value in angle degrees for the camera upwards movement."
+            },
+            {
+                name: 'smoothFactor',
+                type: 'number',
+                default: 0.2,
+                min: 0.01,
+                max: 1,
+                title: 'Smooth Factor',
+                description: 'Adjusts the smoothness of camera movement (0.1 for more smooth, 1 for immediate response)'
+            },
+            {
+                name: 'autofov',
+                type: 'boolean',
+                default: false,
+                title: 'autofov'
+            },
+
+        ]
+    });
+
+
+GameManager.attributes.add('flyCamera',
+    {
+        title: "Fly Camera",
+        description: "Only works for playerPersonStyle = FlyCamera.",
+        type: 'json',
+        schema: [
+            {
+                name: 'speed',
+                type: 'number',
+                default: 20,
+                title: 'speed',
+                description: 'speed',
+                min: 10,
+                max: 20,
+                precision: 1
+            },
+        ]
+    });
 
 GameManager.attributes.add("subtitles", {
     title: "subtitles",
@@ -338,6 +478,40 @@ GameManager.showMenuOnEnabledPointer = true;
 GameManager.__menuchecktime = 0;
 GameManager.__subtitleTimeout = null;
 GameManager.__assetLoaderTimeout = null;
+GameManager.currentCamera = null;
+GameManager.cameraOptions = {};
+GameManager.followCamera = {};
+GameManager.mouseOptions = { mouseSensitivity: 10 };
+GameManager.__gameMouseMoved = false;
+GameManager.__gameMouse_busy = false;
+GameManager.input = {
+    cameratype: "",
+    x: 0,
+    z: 0,
+    esc: false,
+    jump: false,
+    sprint: false,
+    interact: false,
+    attack: false,
+    camera: null,
+    previousY: 0,
+    previousX: 0,
+    mouseSensitivity: GameManager.mouseOptions.mouseSensitivity,
+    mouseX: 0,
+    mouseY: 0,
+    mouseDx: 0,
+    mouseDy: 0,
+    mousePrimaryButton: false,
+    mouseSecondaryButton: false,
+    mouseXButton: 0,
+    mouseYButton: 0,
+    mouseWheel: 0,
+    lookLastDeltaX: 0,
+    lookLastDeltaY: 0,
+    dt: 0,
+    mode: 0
+};
+
 
 
 function onYouTubeIframeAPIReady() {
@@ -359,11 +533,30 @@ GameManager.prototype.initialize = function () {
     GameManager.mainScene = "game";
     GameManager.currentScene = GameManager.mainScene;
     GameManager._app = this.app;
+    GameManager._app.mouse.disableContextMenu();
     GameManager._app.isMenuMode = false;
-    GameManager.camerarenderpassEnabled = this.camerarenderpass.enabled;
+
+    GameManager.cameraOptions = this.cameraOptions;
     GameManager.currentCamera = GameManager.calculateCameraScene();
+    GameManager.input.camera = GameManager.currentCamera;
+    GameManager.input.cameratype = (this.cameraOptions.cameratype || "");
+    GameManager.followCamera = this.followCamera;
+    GameManager.followCamera.initialFov = GameManager.currentCamera ? GameManager.currentCamera.fov : 45;
+    GameManager.followCamera.eulers = new pc.Vec3();
+    GameManager.followCamera.smoothedPosition = new pc.Vec3();
+    GameManager.followCamera.target = null;
+    GameManager._app.root.find(function (entity) {
+        if (entity.name.trim().toLowerCase() === (GameManager.followCamera.targetName || "").trim().toLowerCase()) {
+            GameManager.followCamera.target = entity;
+            return;
+        }
+    });
 
-
+    GameManager.mouseOptions = this.mouseOptions;
+    GameManager.flyCamera = this.flyCamera;
+    GameManager.flyCamera.moved = false;
+    GameManager.flyCamera.ex = 0;
+    GameManager.flyCamera.ey = 0;
 
 
 
@@ -519,20 +712,21 @@ GameManager.prototype.initialize = function () {
 
     TracerScript.initialize();
 
+    /* KEYBOARD AND MOUSE */
+    GameManager.bindInputs();
+    this.on("destroy", function () {
+        GameManager.unbindInputs();
+    }, this);
 
-    /*ESC KEY HIDES MENUS*/
-    function manejarEscape(event) {
-        if (event.key === 'Escape' || event.keyCode === 27) {
-            if (GameManager._app && GameManager._app.isMenuMode) {
-                GameManager.resumeGame();
-            }
-        }
-    }
-    document.addEventListener('keyup', manejarEscape);
     canvas.setAttribute('tabindex', '0');
     canvas.focus();
 
 };
+
+
+
+
+/**/
 GameManager.prototype.postInitialize = function () {
 
     /* ************* */
@@ -540,15 +734,245 @@ GameManager.prototype.postInitialize = function () {
     /* ************* */
     this.app.on("update", GameManager.updateGameManager, this);
 
+
+
+
     if (GameManager.currentScene === GameManager.mainScene) {
         this.app.fire("showmenu");
     }
+}
 
 
+GameManager.bindInputs = function () {
+    GameManager._app.mouse.on(pc.EVENT_MOUSEMOVE, GameManager._onMouseMove, GameManager);
+    GameManager._app.mouse.on(pc.EVENT_MOUSEUP, GameManager._onMouseDownUp, GameManager);
+    GameManager._app.mouse.on(pc.EVENT_MOUSEWHEEL, GameManager._onMouseWheel, GameManager);
+};
+GameManager.unbindInputs = function () {
+    GameManager._app.mouse.off(pc.EVENT_MOUSEMOVE, GameManager._onMouseMove);
+    GameManager._app.mouse.off(pc.EVENT_MOUSEDOWN, GameManager._onMouseDownUp);
+    GameManager._app.mouse.off(pc.EVENT_MOUSEWHEEL, GameManager._onMouseWheel);
+};
+
+
+GameManager.readKeyboardInput = function () {
+    const keyboard = GameManager._app.keyboard;
+
+    // Movimiento horizontal
+    if (keyboard.isPressed(pc.KEY_A) || keyboard.isPressed(pc.KEY_LEFT)) {
+        GameManager.input.x = -1;
+    } else if (keyboard.isPressed(pc.KEY_D) || keyboard.isPressed(pc.KEY_RIGHT)) {
+        GameManager.input.x = 1;
+    } else {
+        GameManager.input.x = 0;
+    }
+
+    // Movimiento vertical
+    if (keyboard.isPressed(pc.KEY_W) || keyboard.isPressed(pc.KEY_UP)) {
+        GameManager.input.z = 1;
+    } else if (keyboard.isPressed(pc.KEY_S) || keyboard.isPressed(pc.KEY_DOWN)) {
+        GameManager.input.z = -1;
+    } else {
+        GameManager.input.z = 0;
+    }
+    GameManager.input.esc = keyboard.isPressed(pc.KEY_ESCAPE);
+    GameManager.input.jump = keyboard.isPressed(pc.KEY_SPACE);
+    GameManager.input.sprint = keyboard.isPressed(pc.KEY_SHIFT);
+    GameManager.input.interact = keyboard.isPressed(pc.KEY_E);
+    GameManager.input.attack = keyboard.isPressed(pc.KEY_F);
+    GameManager.input.impact = keyboard.isPressed(pc.KEY_I);
+    GameManager.input.death = keyboard.isPressed(pc.KEY_U);
+    //GameManager.input.mode = +(keyboard.isPressed(pc.KEY_M));
+};
+
+
+
+/**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/
+/**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/
+/**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/
+/**/                                                                                 /**/
+/*                                  MOUSE MOVE                                         */
+/**/                                                                                 /**/
+/**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/
+/**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/
+/**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/
+GameManager._onMouseMove = function (event) {
+    if (GameManager.__gameMouseMoved) return;
+
+    if (!GameManager.__gameMouse_busy) {
+        GameManager.__gameMouse_busy = true;
+
+
+        // Actualiza las variables de posición anterior para el próximo cálculo
+        const x = event.x, y = event.y;
+        var deltaX = event.clientX ? event.clientX - GameManager.input.previousX : event.dx,
+            deltaY = event.clientY ? event.clientY - GameManager.input.previousY : event.dy;
+
+        GameManager.input.mouseX = x;
+        GameManager.input.mouseY = y;
+        GameManager.input.mouseDx = deltaX;
+        GameManager.input.mouseDy = deltaY;
+
+        if (GameManager.input.lookLastDeltaX === deltaX) deltaX = 0;
+        if (GameManager.input.lookLastDeltaY === deltaY) deltaY = 0;
+        if (GameManager.currentCamera) {
+            GameManager.onMouseMoveFollowCamera();
+        }
+        GameManager.input.lookLastDeltaX = deltaX;
+        GameManager.input.lookLastDeltaY = deltaY;
+
+        GameManager.input.previousX = event.clientX;
+        GameManager.input.previousY = event.clientY;
+
+        GameManager.__gameMouseMoved = true;
+        GameManager.__gameMouse_busy = false;
+    }
+}
+
+GameManager.onMouseMoveFollowCamera = function () {
+    GameManager.followCamera.eulers.x -= ((GameManager.input.mouseSensitivity * GameManager.input.mouseDx) / 60) % 360;
+    GameManager.followCamera.eulers.y += ((GameManager.input.mouseSensitivity * GameManager.input.mouseDy) / 60) % 360;
+
+    GameManager.followCamera.eulers.x = (GameManager.followCamera.eulers.x + 360) % 360;
+    GameManager.followCamera.eulers.y = (GameManager.followCamera.eulers.y + 360) % 360;
+
+    GameManager.flyCamera.ex -= GameManager.input.mouseDy / GameManager.input.mouseSensitivity;
+    GameManager.flyCamera.ex = pc.math.clamp(GameManager.flyCamera.ex, -90, 90);
+    GameManager.flyCamera.ey -= GameManager.input.mouseDx / GameManager.input.mouseSensitivity;
+
+    if (GameManager.followCamera.eulers.y > GameManager.followCamera.topClamp && GameManager.followCamera.eulers.y < GameManager.followCamera.topClamp + 180) {
+        GameManager.followCamera.eulers.y = GameManager.followCamera.topClamp;
+    }
+    if (GameManager.followCamera.eulers.y < GameManager.followCamera.bottomClamp && GameManager.followCamera.eulers.y > GameManager.followCamera.bottomClamp - 180) {
+        GameManager.followCamera.eulers.y = GameManager.followCamera.bottomClamp;
+    }
 }
 
 
 
+
+GameManager.updateCameraOrientation = function () {
+    if (GameManager.playerPersonStyle === "FlyCamera") {
+        if (this.mouseOptions.hideMousePointer) {
+            if (pc.Mouse.isPointerLocked()) {
+                this.camera.setLocalEulerAngles(this.flyCamera.ex, this.flyCamera.ey, 0);
+            }
+        } else {
+            this.camera.setLocalEulerAngles(this.flyCamera.ex, this.flyCamera.ey, 0);
+        }
+        return;
+    }
+
+    if (GameManager.followCamera && GameManager.followCamera.eulers) {
+        GameManager.currentCamera.entity.setEulerAngles(new pc.Vec3(
+            -GameManager.followCamera.eulers.y,
+            GameManager.followCamera.eulers.x + 180,
+            0
+        ));
+
+        if (GameManager.playerPersonStyle === "FirstPerson") {
+            if (this.mainPlayer) {
+                var otherScript = this.mainPlayer.script.character
+                if (otherScript) {
+                    otherScript.rotateCharacter(0, 0, this.camera, 0);
+                }
+            }
+        };
+
+    }
+};
+
+
+
+GameManager.updateCameraPosition = function (dt) {
+    /*dt = this.app.dt;*/
+    if (this.playerPersonStyle === "FlyCamera") {
+
+        if (this.input.x < 0) {
+            this.camera.translateLocal(-this.flyCamera.speed * dt, 0, 0);
+        }
+        if (this.input.x > 0) {
+            this.camera.translateLocal(this.flyCamera.speed * dt, 0, 0);
+        }
+        if (this.input.z < 0) {
+            this.camera.translateLocal(0, 0, this.flyCamera.speed * dt);
+        }
+        if (this.input.z > 0) {
+            this.camera.translateLocal(0, 0, -this.flyCamera.speed * dt);
+        }
+        return;
+    }
+
+    if (!GameManager.followCamera.target) return;
+
+    if (!GameManager.followCamera.smoothedPosition) return;
+
+    var targetPosition = GameManager.followCamera.target.getPosition();
+
+    if (this.playerPersonStyle === "FirstPerson") {
+        GameManager.currentCamera.entity.setPosition(targetPosition);
+        return;
+    }
+
+
+    var cameraPosition = targetPosition.clone().add(GameManager.currentCamera.entity.forward.scale(-GameManager.followCamera.orbitRadius));
+    cameraPosition.y = pc.math.clamp(cameraPosition.y, 0.5, Number.POSITIVE_INFINITY);
+
+
+    const hit = GameManager._app.systems.rigidbody.raycastFirst(targetPosition, cameraPosition);
+
+    if (hit && hit.entity && !(hit.entity.isPlayer ?? false) && hit.entity.name.toLowerCase() !== "charactersensor" && !hit.entity.tags.has('ignore-camera-collision')) {
+        var direction = GameManager.followCamera.target.getPosition().sub(hit.point).normalize();
+        cameraPosition = hit.point.clone().add(direction.scale(0.1));
+    }
+
+
+
+
+    const deltaTimeAdjustment = dt / (1.0 / 60); // 60 es la tasa de frames objetivo (puedes ajustarla según tu necesidad)
+    const smoothFactor = GameManager.followCamera.smoothFactor * deltaTimeAdjustment;
+    //const smoothFactor = 1;
+    if (smoothFactor > 0 && smoothFactor < 1) {
+        GameManager.followCamera.smoothedPosition.lerp(GameManager.followCamera.smoothedPosition, cameraPosition, smoothFactor);
+    } else {
+        GameManager.followCamera.smoothedPosition = cameraPosition;
+    }
+
+    GameManager.currentCamera.entity.setPosition(GameManager.followCamera.smoothedPosition);
+
+    targetPosition = GameManager.followCamera.target.getPosition();
+    GameManager.currentCamera.entity.lookAt(targetPosition);
+
+
+    var distanceToTarget = targetPosition.distance(GameManager.currentCamera.entity.getPosition());
+
+    if (GameManager.followCamera.autofov) {
+        var fov = GameManager.followCamera.initialFov + (GameManager.followCamera.initialFov * (1 - Math.min(distanceToTarget, GameManager.followCamera.orbitRadius) / GameManager.followCamera.orbitRadius));
+        // Limitar el FOV a un rango válido
+        fov = pc.math.clamp(fov, GameManager.followCamera.initialFov, 90);
+        // Aplicar el FOV a la cámara
+        GameManager.currentCamera.fov = fov;
+    }
+
+};
+
+
+GameManager._onMouseDownUp = function (event) {
+    GameManager.input.mouseXButton = event.x;
+    GameManager.input.mouseYButton = event.y;
+
+    GameManager.input.mousePrimaryButton = (event.buttons[pc.MOUSEBUTTON_LEFT]);
+    GameManager.input.mouseSecondaryButton = (event.buttons[pc.MOUSEBUTTON_RIGHT]);
+};
+
+GameManager._onMouseWheel = function (event) {
+    GameManager.input.mouseWheel = event.wheelDelta;
+};
+
+
+
+
+/* ----------------------------------------------------------------------------------------------- */
 GameManager.sleep = function (ms) {
     if (!ms) return;
     const end = Date.now() + ms;
@@ -563,7 +987,10 @@ GameManager.sleep = function (ms) {
 // update code called every frame
 GameManager.updateGameManager = async function (dt) {
     GameManager._app.dt = dt;
+    GameManager.input.dt = dt;
     Timer.evaluateTimers(dt);
+
+    GameManager.readKeyboardInput()
 
     GameManager.sleep(TracerScript.trgamesleep);
     GameManager._app.timeScale = TracerScript.trgametimescale;
@@ -612,7 +1039,18 @@ GameManager.updateGameManager = async function (dt) {
         }
         GameManager.__menuchecktime = 0;
     }
+
+
+    /* CAMERA MOVEMENT */
+    if (GameManager.currentCamera) {
+        GameManager.updateCameraOrientation();
+        GameManager.updateCameraPosition(dt);
+    }
+
+    GameManager.__gameMouseMoved = false;
 };
+
+/**************************************************************************************/
 
 GameManager.createAudioListener = function () {
     if (!GameManager.audiolistener) {
@@ -861,6 +1299,8 @@ GameManager.loadScene = function (sceneName) {
                     }
 
                     GameManager.currentCamera = GameManager.calculateCameraScene();
+                    GameManager.input.camera = GameManager.currentCamera;
+                    GameManager.followCamera.initialFov = GameManager.currentCamera ? GameManager.currentCamera.fov : 45;
 
                     app.autoRender = true;
 
@@ -891,12 +1331,18 @@ GameManager.calculateCameraScene = function () {
 
     var cameras = app.scene.root.findComponents("camera");
     cameras = cameras.sort((a, b) => a.priority - b.priority);
+
+
+    if (!(cameras.length)) {
+        /*TODO: DEBE CREAR LA CAMARA*/
+    }
+
     if (cameras.length) {
 
         var camera = cameras[0];
         //app.scene.exposure = 0.1;
 
-        if (GameManager.camerarenderpassEnabled) {
+        if (GameManager.cameraOptions.renderpass) {
 
             var cameraFrame = new pc.CameraFrame(app, camera);
 

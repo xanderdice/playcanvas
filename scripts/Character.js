@@ -18,6 +18,7 @@ Character.attributes.add('gravity', { type: 'number', default: -9.8, title: "gra
 Character.attributes.add('isSelectable', { type: 'boolean', default: false });
 Character.attributes.add('isPlayer', { type: 'boolean', default: false });
 Character.attributes.add('inertia', { type: 'boolean', default: true });
+/*Character.attributes.add('useteleport', { type: 'boolean', default: false });*/
 Character.attributes.add('playerOptions',
     {
         title: "Player options",
@@ -247,6 +248,8 @@ Character.animation_states = [
     "walking_turn_180",
     "running",
     "running_backward",
+    "onair",
+    "landing",
     "impact_block",
     "impact1",
     "impact2"
@@ -362,17 +365,22 @@ Character.prototype.initialize = function () {
     this.entity.selected = this.entity.isPlayer;
     this.entity.tags.add("is-detectable");
 
+    /* INPUT */
+    this.entity.input = Object.assign({}, GameManager.input);
+    this.entity.input.targetEntity = null;
 
-    this.entity.currentTargetEntity = null;
+
+
 
     this.pointCharacterEntity = new pc.Entity()
-    this.pointCharacterEntity.name = (this.entity.isPlayer ? "player-" : "") + "pointCharacterEntity";
+    this.pointCharacterEntity.name = (this.entity.isPlayer ? "player-" : "") + "point-character-entity";
     this.pointCharacterEntity.tags.add(this.pointCharacterEntity.name);
     this.app.scene.root.addChild(this.pointCharacterEntity);
 
 
 
     this.doMoveCharacter_busy = false;
+    this.doAICharacter_busy = false;
 
     this.CHAR_CUR_POSITION = this.entity.getPosition();
     this.CHAR_CUR_ROTATION = this.entity.getRotation();
@@ -386,8 +394,11 @@ Character.prototype.initialize = function () {
 
 
     this.renderCharacterComponent = this.entity.findComponent('render');
+
+    this.entity.renderCharacterComponent = this.renderCharacterComponent;
     if (this.renderCharacterComponent) {
         this.renderCharacterComponent.entity.tags.add("uranus-instancing-exclude");
+        this.meshInstancesCharacter = ((this.renderCharacterComponent.meshInstances || [])[0] || { visibleThisFrame: false });
     }
 
 
@@ -494,35 +505,54 @@ Character.prototype.initialize = function () {
         });
     }
     this.entity.capsule_collision = new pc.Entity(this.entity.name + "_capsule_collision");
+    this.entity.capsule_collision.tags.add("uranus-instancing-exclude");
     this.entity.capsule_collision.addComponent('collision', {
         type: 'capsule',
         radius: this.characterRadius,
         height: this.characterHeight
     });
     this.entity.addChild(this.entity.capsule_collision);
+    this.entity.collision.on('collisionstart', this.characterCollisionStart, this);
+    this.entity.collision.on('collisionend', this.characterCollisionEnd, this);
+    this.entity.other = null;
 
+    /* IS ON AIR  &  IS ON GROUND */
+    this.entity.isonair = false;
+    this.entity.isonground = true;
 
 
     if (this.sensorOptions.sensorDebug) {
 
+        // Configuración de las opciones para la geometría de la cápsula
         const options = {
             radius: this.characterRadius,
             height: this.characterHeight
         };
-        const capsuleMesh = pc.Mesh.fromGeometry(this.app.graphicsDevice, new pc.CapsuleGeometry(options));
 
 
-        const transparentMaterial = new pc.StandardMaterial({
-            diffuse: pc.Color.RED
-        });
-        const meshInstance = new pc.MeshInstance(this.entity.capsule_collision, capsuleMesh, transparentMaterial);
+        // Crear el material transparente
+        const transparentMaterial = new pc.StandardMaterial();
+        transparentMaterial.diffuse = new pc.Color(1, 0, 0);  // Color rojo para el material
+        transparentMaterial.update();  // Necesitamos actualizar el material para que los cambios se apliquen
+
+        // Añadir la etiqueta para excluir de la instanciación (si lo necesitas)
         this.entity.capsule_collision.tags.add("uranus-instancing-exclude");
+
+        // Añadir el componente de renderizado con las opciones adecuadas
         this.entity.capsule_collision.addComponent('render', {
-            renderStyle: pc.RENDERSTYLE_WIREFRAME,
-            meshInstances: [meshInstance],
-            material: transparentMaterial
+
+            type: 'capsule',  // Usamos tipo 'capsule' para la colisión
+            radius: this.characterRadius,  // Establecer el radio de la cápsula
+            height: this.characterHeight,  // Establecer la altura de la cápsula
+
+            renderStyle: pc.RENDERSTYLE_WIREFRAME,  // Estilo de renderizado en alambre
+            material: transparentMaterial  // Asignamos el material
         });
+
+        // Asignar el material al primer meshInstance en el render component (opcional, pero redundante)
         this.entity.capsule_collision.render.meshInstances[0].material = transparentMaterial;
+
+
     }
 
 
@@ -588,11 +618,12 @@ Character.prototype.initialize = function () {
     this.quat = new pc.Quat;
 
     this.entity.mode = CharacterLocomotionModeEnum.UNARMED;
-    this.old_input = { x: 0, z: 0 };
+    this.old_input = Object.assign({}, this.entity.input);
 
 
     this.on("destroy", function () {
-
+        this.entity.collision.off('collisionstart', this.characterCollisionStart);
+        this.entity.collision.off('collisionend', this.characterCollisionEnd);
     }, this);
 
     this.entity.on("destroy", function () {
@@ -622,34 +653,57 @@ Character.prototype.getYaw = function (rotation) {
 Character.prototype.stopMovement = function () {
 
     this.entity.rigidbody.linearVelocity = new pc.Vec3(0, this.entity.rigidbody.linearVelocity.y, 0);
-    this.entity.currentTargetEntity = null;
+
 
 
 }
 
 
-
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * */
+/* D O    A R T I F I C I A L   I N T E L I G E N CE   */
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * */
+Character.prototype.doAI = async function () {
+    if (!this.doAICharacter_busy) {
+        this.doAICharacter_busy = true;
+        const otherScript = this.entity.script.characterNpc
+        if (otherScript) {
+            otherScript.doAI();
+        }
+        this.doAICharacter_busy = false;
+    }
+}
 
 /*              */
 /* D O  M O V E */
 /*              */
-Character.prototype.doMove = async function (input) {
+Character.prototype.doMove = async function () {
 
 
     if (!this.doMoveCharacter_busy) {
         this.doMoveCharacter_busy = true;
 
-        var dt = this.app.dt;
+        const input = this.entity.input;
+        var dt = input.dt;
 
         this.CHAR_CUR_POSITION = this.entity.getPosition();
         this.CHAR_CUR_ROTATION = this.entity.getRotation();
 
         this.pointCharacterEntity.setPosition(this.CHAR_CUR_POSITION);
 
-        this.doSensors(dt);
+        const visibleThisFrame = this.meshInstancesCharacter.visibleThisFrame;
 
 
-        var spherePoint = this.app.scene.root.findByTag("player-pointCharacterEntity")[0];
+        this.entity.anim.enabled = visibleThisFrame;
+        if (visibleThisFrame) {
+            this.doSensors2();
+        }
+
+
+        if (!visibleThisFrame) {
+            this.doMoveCharacter_busy = false; return;
+
+        }
+
 
 
 
@@ -660,14 +714,15 @@ Character.prototype.doMove = async function (input) {
             Trace("input", clonedObject);
         }
 
-
-
-
+        var spherePoint = null;
+        if (this.entity.isPlayer) {
+            //            spherePoint = this.app.scene.root.findByTag("player-point-character-entity")[0];
+        }
         var targetDirection = null;
         if (spherePoint) {
             targetDirection = spherePoint;
         } else {
-            targetDirection = this.entity;
+
         }
         if (this.entity.isPlayer) {
             /*
@@ -677,17 +732,22 @@ Character.prototype.doMove = async function (input) {
                 targetDirection = input.camera;
             }
             */
-            targetDirection = input.camera;
-        }
+            targetDirection = input.camera.entity;
+        } else {
+            targetDirection = input.targetEntity;
 
+            if (targetDirection) {
+                const direction = targetDirection.getPosition().clone().sub(this.CHAR_CUR_POSITION).normalize();
 
-        if (spherePoint && !this.entity.isPlayer) {
-            const direction = spherePoint.getPosition().clone().sub(this.CHAR_CUR_POSITION).normalize();
+                input.x = direction.x;
+                if (input.x < 0.1 && input.x > -0.1) input.x = 0;
+                input.z = -direction.z;
+                if (input.z < 0.1 && input.z > -0.1) input.z = 0;
+            } else {
+                input.z = 0;
+                input.x = 0;
+            }
 
-            input.x = direction.x;
-            if (input.x < 0.1 && input.x > -0.1) input.x = 0;
-            input.z = -direction.z;
-            if (input.z < 0.1 && input.z > -0.1) input.z = 0;
         }
 
 
@@ -697,9 +757,6 @@ Character.prototype.doMove = async function (input) {
             if (input.x !== 0) input.z = 0;
             if (input.z !== 0) input.x = 0;
         }
-
-
-
 
         var moveSpeed = (input.sprint ? this.speed * 2 : this.speed);
 
@@ -719,6 +776,12 @@ Character.prototype.doMove = async function (input) {
         }
         this.isMoving = this.isMoving && this.entity.anim.getInteger("turn180") === 0;
 
+        if (this.entity.isonair) {
+            this.useteleport = true;
+            this.isMoving = false;
+        } else {
+            this.useteleport = false;
+        }
 
 
 
@@ -737,36 +800,57 @@ Character.prototype.doMove = async function (input) {
             direction.y = 0;
 
             const velocity = direction.clone().scale(this.charSpeed);
+            if (!this.useteleport) {
+                if (visibleThisFrame) {
+                    this.entity.rigidbody.linearVelocity = velocity;
+                }
+            }
 
-            //this.entity.rigidbody.linearVelocity = velocity;
+
 
             // Calcular la nueva posición del jugador
             newPosition = newPosition.add(direction.scale(this.charSpeed * dt));
 
-            if (input.playerPersonStyle !== "FirstPerson") {
-                this.rotateCharacter(input, this.old_input, targetDirection, this.speed * 4 * dt);
+            //if (this.entity.isPlayer && (input.cameratype !== "FirstPerson")) {
+            this.calculateCharacterCurrentRotation(input, this.old_input, targetDirection, this.speed * 4 * dt);
+            //}
+
+
+            if (visibleThisFrame) {
+                if (this.useteleport) {
+                    this.entity.rigidbody.teleport(newPosition, new pc.Quat().setFromEulerAngles(0, this.currenRotation, 0));
+                } else {
+                    this.entity.rigidbody.teleport(this.entity.getPosition(), new pc.Quat().setFromEulerAngles(0, this.currenRotation, 0));
+                }
             }
+        }
 
-
-            this.entity.rigidbody.teleport(newPosition, new pc.Quat().setFromEulerAngles(0, this.currenRotation, 0));
-            //this.entity.rigidbody.teleport(this.entity.getPosition(), new pc.Quat().setFromEulerAngles(0, this.currenRotation, 0));
+        if (!this.useteleport && !this.isMoving && !this.inertia) {
+            const velocity = this.entity.rigidbody.linearVelocity;
+            velocity.x = 0;
+            velocity.z = 0;
+            this.entity.rigidbody.linearVelocity = velocity;
         }
 
 
-        this.doInteraction(input, dt);
+        if (visibleThisFrame) {
+            this.doInteraction(input);
 
 
-        this.entity.anim.setInteger("mode", +(input.mode));
-        this.entity.anim.setFloat("speed", this.speedAnimBlend);
-        this.entity.anim.setInteger("idle", 0);
-        this.entity.anim.setInteger("impact", input.impact ? Math.floor(Math.random() * 2) + 1 : 0);
-        this.entity.anim.setInteger("death", input.death ? Math.floor(Math.random() * 2) + 1 : 0);
+            this.entity.anim.setInteger("mode", +(input.mode));
+            this.entity.anim.setFloat("speed", this.speedAnimBlend);
+            this.entity.anim.setInteger("onair", +(this.entity.isonair));
+            this.entity.anim.setInteger("impact", input.impact ? Math.floor(Math.random() * 2) + 1 : 0);
+            this.entity.anim.setInteger("death", input.death ? Math.floor(Math.random() * 2) + 1 : 0);
 
 
-        this.doAttackSystem(input, dt);
+            this.doAttackSystem(input);
+        }
 
 
         this.old_input = Object.assign({}, input);
+
+
         this.doMoveCharacter_busy = false;
     }
 }
@@ -904,14 +988,14 @@ Character.prototype.doSensorCollisions = function () {
 /* * * * * * * * * * * * * * * * */
 /* D O  A T T A C K  S Y S T E M */
 /* * * * * * * * * * * * * * * * */
-Character.prototype.doAttackSystem = function (input, dt) {
+Character.prototype.doAttackSystem = function (input) {
     if (!this.entity.attackSystem.canAttack) return;
 
     this.entity.attackSystem.attackInput = input.attack || input.mousePrimaryButton;
     if (this.entity.attackSystem.attackInput === this.entity.attackSystem.attackInputOld) {
         /*if is playing attack animation*/
         if (this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
-            this.entity.attackSystem.__elapsedTime += dt;
+            this.entity.attackSystem.__elapsedTime += input.dt;
         }
     } else {
         /*the player attack*/
@@ -976,8 +1060,18 @@ Character.prototype.doAttackSystem = function (input, dt) {
 
 
 
-
-Character.prototype.rotateCharacter = function (input, old_input, targetDirection, rotSpeed) {
+/**
+ * Calculates the current rotation of the character based on input and the target direction.
+ * 
+ * This function handles smooth character rotation, avoiding sudden jumps and adjusting rotation 
+ * based on the player's input, movement direction, and rotation speed.
+ *
+ * @param {pc.Vec2} input - The player's movement input on the X and Z axes (typically obtained from arrow keys or controls).
+ * @param {pc.Vec2} old_input - The previous input of the player, used to determine if there has been a significant change in direction.
+ * @param {pc.Entity} targetDirection - The entity representing the target direction the character should rotate towards.
+ * @param {number} rotSpeed - The rotation speed, used to smooth the transition of the rotation (default is 0.2).
+ */
+Character.prototype.calculateCharacterCurrentRotation = function (input, old_input, targetDirection, rotSpeed) {
     var self = this;
     function calculateAngle(x, z) {
         var addAngle = 0;
@@ -1004,8 +1098,6 @@ Character.prototype.rotateCharacter = function (input, old_input, targetDirectio
     }
 
     this.currenRotation = pc.math.lerpAngle(this.currenRotation, targetRotation, (rotSpeed || 0.2));
-
-
 
 }
 
@@ -1129,10 +1221,78 @@ Character.prototype.doCalculateAnimation = function (animVelocityMode, dt) {
 /*   S E N S O R               */
 /*                             */
 /*******************************/
+Character.prototype.characterCollisionStart = function (event) {
+    this.entity.other = event.other;
+}
 
-Character.prototype.doSensors = function (dt) {
 
-    if (this.entity.isonair && this.entity.currentTargetEntity) {
+Character.prototype.characterCollisionEnd = function (other) {
+    if (this.entity.other === other) this.entity.other = null;
+}
+
+Character.prototype.doSensors2 = function () {
+    var length = 0, isGround = null;
+
+    if (this.entity.isonair) {
+        length = -((this.characterHeight / 2) + 0.2);
+
+        const position = this.entity.getPosition();
+        const rayDirection = position.clone().add(new pc.Vec3(0, length, 0));
+
+        // Realizar el raycast
+        var result = this.app.systems.rigidbody.raycastFirst(position, rayDirection, { lowResolution: true });
+        if (this.sensorOptions.sensorDebug) {
+            this.app.drawLine(position, rayDirection, result ? pc.Color.RED : pc.Color.GREEN, 5);
+        }
+        isGround = !!result;
+
+
+    } else {
+        length = -this.characterRadius;
+        // Obtener la posición del pie del jugador (ajusta esto según la altura real del pie)
+        const leftFootPosition = this.bones.leftFoot.getPosition(); // Posición actual de la entidad
+        const leftFootRayDirection = leftFootPosition.clone().add(new pc.Vec3(0, length, 0)); // Un metro hacia abajo desde la posición actual
+
+        // Realizar el raycast
+        var resultLeft = this.app.systems.rigidbody.raycastFirst(leftFootPosition, leftFootRayDirection, { lowResolution: true });
+        if (this.sensorOptions.sensorDebug) {
+            this.app.drawLine(leftFootPosition, leftFootRayDirection, resultLeft ? pc.Color.RED : pc.Color.GREEN, 5);
+        }
+
+        // Obtener la posición del pie del jugador (ajusta esto según la altura real del pie)
+        const rightFootPosition = this.bones.rightFoot.getPosition(); // Posición actual de la entidad
+        const rightFootRayDirection = rightFootPosition.clone().add(new pc.Vec3(0, length, 0)); // Un metro hacia abajo desde la posición actual
+
+        // Realizar el raycast
+        var resultRight = this.app.systems.rigidbody.raycastFirst(rightFootPosition, rightFootRayDirection, { lowResolution: true });
+        if (this.sensorOptions.sensorDebug) {
+            this.app.drawLine(rightFootPosition, rightFootRayDirection, resultRight ? pc.Color.RED : pc.Color.GREEN, 5);
+        }
+        isGround = !!(resultLeft || resultRight);
+    }
+
+
+
+    this.entity.isonground = isGround;
+    this.entity.isonair = !isGround;
+
+    if (!isGround) {
+        const currentVelocity = this.entity.rigidbody.linearVelocity, onairThreshold = 0.3;
+        const isFalling = (currentVelocity.y <= -onairThreshold);
+        if (isFalling) {
+            this.entity.isonground = false;
+            this.entity.isonair = true;
+        } else {
+            this.entity.isonground = true;
+            this.entity.isonair = false;
+        }
+    }
+}
+
+
+Character.prototype.doSensors = function () {
+    return;
+    if (this.entity.isonair) {
         this.stopMovement();
     }
 
@@ -1494,7 +1654,7 @@ Character.prototype.sensorToeBaseCollisionStartEvent = function (entity) {
 /*   I N T E R A C T I O N     */
 /*                             */
 /*******************************/
-Character.prototype.doInteraction = function (input, dt) {
+Character.prototype.doInteraction = function (input) {
 
     if (input.interact) {
         var i = 0, detectedEntity = null;
@@ -1530,11 +1690,20 @@ Character.prototype.update = function (dt) {
 Character.prototype.postUpdate = function (dt) {
     this.rootMotionFix();
     this.doSensorCollisions();
-    this.doCarryWeapons(dt);
+    this.doCarryWeapons();
+
+    const currentVelocity = this.entity.rigidbody.linearVelocity;
+    Tracer(this.entity.name + " isonair    ", this.entity.isonair);
+    Tracer(this.entity.name + " isonground ", this.entity.isonground);
+    Tracer(this.entity.name + " y === ", currentVelocity.y);
+
     this.CHAR_LAST_POSITION = this.CHAR_CUR_POSITION;
 }
 
 Character.prototype.rootMotionFix = function () {
+
+    debugger;
+
     /*root motion FIX*/
     if (this.motionrootmode === "in_place_z_axis") {
         if (this.bones.hips) {
@@ -1853,6 +2022,16 @@ Character.prototype.prepareAnimComponent = function () {
                 type: pc.ANIM_PARAMETER_INTEGER,
                 value: 0
             },
+            onair: {
+                name: "onair",
+                type: pc.ANIM_PARAMETER_INTEGER,
+                value: 0
+            },
+            landing: {
+                name: "landing",
+                type: pc.ANIM_PARAMETER_INTEGER,
+                value: 0
+            },
             attack: {
                 name: "attack",
                 type: pc.ANIM_PARAMETER_INTEGER,
@@ -1862,7 +2041,7 @@ Character.prototype.prepareAnimComponent = function () {
     };
 
 
-    const statesNoLoops = ["death"];
+    const statesNoLoops = ["death", "landing"];
     const animation_modes_length = Character.animation_modes.length;
     var m = 0;
     for (; m < animation_modes_length; m++) {
@@ -2126,23 +2305,89 @@ Character.prototype.prepareAnimComponent = function () {
         }
 
 
-        /*DEATH*/
-        for (var i = 1; i < 3; i++) {
-            if (this["animations_" + modeName][modeName + "_death" + i]) {
+        /*ONAIR*/
+        if (this["animations_" + modeName][modeName + "_onair"]) {
 
-                this.animPlayerStateGraphData.layers[0].transitions.push(
-                    {
-                        from: "ANY",
-                        to: modeName + "_death" + i,
-                        time: 0.2,
-                        priority: 0,
-                        conditions: [
-                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                            { parameterName: 'death', predicate: pc.ANIM_EQUAL_TO, value: i + 1 }
-                        ]
-                    }
-                );
-            }
+            this.animPlayerStateGraphData.layers[0].transitions.push(
+                {
+                    from: "ANY",
+                    to: modeName + "_onair",
+                    time: 0.2,
+                    priority: 0,
+                    conditions: [
+                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                        { parameterName: 'onair', predicate: pc.ANIM_EQUAL_TO, value: 1 }
+                    ]
+                },
+                {
+                    from: modeName + "_onair",
+                    to: modeName + "_idle",
+                    time: 0.2,
+                    priority: 0,
+                    conditions: [
+                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                        { parameterName: 'onair', predicate: pc.ANIM_EQUAL_TO, value: 0 }
+                    ]
+                }
+            );
+        }
+
+
+        if (this["animations_" + modeName][modeName + "_landing"]) {
+
+            this.animPlayerStateGraphData.layers[0].transitions.push(
+                {
+                    from: "ANY",
+                    to: modeName + "_landing",
+                    time: 0.2,
+                    priority: 0,
+                    conditions: [
+                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                        { parameterName: 'landing', predicate: pc.ANIM_EQUAL_TO, value: 1 }
+                    ]
+                },
+                {
+                    from: modeName + "_landing",
+                    to: modeName + "_idle",
+                    time: 0.2,
+                    priority: 0,
+                    conditions: [
+                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                        { parameterName: 'landing', predicate: pc.ANIM_EQUAL_TO, value: 0 }
+                    ]
+                }
+            );
+        }
+
+
+
+
+
+        /*IMPACT*/
+        if (this["animations_" + modeName][modeName + "_impact_block"]) {
+
+            this.animPlayerStateGraphData.layers[0].transitions.push(
+                {
+                    from: "ANY",
+                    to: modeName + "_impact_block",
+                    time: 0.2,
+                    priority: 0,
+                    conditions: [
+                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                        { parameterName: 'impact', predicate: pc.ANIM_EQUAL_TO, value: 1 }
+                    ]
+                },
+                {
+                    from: modeName + "_impact_block",
+                    to: modeName + "_idle",
+                    time: 0.2,
+                    priority: 0,
+                    conditions: [
+                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
+                        { parameterName: 'impact', predicate: pc.ANIM_EQUAL_TO, value: 0 }
+                    ]
+                }
+            );
         }
 
 
