@@ -485,7 +485,7 @@ GameManager.mouseOptions = { mouseSensitivity: 10 };
 GameManager.__gameMouseMoved = false;
 GameManager.__gameMouse_busy = false;
 GameManager.input = {
-    cameratype: "",
+    cameratype: (GameManager.cameraOptions.cameratype || ""),
     x: 0,
     z: 0,
     esc: false,
@@ -852,7 +852,10 @@ GameManager.onMouseMoveFollowCamera = function () {
 
 
 GameManager.updateCameraOrientation = function () {
-    if (GameManager.playerPersonStyle === "FlyCamera") {
+
+    //if (GameManager.playerPersonStyle === "FlyCamera") {
+    if (GameManager.input.cameratype === "FlyCamera") {
+
         if (this.mouseOptions.hideMousePointer) {
             if (pc.Mouse.isPointerLocked()) {
                 this.camera.setLocalEulerAngles(this.flyCamera.ex, this.flyCamera.ey, 0);
@@ -870,7 +873,8 @@ GameManager.updateCameraOrientation = function () {
             0
         ));
 
-        if (GameManager.playerPersonStyle === "FirstPerson") {
+        //if (GameManager.playerPersonStyle === "FirstPerson") {
+        if (GameManager.input.cameratype === "FirstPerson") {
             if (this.mainPlayer) {
                 var otherScript = this.mainPlayer.script.character
                 if (otherScript) {
@@ -886,7 +890,8 @@ GameManager.updateCameraOrientation = function () {
 
 GameManager.updateCameraPosition = function (dt) {
     /*dt = this.app.dt;*/
-    if (this.playerPersonStyle === "FlyCamera") {
+    //if (this.playerPersonStyle === "FlyCamera") {
+    if (GameManager.input.cameratype === "FlyCamera") {
 
         if (this.input.x < 0) {
             this.camera.translateLocal(-this.flyCamera.speed * dt, 0, 0);
@@ -909,7 +914,8 @@ GameManager.updateCameraPosition = function (dt) {
 
     var targetPosition = GameManager.followCamera.target.getPosition();
 
-    if (this.playerPersonStyle === "FirstPerson") {
+    //if (this.playerPersonStyle === "FirstPerson") {
+    if (GameManager.input.cameratype === "FirstPerson") {
         GameManager.currentCamera.entity.setPosition(targetPosition);
         return;
     }

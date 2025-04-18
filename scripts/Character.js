@@ -1702,7 +1702,7 @@ Character.prototype.postUpdate = function (dt) {
 
 Character.prototype.rootMotionFix = function () {
 
-    debugger;
+
 
     /*root motion FIX*/
     if (this.motionrootmode === "in_place_z_axis") {

@@ -22,6 +22,7 @@
 var GameCharactersController = pc.createScript('gameCharactersController');
 
 
+/*
 GameCharactersController.attributes.add('playerPersonStyle', {
     title: 'Player Person Style',
     type: 'string', enum: [
@@ -32,7 +33,7 @@ GameCharactersController.attributes.add('playerPersonStyle', {
     ], default: 'ThirdPerson',
     description: "General style of player view for this game.",
 });
-
+*/
 
 
 
@@ -386,6 +387,7 @@ GameCharactersController.prototype.setInterval = async function () {
 
 /* MOUSE MOVE */
 GameCharactersController.prototype.onMouseMove = function (event) {
+    return;
     if (this.gameMouseMoved) return;
 
     if (!this.gameMouse_busy) {
