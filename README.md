@@ -6,6 +6,7 @@ playcanvas scripts textures and more
 * //https://mebiusbox.github.io/contents/EffectTextureMaker/  SPRITE EFFECT
 * //https://basis.dev.jibencaozuo.com/                        BASIS
 * //https://www.smart-page.net/smartnormal/                   ABLETO TO NORMAL MAPS
+* https://cpetry.github.io/NormalMap-Online/                  MEJORAR NORMAL MAPS
 * //cloth simulation https://playcanvas.com/project/691109/overview/cloth-simulation-demo
 * //https://cgpersia.com/tag/free   FREE RESOURCES
 * //https://cgdownload.ru/catalog/  FREE RESOURCES
@@ -13,6 +14,8 @@ playcanvas scripts textures and more
 * //https://playcanv.as/p/5QoTo3QT/ PLAYCANVAS EXCAMPLE
 
 * https://github.com/yandongCoder/circular-menu (CIRCULAR MENU)
+
+* https://cgdownload.ru/catalog/5216-ascent-combat-framework-acf-c-action-rpg-creator/
 
 //resolutions
 * 4320p (8K): 7680x4320
