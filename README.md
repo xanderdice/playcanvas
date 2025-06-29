@@ -29,7 +29,7 @@ playcanvas scripts textures and more
 
 LUTS:
 
-https://greggman.github.io/LUT-to-PNG/
-https://freshluts.com/most_popular_luts?page=4
-https://o-l-l-i.github.io/lut-maker/
+* https://greggman.github.io/LUT-to-PNG/ 
+* https://freshluts.com/most_popular_luts?page=4 
+* https://o-l-l-i.github.io/lut-maker/ 
 
