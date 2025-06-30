@@ -22,6 +22,12 @@ THOS SCENE MUST BE SET AS DEAFULT OR AS CURRENT
 //480p (SD): 854x480
 //360p (SD): 640x360
 //240p (SD): 426x240 
+
+LUTS:
+/*https://greggman.github.io/LUT-to-PNG/
+https://freshluts.com/most_popular_luts?page=4
+https://o-l-l-i.github.io/lut-maker/
+
 */
 
 
@@ -205,6 +211,33 @@ TracerScript.__tracer_busy = false;
 /**************************************************/
 var GameManager = pc.createScript('gameManager');
 
+GameManager.attributes.add('cameraOptions', {
+    title: "Camera Options",
+    type: 'json',
+    schema: [
+
+
+        {
+            name: 'cameratype',
+            title: "cameratype",
+            type: 'string', enum: [
+                { 'FirstPerson': 'FirstPerson' },
+                { 'ThirdPerson': 'ThirdPerson' },
+                { 'ThirdPersonPointMove': 'ThirdPersonPointMove' },
+                { 'FlyCamera': 'FlyCamera' }
+            ], default: 'ThirdPerson',
+            description: "General style of player view for this game.",
+        },
+        {
+            name: 'renderpass',
+            type: 'boolean',
+            default: true,
+            title: 'renderpass',
+            description: 'enables camerarenderpass'
+        }
+
+    ]
+});
 
 GameManager.attributes.add('scenesConfig', {
     title: "scenesConfig",
@@ -288,31 +321,7 @@ GameManager.attributes.add('ui', {
 });
 
 
-GameManager.attributes.add('cameraOptions', {
-    title: "Camera Options",
-    type: 'json',
-    schema: [
 
-        {
-            name: 'renderpass',
-            type: 'boolean',
-            default: true,
-            title: 'renderpass',
-            description: 'enables camerarenderpass'
-        },
-        {
-            name: 'cameratype',
-            title: "cameratype",
-            type: 'string', enum: [
-                { 'FirstPerson': 'FirstPerson' },
-                { 'ThirdPerson': 'ThirdPerson' },
-                { 'ThirdPersonPointMove': 'ThirdPersonPointMove' },
-                { 'FlyCamera': 'FlyCamera' }
-            ], default: 'ThirdPerson',
-            description: "General style of player view for this game.",
-        }
-    ]
-});
 
 
 GameManager.attributes.add('followCamera',
@@ -545,12 +554,10 @@ GameManager.prototype.initialize = function () {
     GameManager.followCamera.eulers = new pc.Vec3();
     GameManager.followCamera.smoothedPosition = new pc.Vec3();
     GameManager.followCamera.target = null;
-    GameManager._app.root.find(function (entity) {
-        if (entity.name.trim().toLowerCase() === (GameManager.followCamera.targetName || "").trim().toLowerCase()) {
-            GameManager.followCamera.target = entity;
-            return;
-        }
-    });
+
+    GameManager.playerEntity = null;
+    GameManager.playerEntityScript = null;
+    GameManager.checkForPlayerAndTargetEntities = true;
 
     GameManager.mouseOptions = this.mouseOptions;
     GameManager.flyCamera = this.flyCamera;
@@ -563,6 +570,16 @@ GameManager.prototype.initialize = function () {
     GameManager.enableSubtitles = this.subtitles.enabled;
 
     var canvas = this.app.graphicsDevice.canvas;
+    canvas.focus();
+
+    canvas.requestPointerLock = canvas.requestPointerLock ||
+        canvas.mozRequestPointerLock ||
+        canvas.webkitRequestPointerLock;
+
+    document.exitPointerLock = document.exitPointerLock ||
+        document.mozExitPointerLock ||
+        document.webkitExitPointerLock;
+
     TracerScript.trenable = this.tracer.enabled;
     TracerScript.tralwaysshow = this.tracer.tralwaysshow;
     TracerScript.trordermode = this.tracer.trordermode;
@@ -873,13 +890,14 @@ GameManager.updateCameraOrientation = function () {
             0
         ));
 
-        //if (GameManager.playerPersonStyle === "FirstPerson") {
         if (GameManager.input.cameratype === "FirstPerson") {
-            if (this.mainPlayer) {
-                var otherScript = this.mainPlayer.script.character
-                if (otherScript) {
-                    otherScript.rotateCharacter(0, 0, this.camera, 0);
-                }
+            debugger;
+            if (GameManager.playerEntity && GameManager.playerEntityScript) {
+                //GameManager.playerEntityScript
+                //if (otherScript) {
+                //    otherScript.rotateCharacter(0, 0, this.camera, 0);
+                //}
+
             }
         };
 
@@ -996,6 +1014,21 @@ GameManager.updateGameManager = async function (dt) {
     GameManager.input.dt = dt;
     Timer.evaluateTimers(dt);
 
+
+    if (GameManager.checkForPlayerAndTargetEntities) {
+        GameManager._app.scene.root.find(function (entity) {
+            if (entity.name.trim().toLowerCase() === (GameManager.followCamera.targetName || "").trim().toLowerCase()) {
+                GameManager.followCamera.target = entity;
+            }
+            if (entity.isPlayer) {
+                GameManager.playerEntity = entity;
+                GameManager.playerEntityScript = GameManager.playerEntity.script.character;
+            }
+        });
+
+        GameManager.checkForPlayerAndTargetEntities = false;
+    }
+
     GameManager.readKeyboardInput()
 
     GameManager.sleep(TracerScript.trgamesleep);
@@ -1068,6 +1101,64 @@ GameManager.showhideMousePointer = function (action) {
     function sleepPointerLock(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
+
+    function getLockedElement() {
+        return document.pointerLockElement ||
+            document.mozPointerLockElement ||
+            document.webkitPointerLockElement;
+    }
+
+    function isLockedElement(canvas) {
+        return getLockedElement() === canvas;
+    }
+
+    var canvas = GameManager._app.graphicsDevice.canvas;
+    canvas.focus();
+
+
+
+
+    var result = false;
+    try {
+        if (action === "show") {
+
+            if (isLockedElement(canvas)) {
+                try {
+                    document.exitPointerLock();
+                    result = true;
+                    (async function () { await sleepPointerLock(500); })();
+                } catch { }
+            } else {
+                result = true;
+            }
+        }
+        if (action === "hide") {
+            if (!isLockedElement(canvas)) {
+                try {
+                    canvas.requestPointerLock();
+                    Trace("isLockedElement = ", isLockedElement(canvas));
+                    //GameManager._app.mouse.enablePointerLock();
+                    result = true;
+                    (async function () { await sleepPointerLock(500); })();
+                } catch { }
+            } else {
+                result = true;
+            }
+        }
+    } catch { }
+
+    return result;
+
+
+
+
+
+
+
+
+
+    /* ************************************************ */
+
     var result = false;
     try {
         if (action === "show") {
@@ -1308,6 +1399,7 @@ GameManager.loadScene = function (sceneName) {
                     GameManager.input.camera = GameManager.currentCamera;
                     GameManager.followCamera.initialFov = GameManager.currentCamera ? GameManager.currentCamera.fov : 45;
 
+                    GameManager.checkForPlayerAndTargetEntities = true;
                     app.autoRender = true;
 
                     app.fire("hidemenu");
@@ -1353,8 +1445,9 @@ GameManager.calculateCameraScene = function () {
             var cameraFrame = new pc.CameraFrame(app, camera);
 
             app.scene.skyboxHighlightMultiplier = 100;
-            //cameraFrame.rendering.samples = 32;
-            cameraFrame.rendering.toneMapping = pc.TONEMAP_NEUTRAL;
+            //app.scene.skyboxIntensity = 0.1;
+            cameraFrame.rendering.samples = 4;
+            cameraFrame.rendering.toneMapping = pc.TONEMAP_LINEAR;
 
             cameraFrame.bloom.enabled = false;
             cameraFrame.bloom.intensity = 0.03;
@@ -1364,10 +1457,11 @@ GameManager.calculateCameraScene = function () {
             cameraFrame.vignette.inner = 0.5;
             cameraFrame.vignette.outer = 1;
             cameraFrame.vignette.curvature = 0.5;
-            cameraFrame.vignette.intensity = 0.5;
+            cameraFrame.vignette.intensity = 0.75;
 
             cameraFrame.taa.enabled = true;
             cameraFrame.taa.jitter = 1;
+
             //cameraFrame.rendering.sharpness = 1;
             //cameraFrame.debug = "scene";
 
@@ -1375,15 +1469,24 @@ GameManager.calculateCameraScene = function () {
             cameraFrame.ssao.type = "combine";
             cameraFrame.ssao.blurEnabled = true;
             cameraFrame.ssao.intensity = 1;
-            cameraFrame.ssao.power = 10;
+            cameraFrame.ssao.power = 1;
             cameraFrame.ssao.radius = 1;
             cameraFrame.ssao.samples = 4;
             cameraFrame.ssao.minAngle = 0;
             cameraFrame.ssao.scale = 1;
 
-            //cameraFrame.grading.enabled = true;
-            //cameraFrame.grading.saturation = 1.1;
+            /*cameraFrame.grading.enabled = true;
+            cameraFrame.grading.saturation = 1.5;*/
 
+
+            debugger;
+            /*https://greggman.github.io/LUT-to-PNG/
+            https://freshluts.com/most_popular_luts?page=4
+            https://o-l-l-i.github.io/lut-maker/
+            */
+            var colorLUT = app.assets.find("luck.cube-s32.png");
+            cameraFrame.colorLUT.texture = colorLUT.resource;
+            cameraFrame.colorLUT.intensity = 1.0;
 
             cameraFrame.update();
 
@@ -2294,10 +2397,12 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
                         })
                         .show();
                 }, 150);
-                const audio = document.getElementById('audio-menu-hover');
-                audio.pause();
-                audio.currentTime = 0;  // Reiniciar el audio al principio
-                audio.play();
+                try {
+                    const audio = document.getElementById('audio-menu-hover');
+                    audio.pause();
+                    audio.currentTime = 0;  // Reiniciar el audio al principio
+                    audio.play();
+                } catch { }
 
             });
 
@@ -2312,10 +2417,12 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
             on(subMenu._container, 'mouseenter', function () {
                 clearTimeout(delayShow);
                 clearTimeout(delayHide);
-                const audio = document.getElementById('audio-menu-hover');
-                audio.pause();
-                audio.currentTime = 0;  // Reiniciar el audio al principio
-                audio.play();
+                try {
+                    const audio = document.getElementById('audio-menu-hover');
+                    audio.pause();
+                    audio.currentTime = 0;  // Reiniciar el audio al principio
+                    audio.play();
+                } catch { }
 
             });
 

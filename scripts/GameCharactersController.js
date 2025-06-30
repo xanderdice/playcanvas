@@ -17,28 +17,16 @@
 //480p (SD): 854x480
 //360p (SD): 640x360
 //240p (SD): 426x240 
+//
+//LUTS:
+//            https://greggman.github.io/LUT-to-PNG/
+//            https://freshluts.com/most_popular_luts?page=4
+//            https://o-l-l-i.github.io/lut-maker/
+
+
 
 
 var GameCharactersController = pc.createScript('gameCharactersController');
-
-
-/*
-GameCharactersController.attributes.add('playerPersonStyle', {
-    title: 'Player Person Style',
-    type: 'string', enum: [
-        { 'FirstPerson': 'FirstPerson' },
-        { 'ThirdPerson': 'ThirdPerson' },
-        { 'ThirdPersonPointMove': 'ThirdPersonPointMove' },
-        { 'FlyCamera': 'FlyCamera' }
-    ], default: 'ThirdPerson',
-    description: "General style of player view for this game.",
-});
-*/
-
-
-
-
-
 
 
 GameCharactersController.attributes.add('fontAsset', {
@@ -58,92 +46,7 @@ GameCharactersController.attributes.add('interv', {
 
 
 
-GameCharactersController.attributes.add('mouseOptions', {
-    title: "Mouse Options",
-    type: 'json',
-    schema: [
-        {
-            name: 'hideMousePointer',
-            title: 'hideMousePointer',
-            type: 'boolean',
-            default: false,
-            description: 'hideMousePointer'
-        },
-        {
-            name: 'fireMenuEventOnMouseMove',
-            title: 'fireMenuEventOnMouseMove',
-            type: 'boolean',
-            default: false,
-            description: 'fireMenuEventOnMouseMove'
-        },
-        {
-            name: "mouseSensitivity",
-            type: 'number',
-            default: 10,
-            title: 'Mouse Sensitivity'
-        }
 
-    ]
-});
-
-
-
-GameCharactersController.attributes.add('followCamera',
-    {
-        title: "Follow Camera",
-        type: 'json',
-        schema: [
-            {
-                name: 'target',
-                type: 'entity',
-                default: null,
-                title: 'Target Entity',
-                description: 'Select the entity around which the camera will orbit'
-            },
-            {
-                name: 'orbitRadius',
-                type: 'number',
-                default: 3,
-                title: 'Orbit Radius'
-            },
-            {
-                name: 'bottomClamp',
-                type: 'number',
-                default: 320,
-                min: 320,
-                max: 340,
-                precision: 0,
-                title: 'bottomClamp',
-                description: "The maximum value in angle degrees for the camera downwards movement."
-            },
-            {
-                name: 'topClamp',
-                type: 'number',
-                default: 70,
-                min: 50,
-                max: 70,
-                precision: 0,
-                title: 'topClamp',
-                description: "The maximum value in angle degrees for the camera upwards movement."
-            },
-            {
-                name: 'smoothFactor',
-                type: 'number',
-                default: 0.2,
-                min: 0.01,
-                max: 1,
-                title: 'Smooth Factor',
-                description: 'Adjusts the smoothness of camera movement (0.1 for more smooth, 1 for immediate response)'
-            },
-            {
-                name: 'autofov',
-                type: 'boolean',
-                default: false,
-                title: 'autofov'
-            },
-
-        ]
-    });
 
 GameCharactersController.attributes.add('flyCamera',
     {
@@ -288,16 +191,6 @@ GameCharactersController.prototype.initialize = function () {
 
 
 
-    /*******************************************************/
-    /*
-    /*    FOLLOW CAMERA
-    /*
-    /*******************************************************/
-
-    this.followCamera.eulers = new pc.Vec3();
-    this.followCamera.smoothedPosition = new pc.Vec3();
-    this.followCamera.initialFov = this.camera ? this.camera.camera.fov : 45;
-
 
     /*******************************************************/
     /*
@@ -367,16 +260,16 @@ GameCharactersController.prototype.initialize = function () {
 GameCharactersController.prototype.setInterval = async function () {
     if (this.setInterval_busy) {
         this.interval_accumul++;
-        Tracer("updateCharactersMovement", "ACUMUL");
+
     } else {
         this.setInterval_busy = true;
         const startTime = performance.now();
         this.updateCharactersMovement();
         const endTime = performance.now();    // Toma el tiempo de finalización
         const elapsedTime = endTime - startTime;
-        if (elapsedTime > 0.2) {
+        /*if (elapsedTime > 0.2) {
             Tracer("updateCharactersMovement", elapsedTime);
-        }
+        }*/
 
         this.interval_accumul = 1;
         this.setInterval_busy = false;
@@ -562,25 +455,6 @@ GameCharactersController.prototype.onMouseMove = function (event) {
 
 }
 
-GameCharactersController.prototype.onMouseMoveFollowCamera = function () {
-    this.followCamera.eulers.x -= ((this.mouseOptions.mouseSensitivity * this.input.mouseDx) / 60) % 360;
-    this.followCamera.eulers.y += ((this.mouseOptions.mouseSensitivity * this.input.mouseDy) / 60) % 360;
-
-    this.followCamera.eulers.x = (this.followCamera.eulers.x + 360) % 360;
-    this.followCamera.eulers.y = (this.followCamera.eulers.y + 360) % 360;
-
-    this.flyCamera.ex -= this.input.mouseDy / this.mouseOptions.mouseSensitivity;
-    this.flyCamera.ex = pc.math.clamp(this.flyCamera.ex, -90, 90);
-    this.flyCamera.ey -= this.input.mouseDx / this.mouseOptions.mouseSensitivity;
-
-    if (this.followCamera.eulers.y > this.followCamera.topClamp && this.followCamera.eulers.y < this.followCamera.topClamp + 180) {
-        this.followCamera.eulers.y = this.followCamera.topClamp;
-    }
-    if (this.followCamera.eulers.y < this.followCamera.bottomClamp && this.followCamera.eulers.y > this.followCamera.bottomClamp - 180) {
-        this.followCamera.eulers.y = this.followCamera.bottomClamp;
-    }
-}
-
 GameCharactersController.prototype.onMouseDown = function (event) {
 
 
@@ -728,40 +602,6 @@ GameCharactersController.prototype.dividirArray = function (arr) {
 
     return [primeraMitad, segundaMitad];
 }
-
-
-
-
-GameCharactersController.prototype.updateCameraOrientation = function () {
-    if (this.playerPersonStyle === "FlyCamera") {
-        if (this.mouseOptions.hideMousePointer) {
-            if (pc.Mouse.isPointerLocked()) {
-                this.camera.setLocalEulerAngles(this.flyCamera.ex, this.flyCamera.ey, 0);
-            }
-        } else {
-            this.camera.setLocalEulerAngles(this.flyCamera.ex, this.flyCamera.ey, 0);
-        }
-        return;
-    }
-
-    if (this.followCamera && this.followCamera.eulers) {
-        this.camera.setEulerAngles(new pc.Vec3(
-            -this.followCamera.eulers.y,
-            this.followCamera.eulers.x + 180,
-            0
-        ));
-
-        if (this.playerPersonStyle === "FirstPerson") {
-            if (this.mainPlayer) {
-                var otherScript = this.mainPlayer.script.character
-                if (otherScript) {
-                    otherScript.calculateCharacterCurrentRotation(0, 0, this.camera, 0);
-                }
-            }
-        };
-
-    }
-};
 
 
 

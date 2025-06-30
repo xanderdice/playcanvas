@@ -1693,9 +1693,6 @@ Character.prototype.postUpdate = function (dt) {
     this.doCarryWeapons();
 
     const currentVelocity = this.entity.rigidbody.linearVelocity;
-    Tracer(this.entity.name + " isonair    ", this.entity.isonair);
-    Tracer(this.entity.name + " isonground ", this.entity.isonground);
-    Tracer(this.entity.name + " y === ", currentVelocity.y);
 
     this.CHAR_LAST_POSITION = this.CHAR_CUR_POSITION;
 }
