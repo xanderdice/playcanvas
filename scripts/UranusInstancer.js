@@ -1856,4 +1856,288 @@ UranusUtilities.workerMinRestTime = 2e3,
         ));
         return i
     }
-    ;    
+    ;
+var UranusInstancerState = pc.createScript("uranusInstancerState");
+UranusInstancerState.attributes.add("stateToSet", {
+    type: "boolean",
+    default: !0,
+    title: "State to Set",
+    description: "The state to set on the enabled property when visibility is true."
+}),
+    UranusInstancerState.attributes.add("targetEntity", {
+        type: "entity",
+        title: "Target Entity",
+        description: "The target entity to apply the state on. Leave empty to apply on this entity."
+    }),
+    UranusInstancerState.attributes.add("stateTimeout", {
+        type: "number",
+        default: 25,
+        title: "State Timeout",
+        description: "Set how often state visibility calculations will take place. Set to 0.0 to execute them per frame (more expensive)."
+    }),
+    UranusInstancerState.attributes.add("components", {
+        type: "string",
+        array: !0,
+        title: "Components",
+        description: "Add a list of components to toggle their state."
+    }),
+    UranusInstancerState.prototype.initialize = function () {
+        this.stateTimer = this.stateTimeout,
+            this.target = this.targetEntity ? this.targetEntity : this.entity
+    }
+    ,
+    UranusInstancerState.prototype.update = function (t) {
+        if (this.stateTimer++,
+            this.stateTimer < this.stateTimeout)
+            return;
+        this.stateTimer = 0;
+        const e = !!this.entity.uranusIsVisible
+            , a = this.target;
+        if (this.components.length > 0)
+            for (const t of this.components)
+                a[t].enabled = e ? this.stateToSet : !this.stateToSet;
+        else
+            a.enabled = e ? this.stateToSet : !this.stateToSet
+    }
+    ;
+
+var UranusInstancerOcclusion = pc.createScript("uranusInstancerOcclusion");
+UranusInstancerOcclusion.attributes.add("inEditor", {
+    type: "boolean",
+    default: !1
+}),
+    UranusInstancerOcclusion.attributes.add("occlusionType", {
+        type: "string",
+        default: "occluder",
+        enum: [{
+            Occluder: "occluder"
+        }, {
+            Occludee: "occludee"
+        }],
+        title: "Occlusion Type",
+        description: "1. Occluder: this entity will act as an occluder and obstruct occludees. 2. Occludee: this entity will act as an occludee and getting obstructed by occluders. A hardware occlusion query will execute for this entity based on its occlusion shape. The entity will be automatically change its visible status based on the query result."
+    }),
+    UranusInstancerOcclusion.attributes.add("occlusionShape", {
+        type: "string",
+        default: "calculateBounding",
+        enum: [{
+            "Calculate Bounding": "calculateBounding"
+        }, {
+            "Collision Bounding": "collisionBounding"
+        }, {
+            "Raw Geometry": "rawGeometry"
+        }, {
+            None: "none"
+        }],
+        title: "Occlusion Shape",
+        description: "1. Calculate Bounding: the script will automatically calculate the total bounding box of the model. 2. Collision Bounding: If a box collision component is provided that bounding box will be used. 3. Raw Geometry: No bounding box will be created, the raw geometry will be rendered in the Occlusion Layer. This provides accurate queries at the cost of performance. 4. None: The script will not add any model to the Occlusion Layer. Requires application restart."
+    }),
+    UranusInstancerOcclusion.attributes.add("boundingScale", {
+        type: "number",
+        default: 1,
+        title: "Bounding Scale",
+        description: "Set the bounding box scale when Calculate Bounding is used."
+    }),
+    UranusInstancerOcclusion.attributes.add("isStatic", {
+        type: "boolean",
+        default: !0,
+        title: "Is Static",
+        description: "If selected the occluder will not update its position/rotation/scale per frame, this is a performance optimization."
+    }),
+    UranusInstancerOcclusion.attributes.add("behaviorResult", {
+        type: "string",
+        default: "visibilityState",
+        enum: [{
+            "Visibility State": "visibilityState"
+        }, {
+            "Entity State": "entityState"
+        }, {
+            None: "none"
+        }],
+        title: "Behavior Result",
+        description: "Controls what will happen When the occlusion query returns a new visibility state (works for Occludees only). 1. Visibility State: The model will change its visibility state. 2. Entity State: The entity will change its Enabled property. 3. Nothing will happen and only onEvent will fire if provided. Useful for gameplay only queries."
+    }),
+    UranusInstancerOcclusion.attributes.add("refEntities", {
+        type: "entity",
+        array: !0,
+        title: "Reference Entities",
+        description: "Optionally provide one or more entities that this occludee is responsible for managing their state instead of this entity."
+    }),
+    UranusInstancerOcclusion.attributes.add("bypassInstancer", {
+        type: "boolean",
+        default: !1,
+        title: "Bypass Instancer",
+        description: "If selected the occludee will toggle its model/render component instead of using the instancer to handle visibility."
+    }),
+    UranusInstancerOcclusion.attributes.add("onEvent", {
+        type: "string",
+        title: "On Event",
+        description: "If an event name is provided it will automatically fire on the pc.Application context when the visibility state changes."
+    }),
+    UranusInstancerOcclusion.attributes.add("eventEntity", {
+        type: "entity",
+        title: "Event Entity",
+        description: "If an entity is provided instead of firing an app wide event it will fire on the entity instead."
+    }),
+    UranusInstancerOcclusion.prototype.initialize = function () {
+        !1 !== this.app.graphicsDevice.isWebGL2 && (this.bounding = new pc.BoundingBox,
+            this.occlusionEntity = void 0,
+            this.useWorldTransform = !1,
+            this.useCollisionBounding = !1,
+            this.glQuery = void 0,
+            this.enableOcclusionCulling(),
+            this.prepareOcclusionEntity(),
+            this.addOcclusionQuery(),
+            this.on("state", (function (t) {
+                this.occlusionEntity && "entityState" !== this.behaviorResult && (this.occlusionEntity.enabled = t)
+            }
+            )),
+            this.on("destroy", (function () {
+                if (this.glQuery) {
+                    this.app.graphicsDevice.gl.deleteQuery(this.glQuery)
+                }
+                this.occlusionEntity && this.occlusionEntity.destroy()
+            }
+            )))
+    }
+    ,
+    UranusInstancerOcclusion.prototype.update = function () {
+        !1 === this.isStatic && this.occlusionEntity && this.updateTransform()
+    }
+    ,
+    UranusInstancerOcclusion.prototype.updateTransform = function () {
+        const t = this.entity
+            , e = this.occlusionEntity;
+        if (this.useWorldTransform) {
+            const n = t.getWorldTransform();
+            e.setPosition(n.getTranslation()),
+                e.setEulerAngles(n.getEulerAngles()),
+                e.setLocalScale(n.getScale())
+        } else {
+            const n = this.bounding;
+            if (this.useCollisionBounding) {
+                const e = t.collision;
+                n.center.copy(e.getShapePosition()),
+                    n.halfExtents.copy(e.halfExtents)
+            } else
+                t.render.meshInstances.forEach(((t, e) => {
+                    0 === e ? n.copy(t.aabb) : n.add(t.aabb)
+                }
+                ));
+            e.setPosition(n.center),
+                e.setLocalScale(2 * n.halfExtents.x, 2 * n.halfExtents.y, 2 * n.halfExtents.z)
+        }
+    }
+    ,
+    UranusInstancerOcclusion.prototype.prepareOcclusionEntity = function () {
+        const t = this.app.scene.layers.getLayerByName("Occlusion");
+        t && ("none" !== this.occlusionShape ? ("rawGeometry" === this.occlusionShape ? (this.occlusionEntity = new pc.Entity,
+            this.entity.render.system.cloneComponent(this.entity, this.occlusionEntity),
+            this.occlusionEntity.render.layers = [t.id],
+            this.app.root.addChild(this.occlusionEntity),
+            this.useWorldTransform = !0) : (this.occlusionEntity = new pc.Entity,
+                this.occlusionEntity.addComponent("render", {
+                    type: "box",
+                    layers: [t.id]
+                }),
+                this.occlusionEntity.setLocalScale(this.boundingScale, this.boundingScale, this.boundingScale),
+                this.app.root.addChild(this.occlusionEntity),
+                "collisionBounding" === this.occlusionShape && this.entity.collision && "box" === this.entity.collision.type && (this.useCollisionBounding = !0)),
+            this.updateTransform(),
+            this.occlusionEntity.render.meshInstances.forEach((t => t.isOccludee = "occludee" === this.occlusionType))) : this.occlusionEntity = this.entity)
+    }
+    ,
+    UranusInstancerOcclusion.prototype.addOcclusionQuery = function () {
+        if (!this.occlusionEntity || "occludee" === !this.occlusionType)
+            return;
+        const t = this.app.graphicsDevice.gl;
+        this.occlusionEntity.render.meshInstances.forEach((e => {
+            const n = {
+                inProgress: !1,
+                meshInstance: e,
+                onOcclusionResult: t => this.setVisibleState(t),
+                query: t.createQuery()
+            };
+            this.glQuery = n.query,
+                e.uranusInstancerOcclusion = n
+        }
+        ))
+    }
+    ,
+    UranusInstancerOcclusion.prototype.setVisibleState = function (t) {
+        const e = this.refEntities
+            , n = e.length > 0;
+        if (this.bypassInstancer ? "visibilityState" === this.behaviorResult ? n ? e.forEach((e => e.render.enabled = t)) : this.entity.render.enabled = t : "entityState" === this.behaviorResult && (n ? e.forEach((e => e.enabled = t)) : this.entity.enabled = t) : "visibilityState" === this.behaviorResult ? n ? e.forEach((e => e.uranusZoneActive = t)) : this.entity.uranusZoneActive = t : "entityState" === this.behaviorResult && (n ? e.forEach((e => e.enabled = t)) : this.entity.enabled = t),
+            this.onEvent) {
+            (this.eventEntity ? this.eventEntity : this.app).fire(this.onEvent, t)
+        }
+    }
+    ,
+    UranusInstancerOcclusion.cullingEnabled = !1,
+    UranusInstancerOcclusion.layer = void 0,
+    UranusInstancerOcclusion.nextLayer = void 0,
+    UranusInstancerOcclusion.bypassCulling = void 0,
+    UranusInstancerOcclusion.toggleDebugger = function () {
+        const t = UranusInstancerOcclusion.nextLayer;
+        t && (t.clearColorBuffer = !t.clearColorBuffer,
+            t.clearDepthBuffer = !t.clearDepthBuffer)
+    }
+    ,
+    UranusInstancerOcclusion.setOcclusionState = function (t) {
+        UranusInstancerOcclusion.layer.opaqueMeshInstances.forEach((e => {
+            const n = e.uranusInstancerOcclusion;
+            e.visible = t,
+                !1 === t && n && (n.onOcclusionResult(!0),
+                    n.inProgress = !1)
+        }
+        ))
+    }
+    ,
+    UranusInstancerOcclusion.prototype.enableOcclusionCulling = function () {
+        if (UranusInstancerOcclusion.cullingEnabled)
+            return;
+        UranusInstancerOcclusion.cullingEnabled = !0;
+        const t = this.app.scene.layers.getLayerByName("Occlusion");
+        UranusInstancerOcclusion.layer = t,
+            t.opaqueSortMode = pc.SORTMODE_CUSTOM,
+            t.passThrough = !0,
+            t.shaderPass = pc.SHADER_DEPTH;
+        const e = this.app.scene.layers.layerList.findIndex((t => "Occlusion" === t.name)) + 1
+            , n = this.app.scene.layers.layerList[e];
+        UranusInstancerOcclusion.nextLayer = n,
+            n.clearColorBuffer = !0,
+            n.clearDepthBuffer = !0,
+            t.customCalculateSortValues = function (t, e, n, i) {
+                this._calculateSortDistances(t, e, n, i)
+            }
+            ,
+            t.customSortCallback = function (t, e) {
+                return t.isOccludee || e.isOccludee ? t.isOccludee && e.isOccludee ? e.zdist - t.zdist : t.isOccludee ? 1 : -1 : t.zdist - e.zdist
+            }
+            ,
+            pc.app.renderer.drawInstance = function (t, e, n, i, s) {
+                const c = e.instancingData;
+                if (c)
+                    c.count > 0 && (this._instancedDrawCalls++,
+                        t.setVertexBuffer(c.vertexBuffer),
+                        t.draw(n.primitive[i], c.count));
+                else {
+                    const c = e.node.worldTransform;
+                    this.modelMatrixId.setValue(c.data),
+                        s && this.normalMatrixId.setValue(e.node.normalMatrix.data);
+                    const o = pc.app.graphicsDevice.gl
+                        , a = e.uranusInstancerOcclusion;
+                    if (a && a.inProgress && o.getQueryParameter(a.query, o.QUERY_RESULT_AVAILABLE)) {
+                        const t = !!o.getQueryParameter(a.query, o.QUERY_RESULT);
+                        a.onOcclusionResult(t),
+                            a.inProgress = !1
+                    }
+                    a && !a.inProgress && o.beginQuery(o.ANY_SAMPLES_PASSED_CONSERVATIVE, a.query),
+                        t.draw(n.primitive[i]),
+                        a && !a.inProgress && (o.endQuery(o.ANY_SAMPLES_PASSED_CONSERVATIVE),
+                            a.inProgress = !0)
+                }
+            }
+                .bind(pc.app.renderer)
+    }
+    ;
