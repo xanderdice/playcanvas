@@ -9,8 +9,6 @@ var Autobatcher = pc.createScript('autobatcher');
 
 // initialize code called once per entity
 Autobatcher.prototype.initialize = function () {
-
-    debugger;
     this.app.batcher;
     this.autobatcher = { statics: [], dynamics: [] };
 
@@ -20,89 +18,118 @@ Autobatcher.prototype.initialize = function () {
     this.lastRenderComponentsLength = 0;
     this.needsProcess = true;
 
+    this.renderComponents = [];
+    this.hashes = [];
+
 };
 
 Autobatcher.prototype.doBatching = function () {
+
     if (!this.autoBatcher_busy) {
         this.autoBatcher_busy = true;
-        // Obtener todas las entidades en la escena
+
 
         if (this.processPart === 0) {
-            this.renderComponents = this.app.root.findComponents('render');
+            this.renderComponents = this.app.scene.root.findComponents('render');
         }
-
 
         if (this.processPart === 1) {
-            this.renderComponents = this.renderComponents.filter(function (r) {
-                return (r.enabled && r.entity.enabled);
-            });
-            this.needsProcess = (this.lastRenderComponentsLength !== this.renderComponents.length);
-            this.lastRenderComponentsLength = this.renderComponents.length;
-        }
+            // Crear un objeto Map para almacenar los hashes con sus renders asociadas
+            this.hashes = new Map();
+            var hash = "";
 
-        if (this.processPart === 2 && this.needsProcess) {
-
-            var i = 0;
-            const renderComponents_length = this.renderComponents.length;
-            for (; i < renderComponents_length; i++) {
-                const render = this.renderComponents[i];
+            // Iterar sobre todas las this.renderComponents
+            this.renderComponents.forEach(render => {
 
                 if (render.isStatic) {
-                    const material = render.material;
-                    const matKey = material.name + "_" + material.id;
-
-                    // Agrupar por material
-                    if (!this.autobatcher.statics[matKey]) {
-                        this.autobatcher.statics[matKey] = { batch: null, renders: [] };
+                    if (render.asset) {
+                        hash = ((this.app.assets.get(render.asset) || {}).name || "") + render.asset || 0;
+                    } else {
+                        hash = render.type;
                     }
 
-                    this.autobatcher.statics[matKey].renders.push(render);
-                }
-
-                if (!render.isStatic) {
-
-                    const material = render.material;
-                    const matKey = material.name + "_" + material.id;
-
-                    // Agrupar por material
-                    if (!this.autobatcher.dynamics[matKey]) {
-                        this.autobatcher.dynamics[matKey] = { batch: null, renders: [] };
+                    // Si el hash ya existe en el Map, añadir la render a ese hash
+                    if (this.hashes.has(hash)) {
+                        this.hashes.get(hash).push(render);
+                    } else {
+                        // Si el hash no existe, crear una nueva entrada en el Map
+                        this.hashes.set(hash, [render]);
                     }
-
-                    this.autobatcher.dynamics[matKey].renders.push(render);
                 }
-
-            }
+            });
+            this.renderComponents = [];
         }
 
-        if (this.processPart === 3 && this.needsProcess) {
 
-            for (const matKey in this.autobatcher.statics) {
-                const group = this.autobatcher.statics[matKey];
+        if (this.processPart === 2) {
+            this.hashes.forEach((renders, hash) => {
 
-                if (!group.batch) {
-                    const newBatchGroup = this.app.batcher.addGroup("batch_static_" + matKey, false, 100);
-                    this.autobatcher.statics[matKey].batch = newBatchGroup;
+                var newBatchGroup = null;
+                if (((this.app.batcher.getGroupByName("batch_" + hash) || {}).id || null) === null) {
+                    newBatchGroup = this.app.batcher.addGroup("batch_" + hash, false, 100);
                 }
-            }
+
+                // Convertir el Map a un array con los hashes y sus renders
+                this.renderComponents.push({
+                    hash: hash,
+                    renders: renders,
+                    batchgroup: newBatchGroup
+                });
+
+
+                //this.autobatcher.statics[matKey].batch = newBatchGroup;
+
+                //this.app.batcher.getGroupByName("batch_" + this.renderComponents[0].hash).id
+
+            });
+            this.hashes = [];
+
+
         }
 
-        if (this.processPart === 4 && this.needsProcess) {
+        if (this.processPart === 3) {
+            this.renderComponents.forEach(render => {
+                const batchid = ((render.batchgroup || {}).id || null);
+                if (batchid !== null) {
+                    render.renders.forEach(r => {
+                        debugger;
+                        if (r.batchGroupId !== batchid) {
+                            r.batchGroupId = batchid;
+                        }
 
-            for (const matKey in this.autobatcher.statics) {
-                const group = this.autobatcher.statics[matKey];
+                    });
+                }
+            });
+        }
 
-                if (group.batch) {
-                    var r = 0;
-                    const autobatcher_statics_renders_length = this.autobatcher.statics[matKey].renders.length;
-                    for (; r < autobatcher_statics_renders_length; r++) {
-                        if (this.autobatcher.statics[matKey].renders[r].batchGroupId !== group.batch.id) {
-                            this.autobatcher.statics[matKey].renders[r].batchGroupId = group.batch.id;
+
+
+
+
+        /*
+                if (this.processPart === 1) {
+                    this.renderComponents = this.renderComponents.filter(function (r) {
+                        return (r.enabled && r.entity.enabled);
+                    });
+                    this.needsProcess = (this.lastRenderComponentsLength !== this.renderComponents.length);
+                    this.lastRenderComponentsLength = this.renderComponents.length;
+                }
+        */
+
+        /*
+                if (this.processPart === 3 && this.needsProcess) {
+        
+                    for (const matKey in this.autobatcher.statics) {
+                        const group = this.autobatcher.statics[matKey];
+        
+                        if (!group.batch) {
+                            const newBatchGroup = this.app.batcher.addGroup("batch_static_" + matKey, false, 100);
+                            this.autobatcher.statics[matKey].batch = newBatchGroup;
                         }
                     }
                 }
-            }
-        }
+        */
+
 
         this.processPart++;
         if (this.processPart > 4) {
@@ -112,15 +139,15 @@ Autobatcher.prototype.doBatching = function () {
 
         /*
             for (var matKey in this.app.autobatcher.dynamics) {
-        
+         
                 var group = this.app.autobatcher.dynamics[matKey];
-        
+         
                 if (group.batch) {
-        
+         
                 } else {
-        
+         
                     const newBatchGroup = this.app.batcher.addGroup("batch_dynamic_" + matKey, true, 100);
-        
+         
                     var r = 0,
                         autobatcher_dynamics_renders_length = this.app.autobatcher.dynamics[matKey].renders.length;
                     debugger;
@@ -129,9 +156,9 @@ Autobatcher.prototype.doBatching = function () {
                             this.app.autobatcher.dynamics[matKey].renders[r].batchGroupId = newBatchGroup.id;
                         }
                     }
-        
+         
                     this.app.autobatcher.dynamics[matKey].batch = newBatchGroup;
-        
+         
                 }
             }
         */
