@@ -227,17 +227,57 @@ GameManager.attributes.add('cameraOptions', {
                 { 'FlyCamera': 'FlyCamera' }
             ], default: 'ThirdPerson',
             description: "General style of player view for this game.",
-        },
-        {
-            name: 'renderpass',
-            type: 'boolean',
-            default: true,
-            title: 'renderpass',
-            description: 'enables camerarenderpass'
         }
 
     ]
 });
+
+GameManager.attributes.add('cameraPostProcessing', {
+    title: "CameraPostProcessing",
+    description: "CameraPostProcessing effects",
+    type: 'json',
+    schema: [
+        {
+            name: 'enabled',
+            type: 'boolean',
+            default: true,
+            title: 'enabled',
+            description: 'enables CameraPostProcessing'
+        },
+
+        {
+            name: 'bloom',
+            type: 'boolean',
+            default: true,
+            title: 'bloom',
+            description: 'bloom'
+        },
+        {
+            name: 'ssao',
+            type: 'boolean',
+            default: true,
+            title: 'ssao',
+            description: 'ssao'
+        },
+        {
+            name: 'taa',
+            type: 'boolean',
+            default: true,
+            title: 'taa',
+            description: 'taa'
+        },
+        {
+            name: 'lut',
+            type: 'boolean',
+            default: true,
+            title: 'lut',
+            description: 'lut'
+        },
+    ]
+});
+
+
+
 
 GameManager.attributes.add('scenesConfig', {
     title: "scenesConfig",
@@ -319,7 +359,6 @@ GameManager.attributes.add('ui', {
 
     ]
 });
-
 
 
 
@@ -547,6 +586,8 @@ GameManager.prototype.initialize = function () {
 
     GameManager.cameraOptions = this.cameraOptions;
     GameManager.currentCamera = GameManager.calculateCameraScene();
+    GameManager.cameraPostProcessing = this.cameraPostProcessing;
+    GameManager.applyCameraPostProcessing(this.cameraPostProcessing);
     GameManager.input.camera = GameManager.currentCamera;
     GameManager.input.cameratype = (this.cameraOptions.cameratype || "");
     GameManager.followCamera = this.followCamera;
@@ -738,6 +779,19 @@ GameManager.prototype.initialize = function () {
     canvas.setAttribute('tabindex', '0');
     canvas.focus();
 
+
+
+
+    /*POST PROCESSING ATRIBUTE SCRIPT EVENT*/
+    GameManager.cameraPostProcessing = this.cameraPostProcessing
+    this.on('attr:cameraPostProcessing', function (nuevoValor) {
+        GameManager.applyCameraPostProcessing(nuevoValor);
+        GameManager.cameraPostProcessing = nuevoValor
+    }, this);
+
+
+
+
 };
 
 
@@ -891,7 +945,6 @@ GameManager.updateCameraOrientation = function () {
         ));
 
         if (GameManager.input.cameratype === "FirstPerson") {
-            debugger;
             if (GameManager.playerEntity && GameManager.playerEntityScript) {
                 //GameManager.playerEntityScript
                 //if (otherScript) {
@@ -1025,6 +1078,10 @@ GameManager.updateGameManager = async function (dt) {
                 GameManager.playerEntityScript = GameManager.playerEntity.script.character;
             }
         });
+        if (!GameManager.followCamera.target) {
+            GameManager.followCamera.target = GameManager.playerEntity;
+        }
+
 
         GameManager.checkForPlayerAndTargetEntities = false;
     }
@@ -1136,7 +1193,7 @@ GameManager.showhideMousePointer = function (action) {
             if (!isLockedElement(canvas)) {
                 try {
                     canvas.requestPointerLock();
-                    Trace("isLockedElement = ", isLockedElement(canvas));
+                    //Trace("isLockedElement = ", isLockedElement(canvas));
                     //GameManager._app.mouse.enablePointerLock();
                     result = true;
                     (async function () { await sleepPointerLock(500); })();
@@ -1396,6 +1453,7 @@ GameManager.loadScene = function (sceneName) {
                     }
 
                     GameManager.currentCamera = GameManager.calculateCameraScene();
+                    GameManager.applyCameraPostProcessing(GameManager.cameraPostProcessing);
                     GameManager.input.camera = GameManager.currentCamera;
                     GameManager.followCamera.initialFov = GameManager.currentCamera ? GameManager.currentCamera.fov : 45;
 
@@ -1438,65 +1496,75 @@ GameManager.calculateCameraScene = function () {
     if (cameras.length) {
 
         var camera = cameras[0];
-        //app.scene.exposure = 0.1;
 
-        if (GameManager.cameraOptions.renderpass) {
-
-            var cameraFrame = new pc.CameraFrame(app, camera);
-
-            app.scene.skyboxHighlightMultiplier = 100;
-            //app.scene.skyboxIntensity = 0.1;
-            cameraFrame.rendering.samples = 4;
-            cameraFrame.rendering.toneMapping = pc.TONEMAP_LINEAR;
-
-            cameraFrame.bloom.enabled = false;
-            cameraFrame.bloom.intensity = 0.03;
-            //cameraFrame.bloom.blur = 4;
-
-
-            cameraFrame.vignette.inner = 0.5;
-            cameraFrame.vignette.outer = 1;
-            cameraFrame.vignette.curvature = 0.5;
-            cameraFrame.vignette.intensity = 0.75;
-
-            cameraFrame.taa.enabled = true;
-            cameraFrame.taa.jitter = 1;
-
-            //cameraFrame.rendering.sharpness = 1;
-            //cameraFrame.debug = "scene";
-
-
-            cameraFrame.ssao.type = "combine";
-            cameraFrame.ssao.blurEnabled = true;
-            cameraFrame.ssao.intensity = 1;
-            cameraFrame.ssao.power = 1;
-            cameraFrame.ssao.radius = 1;
-            cameraFrame.ssao.samples = 4;
-            cameraFrame.ssao.minAngle = 0;
-            cameraFrame.ssao.scale = 1;
-
-            /*cameraFrame.grading.enabled = true;
-            cameraFrame.grading.saturation = 1.5;*/
-
-
-            debugger;
-            /*https://greggman.github.io/LUT-to-PNG/
-            https://freshluts.com/most_popular_luts?page=4
-            https://o-l-l-i.github.io/lut-maker/
-            */
-            var colorLUT = app.assets.find("luck.cube-s32.png");
-            cameraFrame.colorLUT.texture = colorLUT.resource;
-            cameraFrame.colorLUT.intensity = 1.0;
-
-            cameraFrame.update();
-
-        } else {
-            camera.renderPasses = [];
-        }
 
         return camera;
     }
 }
+
+GameManager.applyCameraPostProcessing = function (options) {
+    var app = GameManager._app;
+    if (!app) return null;
+
+    if (options.enabled) {
+
+        var cameraFrame = new pc.CameraFrame(app, GameManager.currentCamera);
+
+        app.scene.skyboxHighlightMultiplier = 100;
+        //app.scene.skyboxIntensity = 0.1;
+        cameraFrame.rendering.samples = 4;
+        cameraFrame.rendering.toneMapping = pc.TONEMAP_LINEAR;
+
+        cameraFrame.bloom.enabled = options.bloom;
+        cameraFrame.bloom.intensity = 0.1;
+        //cameraFrame.bloom.blur = 4;
+
+
+        cameraFrame.vignette.inner = 0.5;
+        cameraFrame.vignette.outer = 1;
+        cameraFrame.vignette.curvature = 0.5;
+        cameraFrame.vignette.intensity = 0.75;
+
+        cameraFrame.taa.enabled = options.taa;
+        cameraFrame.taa.jitter = 1;
+
+        //cameraFrame.rendering.sharpness = 1;
+        //cameraFrame.debug = "scene";
+
+
+        cameraFrame.ssao.type = options.ssao ? "combine" : "none";
+        cameraFrame.ssao.blurEnabled = options.ssao;
+        cameraFrame.ssao.intensity = 1;
+        cameraFrame.ssao.power = 1;
+        cameraFrame.ssao.radius = 1;
+        cameraFrame.ssao.samples = 4;
+        cameraFrame.ssao.minAngle = 0;
+        cameraFrame.ssao.scale = 1;
+
+        /*
+                    cameraFrame.grading.enabled = true;
+                    cameraFrame.grading.saturation = 1.5;
+        */
+
+
+        /*https://greggman.github.io/LUT-to-PNG/
+        https://freshluts.com/most_popular_luts?page=4
+        https://o-l-l-i.github.io/lut-maker/
+        */
+
+        var colorLUT = app.assets.find("luck.cube-s32.png");
+        cameraFrame.colorLUT.texture = colorLUT.resource;
+        cameraFrame.colorLUT.intensity = options.lut ? 1.0 : 0.0;
+
+
+        cameraFrame.update();
+
+    } else {
+        GameManager.currentCamera.renderPasses = [];
+    }
+
+}
+
 
 
 GameManager.freeAssets = function () {

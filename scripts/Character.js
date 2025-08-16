@@ -18,7 +18,8 @@ Character.attributes.add('gravity', { type: 'number', default: -9.8, title: "gra
 Character.attributes.add('isSelectable', { type: 'boolean', default: false });
 Character.attributes.add('isPlayer', { type: 'boolean', default: false });
 Character.attributes.add('inertia', { type: 'boolean', default: true });
-/*Character.attributes.add('useteleport', { type: 'boolean', default: false });*/
+Character.attributes.add('canmoveonair', { type: 'boolean', default: false });
+//Character.attributes.add('useteleport', { type: 'boolean', default: false });
 Character.attributes.add('playerOptions',
     {
         title: "Player options",
@@ -52,6 +53,13 @@ Character.attributes.add('ccd',
         type: 'json',
         schema: [
             {
+                name: 'enabled',
+                type: 'boolean',
+                default: true,
+                title: 'enabled',
+                description: 'enables ccd'
+            },
+            {
                 name: "motionThreshold",
                 type: "number",
                 default: 1,
@@ -80,9 +88,11 @@ Character.attributes.add('sensorOptions',
         type: 'json',
         schema: [
             {
-                name: 'sensorEnabled',
+                name: 'enabled',
                 type: 'boolean',
-                default: true
+                default: true,
+                title: 'enabled',
+                description: 'enables sensorOptions'
             },
             {
                 name: 'sensorDebug',
@@ -112,12 +122,24 @@ Character.attributes.add('tracerOptions',
         type: 'json',
         schema: [
             {
+                name: 'enabled',
+                type: 'boolean',
+                default: true,
+                title: 'enabled',
+                description: 'enables Tracer Options'
+            },
+            {
                 name: 'traceinput',
                 type: 'boolean',
                 default: false
             },
             {
                 name: 'tracedetector',
+                type: 'boolean',
+                default: false
+            },
+            {
+                name: 'traceplayercapsule',
                 type: 'boolean',
                 default: false
             },
@@ -399,6 +421,8 @@ Character.prototype.initialize = function () {
     if (this.renderCharacterComponent) {
         this.renderCharacterComponent.entity.tags.add("uranus-instancing-exclude");
         this.meshInstancesCharacter = ((this.renderCharacterComponent.meshInstances || [])[0] || { visibleThisFrame: false });
+    } else {
+        this.meshInstancesCharacter = { visibleThisFrame: true };
     }
 
 
@@ -521,38 +545,32 @@ Character.prototype.initialize = function () {
     this.entity.isonground = true;
 
 
-    if (this.sensorOptions.sensorDebug) {
 
-        // Configuración de las opciones para la geometría de la cápsula
-        const options = {
-            radius: this.characterRadius,
-            height: this.characterHeight
-        };
-
-
+    if (this.tracerOptions.traceplayercapsule) {
         // Crear el material transparente
         const transparentMaterial = new pc.StandardMaterial();
         transparentMaterial.diffuse = new pc.Color(1, 0, 0);  // Color rojo para el material
         transparentMaterial.update();  // Necesitamos actualizar el material para que los cambios se apliquen
 
-        // Añadir la etiqueta para excluir de la instanciación (si lo necesitas)
-        this.entity.capsule_collision.tags.add("uranus-instancing-exclude");
+        const capsuleMesh = pc.Mesh.fromGeometry(this.app.graphicsDevice, new pc.CapsuleGeometry({
+            radius: this.characterRadius,
+            height: this.characterHeight
+        }));
+
+        const meshInstance = new pc.MeshInstance(capsuleMesh, transparentMaterial);
+        meshInstance.renderStyle = pc.RENDERSTYLE_WIREFRAME;
+        const model = new pc.Model();
+        model.graph = new pc.GraphNode();
+        model.meshInstances = [meshInstance];
 
         // Añadir el componente de renderizado con las opciones adecuadas
         this.entity.capsule_collision.addComponent('render', {
-
-            type: 'capsule',  // Usamos tipo 'capsule' para la colisión
-            radius: this.characterRadius,  // Establecer el radio de la cápsula
-            height: this.characterHeight,  // Establecer la altura de la cápsula
-
+            type: 'asset',
             renderStyle: pc.RENDERSTYLE_WIREFRAME,  // Estilo de renderizado en alambre
             material: transparentMaterial  // Asignamos el material
         });
 
-        // Asignar el material al primer meshInstance en el render component (opcional, pero redundante)
-        this.entity.capsule_collision.render.meshInstances[0].material = transparentMaterial;
-
-
+        this.entity.capsule_collision.render.meshInstances = model.meshInstances;
     }
 
 
@@ -585,9 +603,11 @@ Character.prototype.initialize = function () {
     }
 
     var ccd;
-    (ccd = this.entity.rigidbody.body).setCcdMotionThreshold(this.ccd.motionThreshold);
-    ccd.setCcdSweptSphereRadius(this.ccd.sweptSphereRadius);
-    ccd.setContactProcessingThreshold(this.ccd.contactProcessingThreshold);
+    if (this.ccd.enabled) {
+        (ccd = this.entity.rigidbody.body).setCcdMotionThreshold(this.ccd.motionThreshold);
+        ccd.setCcdSweptSphereRadius(this.ccd.sweptSphereRadius);
+        ccd.setContactProcessingThreshold(this.ccd.contactProcessingThreshold);
+    }
 
     this.prepareAnimComponent();
 
@@ -630,6 +650,19 @@ Character.prototype.initialize = function () {
         //this.entity.collision.off();
     }, this);
 
+
+    /*TRACE ATRIBUTE SCRIPT EVENT*/
+    this.prevtracerOptions = JSON.parse(JSON.stringify(this.tracerOptions));
+    this.on('attr:tracerOptions', function (nuevoValor) {
+        if (nuevoValor.enabled !== this.prevtracerOptions.enabled) {
+
+        }
+
+        this.entity.capsule_collision.render.enabled = nuevoValor.enabled ? nuevoValor.traceplayercapsule : false;
+
+
+        this.prevtracerOptions = JSON.parse(JSON.stringify(this.tracerOptions));
+    }, this);
 
 
 };
@@ -776,11 +809,9 @@ Character.prototype.doMove = async function () {
         }
         this.isMoving = this.isMoving && this.entity.anim.getInteger("turn180") === 0;
 
-        if (this.entity.isonair) {
-            this.useteleport = true;
+
+        if (this.isMoving && !this.canmoveonair && this.entity.isonair) {
             this.isMoving = false;
-        } else {
-            this.useteleport = false;
         }
 
 
@@ -788,6 +819,7 @@ Character.prototype.doMove = async function () {
 
 
         if (this.isMoving) {
+
 
             var newPosition = this.CHAR_CUR_POSITION.clone();
 
@@ -797,11 +829,12 @@ Character.prototype.doMove = async function () {
 
             // Combinar las direcciones para obtener la dirección final del movimiento
             const direction = forwardDirection.add(strafeDirection).normalize();
-            direction.y = 0;
+            if (!this.canmoveonair) direction.y = 0;
 
-            const velocity = direction.clone().scale(this.charSpeed);
+
             if (!this.useteleport) {
                 if (visibleThisFrame) {
+                    const velocity = direction.clone().scale(this.charSpeed);
                     this.entity.rigidbody.linearVelocity = velocity;
                 }
             }
@@ -816,24 +849,29 @@ Character.prototype.doMove = async function () {
             //}
 
 
-            if (visibleThisFrame) {
-                if (this.useteleport) {
-                    this.entity.rigidbody.teleport(newPosition, new pc.Quat().setFromEulerAngles(0, this.currenRotation, 0));
-                } else {
-                    this.entity.rigidbody.teleport(this.entity.getPosition(), new pc.Quat().setFromEulerAngles(0, this.currenRotation, 0));
-                }
-            }
-        }
 
-        if (!this.useteleport && !this.isMoving && !this.inertia) {
-            const velocity = this.entity.rigidbody.linearVelocity;
-            velocity.x = 0;
-            velocity.z = 0;
-            this.entity.rigidbody.linearVelocity = velocity;
+            if (this.useteleport) {
+                this.entity.rigidbody.teleport(newPosition, new pc.Quat().setFromEulerAngles(0, this.currenRotation, 0));
+            } else {
+                this.entity.rigidbody.teleport(this.entity.getPosition(), new pc.Quat().setFromEulerAngles(0, this.currenRotation, 0));
+            }
+
+
+
         }
 
 
         if (visibleThisFrame) {
+
+            if (!this.useteleport && !this.isMoving && !this.inertia) {
+                const velocity = this.entity.rigidbody.linearVelocity;
+                velocity.x = 0;
+                velocity.z = 0;
+                if (this.canmoveonair && !this.isonair) { velocity.y = 0; }
+                this.entity.rigidbody.linearVelocity = velocity;
+            }
+
+
             this.doInteraction(input);
 
 
@@ -1250,7 +1288,7 @@ Character.prototype.doSensors2 = function () {
     } else {
         length = -this.characterRadius;
         // Obtener la posición del pie del jugador (ajusta esto según la altura real del pie)
-        const leftFootPosition = this.bones.leftFoot.getPosition(); // Posición actual de la entidad
+        const leftFootPosition = this.bones.leftFoot ? this.bones.leftFoot.getPosition() : this.entity.getPosition(); // Posición actual de la entidad
         const leftFootRayDirection = leftFootPosition.clone().add(new pc.Vec3(0, length, 0)); // Un metro hacia abajo desde la posición actual
 
         // Realizar el raycast
@@ -1260,7 +1298,7 @@ Character.prototype.doSensors2 = function () {
         }
 
         // Obtener la posición del pie del jugador (ajusta esto según la altura real del pie)
-        const rightFootPosition = this.bones.rightFoot.getPosition(); // Posición actual de la entidad
+        const rightFootPosition = this.bones.rightFoot ? this.bones.rightFoot.getPosition() : leftFootPosition; // Posición actual de la entidad
         const rightFootRayDirection = rightFootPosition.clone().add(new pc.Vec3(0, length, 0)); // Un metro hacia abajo desde la posición actual
 
         // Realizar el raycast
