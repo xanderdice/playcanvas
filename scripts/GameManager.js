@@ -328,28 +328,27 @@ GameManager.attributes.add('ui', {
     type: 'json',
     schema: [
         {
-            name: 'htmlFile',
+            name: 'mainMenuType',
+            type: 'string',
+            enum: [{ 'none': 'none' }, { 'default': 'default' }, { 'custom': 'custom' }],
+            default: "default",
+            description: 'mainMenuType'
+        },
+        {
+            name: 'mainMenuHtmlFile',
             type: 'asset',
             assetType: 'html',
             array: false,
             default: null,
-            description: 'htmlFile'
+            description: 'mainMenuHtmlFile'
         },
         {
-            name: 'cssFiles',
+            name: 'hudHtmlFile',
             type: 'asset',
-            assetType: 'css',
-            array: true,
-            default: [],
-            description: 'Select multiple CSS files.'
-        },
-        {
-            name: 'jsFiles',
-            type: 'asset',
-            assetType: 'script',
-            array: true,
-            default: [],
-            description: 'Select multiple JavaScript files.'
+            assetType: 'html',
+            array: false,
+            default: null,
+            description: 'hudHtmlFile'
         },
         {
             name: 'showMenuOnEnabledPointer',
@@ -363,82 +362,80 @@ GameManager.attributes.add('ui', {
 
 
 
-GameManager.attributes.add('followCamera',
-    {
-        title: "Follow Camera",
-        type: 'json',
-        schema: [
-            {
-                name: 'targetName',
-                type: 'string',
-                default: "targetEntity",
-                title: 'Target Entity Name',
-                description: "Select the entity name around which the camera will orbit. recoment use: 'targetEntity'. "
-            },
-            {
-                name: 'orbitRadius',
-                type: 'number',
-                default: 3,
-                title: 'Orbit Radius'
-            },
-            {
-                name: 'bottomClamp',
-                type: 'number',
-                default: 320,
-                min: 320,
-                max: 340,
-                precision: 0,
-                title: 'bottomClamp',
-                description: "The maximum value in angle degrees for the camera downwards movement."
-            },
-            {
-                name: 'topClamp',
-                type: 'number',
-                default: 70,
-                min: 50,
-                max: 70,
-                precision: 0,
-                title: 'topClamp',
-                description: "The maximum value in angle degrees for the camera upwards movement."
-            },
-            {
-                name: 'smoothFactor',
-                type: 'number',
-                default: 0.2,
-                min: 0.01,
-                max: 1,
-                title: 'Smooth Factor',
-                description: 'Adjusts the smoothness of camera movement (0.1 for more smooth, 1 for immediate response)'
-            },
-            {
-                name: 'autofov',
-                type: 'boolean',
-                default: false,
-                title: 'autofov'
-            },
+GameManager.attributes.add('followCamera', {
+    title: "Follow Camera",
+    type: 'json',
+    schema: [
+        {
+            name: 'targetName',
+            type: 'string',
+            default: "targetEntity",
+            title: 'Target Entity Name',
+            description: "Select the entity name around which the camera will orbit. recoment use: 'targetEntity'. "
+        },
+        {
+            name: 'orbitRadius',
+            type: 'number',
+            default: 3,
+            title: 'Orbit Radius'
+        },
+        {
+            name: 'bottomClamp',
+            type: 'number',
+            default: 320,
+            min: 320,
+            max: 340,
+            precision: 0,
+            title: 'bottomClamp',
+            description: "The maximum value in angle degrees for the camera downwards movement."
+        },
+        {
+            name: 'topClamp',
+            type: 'number',
+            default: 70,
+            min: 50,
+            max: 70,
+            precision: 0,
+            title: 'topClamp',
+            description: "The maximum value in angle degrees for the camera upwards movement."
+        },
+        {
+            name: 'smoothFactor',
+            type: 'number',
+            default: 0.2,
+            min: 0.01,
+            max: 1,
+            title: 'Smooth Factor',
+            description: 'Adjusts the smoothness of camera movement (0.1 for more smooth, 1 for immediate response)'
+        },
+        {
+            name: 'autofov',
+            type: 'boolean',
+            default: false,
+            title: 'autofov'
+        },
 
-        ]
-    });
+    ]
+});
 
 
-GameManager.attributes.add('flyCamera',
-    {
-        title: "Fly Camera",
-        description: "Only works for playerPersonStyle = FlyCamera.",
-        type: 'json',
-        schema: [
-            {
-                name: 'speed',
-                type: 'number',
-                default: 20,
-                title: 'speed',
-                description: 'speed',
-                min: 10,
-                max: 20,
-                precision: 1
-            },
-        ]
-    });
+GameManager.attributes.add('flyCamera', {
+    title: "Fly Camera",
+    description: "Only works for playerPersonStyle = FlyCamera.",
+    type: 'json',
+    schema: [
+        {
+            name: 'speed',
+            type: 'number',
+            default: 20,
+            title: 'speed',
+            description: 'speed',
+            min: 10,
+            max: 20,
+            precision: 1
+        },
+    ]
+});
 
 GameManager.attributes.add("subtitles", {
     title: "subtitles",
@@ -645,63 +642,53 @@ GameManager.prototype.initialize = function () {
     this.app.maxDeltaTime = 0.2;
 
 
+    /* ********************************** */
+    /* UI                                 */
+    /* ********************************** */
     document.body.style.backgroundColor = "#000";
-
-    for (var i = 0; i < this.ui.cssFiles.length; i++) {
-        var cssAsset = this.ui.cssFiles[i]; // Obtener el asset CSS en la posición i
-        var cssId = cssAsset.id + "_" + cssAsset.name;
-
-        if (!document.getElementById(cssId)) {
-            var linkElement = document.createElement("LINK");
-            linkElement.id = cssId;
-            linkElement.rel = "stylesheet";
-            linkElement.type = "text/css";
-            linkElement.href = cssAsset.getFileUrl();
-            document.head.appendChild(linkElement);
-        }
-    }
-
-    for (var i = 0; i < this.ui.jsFiles.length; i++) {
-        var jsAsset = this.ui.jsFiles[i]; // Obtener el asset en la posición i
-        var jsId = jsAsset.id + "_" + jsAsset.name;
-
-        if (!document.getElementById(jsId)) {
-            var script = document.createElement("SCRIPT");
-            script.type = "text/javascript";
-            script.id = jsId;
-            script.onerror = function () {
-                console.error("Error al cargar el script:", script.src);
-            };
-            script.onload = function () {
-                /*console.log("script loaded: ", script.src);*/
-            }
-            script.src = jsAsset.getFileUrl();
-            document.head.appendChild(script);
-        }
-    }
-
     var YTtagScript = document.createElement('script');
     YTtagScript.src = "https://www.youtube.com/iframe_api";
     var firstScriptTag = document.getElementsByTagName('script')[0];
     firstScriptTag.parentNode.insertBefore(YTtagScript, firstScriptTag);
-
-
     GameManager.backgroundMusicYTPlayer = null;
 
 
-
-
+    this.createHudDIV(canvas);
     this.createMenuDIV(canvas);
     this.createSceneLoaderDIV(canvas);
     this.createSubtitleDIV(canvas);
     this.createLoadingDIV(canvas);
 
 
-    GameManager.menuDIV.innerHTML = uiGameHTML();
-    GameManager.createCircularMenu();
+    if (this.ui.mainMenuType === "default") {
+        GameManager.menuDIV.innerHTML = uiGameMainMenuCircularHTML();
+        GameManager.createCircularMenu();
+    }
 
-    if (this.ui.htmlFile) {
-        var htmlUrl = this.ui.htmlFile.getFileUrl(); // Obtener la URL del archivo HTML
+
+    if (this.mainMenuType === "custom") {
+        if (this.ui.mainMenuHtmlFile) {
+            var htmlUrl = this.ui.mainMenuHtmlFile.getFileUrl(); // Obtener la URL del archivo HTML
+
+            // Hacer una petición fetch para obtener el contenido del archivo
+            fetch(htmlUrl)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return response.text();
+                })
+                .then(htmlContent => {
+                    GameManager.menuDIV.innerHTML += htmlContent;
+                })
+                .catch(error => {
+                    console.error('Error fetching HTML:', error);
+                });
+        }
+    }
+
+    if (this.ui.hudHtmlFile) {
+        var htmlUrl = this.ui.hudHtmlFile.getFileUrl(); // Obtener la URL del archivo HTML
 
         // Hacer una petición fetch para obtener el contenido del archivo
         fetch(htmlUrl)
@@ -712,13 +699,14 @@ GameManager.prototype.initialize = function () {
                 return response.text();
             })
             .then(htmlContent => {
-                GameManager.menuDIV.innerHTML += htmlContent;
-                //GameManager.createCircularMenu();
+                GameManager.hudDIV.innerHTML += htmlContent;
             })
             .catch(error => {
-                console.error('Error fetching HTML:', error);
+                console.error('Error fetching HUD HTML:', error);
             });
     }
+
+
 
 
 
@@ -1113,6 +1101,8 @@ GameManager.updateGameManager = async function (dt) {
                     + parseInt("0" + (vram.sb || 0))
                 )
                 / 1048576) + "mb");
+
+        Trace("triangles", GameManager._app.stats.frame.triangles);
     }
 
     GameManager.__menuchecktime += dt;
@@ -1208,41 +1198,6 @@ GameManager.showhideMousePointer = function (action) {
 
 
 
-
-
-
-
-
-
-    /* ************************************************ */
-
-    var result = false;
-    try {
-        if (action === "show") {
-            if (pc.Mouse.isPointerLocked()) {
-                try {
-                    GameManager._app.mouse.disablePointerLock();
-                    result = true;
-                    (async function () { await sleepPointerLock(500); })();
-                } catch { }
-            } else {
-                result = true;
-            }
-        }
-        if (action === "hide") {
-            if (!pc.Mouse.isPointerLocked()) {
-                try {
-                    GameManager._app.mouse.enablePointerLock();
-                    result = true;
-                    (async function () { await sleepPointerLock(500); })();
-                } catch { }
-            } else {
-                result = true;
-            }
-        }
-    } catch { }
-
-    return result;
 }
 
 
@@ -1261,6 +1216,50 @@ GameManager.prototype.createLoadingDIV = function (canvas) {
         canvas.parentElement.appendChild(GameManager.loadingDIV);
     }
 }
+
+GameManager.prototype.createHudDIV = function (canvas) {
+    GameManager.hudDIV = document.getElementById("hudDIV");
+    if (!GameManager.hudDIV) {
+        GameManager.hudDIV = document.createElement("DIV");
+        GameManager.hudDIV.id = "hudDIV";
+        GameManager.hudDIV.style.position = "absolute";
+        GameManager.hudDIV.style.left = "0px";
+        GameManager.hudDIV.style.top = "0px";
+        GameManager.hudDIV.style.right = "0px";
+        GameManager.hudDIV.style.bottom = "0px";
+        GameManager.hudDIV.style.margin = "0px";
+        GameManager.hudDIV.style.padding = "0px";
+        GameManager.hudDIV.style.backgroundColor = "transparent";
+        canvas.parentElement.appendChild(GameManager.hudDIV);
+
+        // Función para ajustar el div al canvas
+        function adjustOverlay() {
+            // Obtener la posición y dimensiones del canvas
+            const rect = canvas.getBoundingClientRect();
+
+            // Ajustar el div para que coincida con el canvas
+            GameManager.hudDIV.style.width = rect.width + 'px';
+            GameManager.hudDIV.style.height = rect.height + 'px';
+            GameManager.hudDIV.style.top = (rect.top + window.scrollY) + 'px';
+            GameManager.hudDIV.style.left = (rect.left + window.scrollX) + 'px';
+        }
+
+        // Solución para manejar múltiples eventos resize
+        function addResizeHandler(handler) {
+            const oldHandler = window.onresize;
+            window.onresize = function (e) {
+                if (oldHandler) oldHandler(e);
+                handler(e);
+            };
+        }
+        // Agregar manejador de resize
+        addResizeHandler(adjustOverlay);
+        // Ajustar inicialmente
+        adjustOverlay();
+    }
+
+}
+
 
 GameManager.prototype.createMenuDIV = function (canvas) {
     GameManager.menuDIV = document.getElementById("mainmenuDIV");
@@ -1511,6 +1510,7 @@ GameManager.applyCameraPostProcessing = function (options) {
         var cameraFrame = new pc.CameraFrame(app, GameManager.currentCamera);
 
         app.scene.skyboxHighlightMultiplier = 100;
+        app.scene.lighting.physicalUnits = false;
         //app.scene.skyboxIntensity = 0.1;
         cameraFrame.rendering.samples = 4;
         cameraFrame.rendering.toneMapping = pc.TONEMAP_LINEAR;
@@ -1552,6 +1552,7 @@ GameManager.applyCameraPostProcessing = function (options) {
         https://o-l-l-i.github.io/lut-maker/
         */
 
+        //var colorLUT = app.assets.find("lut-blue.png");
         var colorLUT = app.assets.find("luck.cube-s32.png");
         cameraFrame.colorLUT.texture = colorLUT.resource;
         cameraFrame.colorLUT.intensity = options.lut ? 1.0 : 0.0;
@@ -1802,6 +1803,18 @@ GameManager.showSubtitle = function (text) {
     });
 
 
+}
+
+/********************************************** */
+/*       H U D                                  */
+/********************************************** */
+GameManager.setHudParameter = async function (parameter, value) {
+    const el = GameManager.hudDIV.querySelector("#" + parameter);
+    if (el) {
+        requestAnimationFrame(function () {
+            el.innerText = value;
+        });
+    }
 }
 
 /********************************************** */
@@ -2765,7 +2778,7 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
 }));
 
 
-function uiGameHTML() {
+function uiGameMainMenuCircularHTML() {
     return `
 
 <style type="text/css">
