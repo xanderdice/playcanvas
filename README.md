@@ -19,7 +19,9 @@ playcanvas scripts textures and more
 
 # IA
 🔗 Free Hunyuan 3.0 - https://3d.hunyuan.tencent.com/
+
 🔗 Free Modddif - https://app.modddif.com/
+
 TUTORIAL: https://www.youtube.com/watch?v=OgpdBFq14uc&list=LL
 
 
