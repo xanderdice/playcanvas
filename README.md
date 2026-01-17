@@ -17,6 +17,12 @@ playcanvas scripts textures and more
 
 * https://cgdownload.ru/catalog/5216-ascent-combat-framework-acf-c-action-rpg-creator/
 
+# IA
+🔗 Free Hunyuan 3.0 - https://3d.hunyuan.tencent.com/
+🔗 Free Modddif - https://app.modddif.com/
+TUTORIAL: https://www.youtube.com/watch?v=OgpdBFq14uc&list=LL
+
+
 //resolutions
 * 4320p (8K): 7680x4320
 * 2160p (4K): 3840x2160
