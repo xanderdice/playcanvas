@@ -22,6 +22,8 @@ playcanvas scripts textures and more
 
 🔗 Free Modddif - https://app.modddif.com/
 
+https://imgupscaler.ai/
+
 TUTORIAL: https://www.youtube.com/watch?v=OgpdBFq14uc&list=LL
 
 
