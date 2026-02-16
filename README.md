@@ -17,6 +17,11 @@ playcanvas scripts textures and more
 
 * https://cgdownload.ru/catalog/5216-ascent-combat-framework-acf-c-action-rpg-creator/
 
+
+# example proyect 
+https://elanrastudios.com/games/instant-worlds-elysium/?uranusRoomId=UnIZjbWN1
+
+
 # IA
 🔗 Free Hunyuan 3.0 - https://3d.hunyuan.tencent.com/
 
