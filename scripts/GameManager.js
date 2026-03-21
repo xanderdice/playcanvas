@@ -1761,7 +1761,7 @@ GameManager.applyCameraPostProcessing = function (options) {
 
         //var colorLUT = app.assets.find("lut-blue.png");
         var colorLUT = app.assets.find("luck.cube-s32.png");
-        cameraFrame.colorLUT.texture = colorLUT.resource;
+        cameraFrame.colorLUT.texture = colorLUT?.resource;
         cameraFrame.colorLUT.intensity = options.lut ? 1.0 : 0.0;
 
 
