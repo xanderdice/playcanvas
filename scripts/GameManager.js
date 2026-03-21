@@ -277,6 +277,28 @@ GameManager.attributes.add('cameraPostProcessing', {
 });
 
 
+GameManager.attributes.add('characterController', {
+    title: "characterController",
+    description: "characterController",
+    type: 'json',
+    schema: [
+        {
+            name: 'enabled',
+            type: 'boolean',
+            default: true,
+            title: 'enabled',
+            description: 'enables characterController'
+        },
+
+        /*{
+            name: 'bloom',
+            type: 'boolean',
+            default: true,
+            title: 'bloom',
+            description: 'bloom'
+        }*/
+    ]
+});
 
 
 GameManager.attributes.add('scenesConfig', {
@@ -556,7 +578,7 @@ GameManager.input = {
     dt: 0,
     mode: 0
 };
-
+GameManager.sceneCharacters = [];
 
 
 function onYouTubeIframeAPIReady() {
@@ -604,7 +626,7 @@ GameManager.prototype.initialize = function () {
     GameManager.flyCamera.ey = 0;
 
 
-
+    GameManager.enableCharacterController = this.characterController.enabled;
     GameManager.enableSubtitles = this.subtitles.enabled;
 
     var canvas = this.app.graphicsDevice.canvas;
@@ -688,7 +710,7 @@ GameManager.prototype.initialize = function () {
     }
 
     if (this.ui.hudHtmlFile) {
-        var htmlUrl = this.ui.hudHtmlFile.getFileUrl(); // Obtener la URL del archivo HTML
+        const htmlUrl = this.ui.hudHtmlFile.getFileUrl(); // Obtener la URL del archivo HTML
 
         // Hacer una petición fetch para obtener el contenido del archivo
         fetch(htmlUrl)
@@ -778,7 +800,21 @@ GameManager.prototype.initialize = function () {
     }, this);
 
 
-
+    ///VARIABLES PARA EL MOVE CONTROLLER
+    this._movementIndex = 0;        // índice circular para los NPCs
+    this._avgMsPerChar = 0.02;      // estimación EWMA (ms) por entidad (inicial)
+    this._ewmaAlpha = 0.12;         // sensibilidad EWMA
+    this._globalFrame = 0;          // contador global de frames
+    this._instancerCells = null;    // cache de instancer cells
+    this._players = null;           // cache de references a players
+    this._lastCharactersCount = -1; // para detectar cambios en la lista
+    // parámetros ajustables
+    this.targetBudgetMs = 8;        // ms objetivo para NPCs por frame
+    this.minBudgetMs = 2;
+    this.maxBudgetMs = 40;
+    this.minPercentPerFrame = 0.005; // minimo % del total a procesar por frame (0.5%)
+    // telemetría / tuning (opcional)
+    this._debug = false;
 
 };
 
@@ -1047,15 +1083,12 @@ GameManager.sleep = function (ms) {
 }
 
 
-
-
+/* ----------------------------------------------------------------------------------------------- */
+/********************************************** */
+/*       U P D A T E                            */
+/********************************************** */
 // update code called every frame
 GameManager.updateGameManager = async function (dt) {
-    GameManager._app.dt = dt;
-    GameManager.input.dt = dt;
-    Timer.evaluateTimers(dt);
-
-
     if (GameManager.checkForPlayerAndTargetEntities) {
         GameManager._app.scene.root.find(function (entity) {
             if (entity.name.trim().toLowerCase() === (GameManager.followCamera.targetName || "").trim().toLowerCase()) {
@@ -1069,12 +1102,27 @@ GameManager.updateGameManager = async function (dt) {
         if (!GameManager.followCamera.target) {
             GameManager.followCamera.target = GameManager.playerEntity;
         }
+        GameManager.sceneCharacters = this.app.scene.root.children.filter(function (char) {
+            return (char.isCharacter || char.tags.has("is-character"))
+        });
 
 
         GameManager.checkForPlayerAndTargetEntities = false;
     }
 
+    GameManager._app.dt = dt;
+    GameManager.input.dt = dt;
+    Timer.evaluateTimers(dt);
+
     GameManager.readKeyboardInput()
+
+
+    ///MOVE CHARACTERS
+    if (GameManager.enableCharacterController) {
+        await this.updateCharactersMovement(dt);
+    }
+    ///MOVE CHARACTERS
+
 
     GameManager.sleep(TracerScript.trgamesleep);
     GameManager._app.timeScale = TracerScript.trgametimescale;
@@ -1136,6 +1184,165 @@ GameManager.updateGameManager = async function (dt) {
     GameManager.__gameMouseMoved = false;
 };
 
+
+// Helper: reconstruye cache de players si cambió la cantidad de entidades
+GameManager.prototype._rebuildPlayerCacheIfNeeded = function (characters) {
+    const total = characters.length;
+    if (this._lastCharactersCount === total && Array.isArray(this._players)) return;
+    // rebuild
+    this._players = [];
+    for (let i = 0; i < total; i++) {
+        const c = characters[i];
+        if (!c) continue;
+        if (c.isPlayer) this._players.push(c);
+    }
+    this._lastCharactersCount = total;
+};
+
+
+
+
+// Public API: llama cada frame (dt en segundos)
+GameManager.prototype.updateCharactersMovement = async function (dt) {
+
+    const characters = GameManager.sceneCharacters;
+    if (!characters || characters.length === 0) {
+        this._globalFrame++;
+        return;
+    }
+
+    const total = characters.length;
+
+    if (this._movementIndex === undefined) this._movementIndex = 0;
+    if (this._avgMsPerChar === undefined) this._avgMsPerChar = 0.02;
+    if (this._ewmaAlpha === undefined) this._ewmaAlpha = 0.12;
+    if (this._globalFrame === undefined) this._globalFrame = 0;
+
+    const instancerCells = this._instancerCells ||
+        (this._instancerCells = GameManager._app.scene.root.uranusInstancerCells || null);
+
+    let someoneMoved = false;
+
+    // =========================================================
+    // 1️⃣ SIEMPRE mover players primero
+    // =========================================================
+    for (let i = 0; i < total; i++) {
+
+        const character = characters[i];
+        if (!character || !character.enabled) continue;
+
+        if (!character.tags || !character.tags.has("is-player")) continue;
+
+        const script = character.script && character.script.character;
+        if (!script) continue;
+
+        character.input = GameManager.input;
+
+        if (script.doMove) {
+            script.doMove();
+            someoneMoved = true;
+        }
+    }
+
+    // =========================================================
+    // 2️⃣ Calcular presupuesto dinámico
+    // =========================================================
+
+    const frameMs = dt * 1000;
+
+    let targetBudgetMs = 8 + (frameMs - 16) * 0.5;
+    if (targetBudgetMs < 2) targetBudgetMs = 2;
+    if (targetBudgetMs > 40) targetBudgetMs = 40;
+
+    const estCost = Math.max(0.0001, this._avgMsPerChar);
+    let batchSize = Math.floor(targetBudgetMs / estCost);
+
+    if (batchSize < 1) batchSize = 1;
+
+    const minPercent = Math.max(1, Math.floor(total * 0.005));
+    if (batchSize < minPercent) batchSize = minPercent;
+
+    // =========================================================
+    // 3️⃣ Procesar NO-PLAYERS en modo circular
+    // =========================================================
+
+    const startTime = performance.now();
+
+    let processed = 0;
+    let index = this._movementIndex;
+
+    if (index >= total) index = 0;
+
+    let attempts = 0;
+
+    while (processed < batchSize && attempts < total) {
+
+        attempts++;
+
+        const character = characters[index];
+
+        index++;
+        if (index >= total) index = 0;
+
+        if (!character || !character.enabled) continue;
+        if (character.tags && character.tags.has("is-player")) continue;
+
+        const script = character.script && character.script.character;
+        if (!script) continue;
+
+        script.input = script.input || {};
+        script.input.dt = GameManager.input.dt;
+
+        // AI distribuida
+        const aiFreq = character.aiFrequency || 10;
+
+        if (aiFreq > 0 && ((this._globalFrame + index) % aiFreq) === 0) {
+            if (script.doAI) script.doAI();
+        }
+
+        if (script.doMove) {
+            script.doMove();
+            someoneMoved = true;
+        }
+
+        processed++;
+    }
+
+    this._movementIndex = index;
+
+    // =========================================================
+    // 4️⃣ Notificar instancer solo una vez
+    // =========================================================
+    if (someoneMoved && instancerCells) {
+        for (let i = 0; i < instancerCells.length; i++) {
+            instancerCells[i].entityMoved = true;
+        }
+    }
+
+    // =========================================================
+    // 5️⃣ Medición real para autoajuste
+    // =========================================================
+
+    const elapsed = performance.now() - startTime;
+
+    const realCost = processed > 0 ? elapsed / processed : elapsed;
+
+    this._avgMsPerChar =
+        (this._ewmaAlpha * realCost) +
+        ((1 - this._ewmaAlpha) * this._avgMsPerChar);
+
+    this._globalFrame++;
+};
+
+
+
+
+
+
+
+
+
+/**************************************************************************************/
 /**************************************************************************************/
 
 GameManager.createAudioListener = function () {
@@ -1816,6 +2023,21 @@ GameManager.setHudParameter = async function (parameter, value) {
         });
     }
 }
+
+
+/********************************************** */
+/*       Y A W                                  */
+/********************************************** */
+// Función para calcular la rotación en grados dado un quaternion de rotación
+GameManager.prototype.getYaw = function (rotation) {
+    // Calcular el ángulo en radianes del eje Y (Yaw) de la rotación
+    var angleRadians = Math.atan2(2 * (rotation.w * rotation.y + rotation.x * rotation.z), 1 - 2 * (rotation.y * rotation.y + rotation.z * rotation.z));
+    // Convertir el ángulo de radianes a grados
+    var angleDegrees = angleRadians * (180 / Math.PI);
+    return angleDegrees;
+}
+
+
 
 /********************************************** */
 /*       T R A C E R                           */
