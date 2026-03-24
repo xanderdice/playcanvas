@@ -628,6 +628,11 @@ GameManager.prototype.initialize = function () {
     GameManager.flyCamera.moved = false;
     GameManager.flyCamera.ex = 0;
     GameManager.flyCamera.ey = 0;
+    GameManager.cameraControlMode = "orbit"; // "orbit" | "freeLook"
+    GameManager.pointMoveLook = {
+        pitch: 0,
+        yaw: 0
+    };
 
 
     GameManager.enableCharacterController = this.characterController.enabled;
@@ -922,11 +927,9 @@ GameManager._onMouseMove = function (event) {
     if (!GameManager.__gameMouse_busy) {
         GameManager.__gameMouse_busy = true;
 
-
-        // Actualiza las variables de posición anterior para el próximo cálculo
         const x = event.x, y = event.y;
-        var deltaX = event.clientX ? event.clientX - GameManager.input.previousX : event.dx,
-            deltaY = event.clientY ? event.clientY - GameManager.input.previousY : event.dy;
+        let deltaX = event.clientX ? event.clientX - GameManager.input.previousX : event.dx;
+        let deltaY = event.clientY ? event.clientY - GameManager.input.previousY : event.dy;
 
         GameManager.input.mouseX = x;
         GameManager.input.mouseY = y;
@@ -935,34 +938,24 @@ GameManager._onMouseMove = function (event) {
 
         if (GameManager.input.lookLastDeltaX === deltaX) deltaX = 0;
         if (GameManager.input.lookLastDeltaY === deltaY) deltaY = 0;
-        //if (GameManager.currentCamera) {
-        //    GameManager.onMouseMoveFollowCamera();
-        //}
 
-        switch (GameManager.mouseState) {
-
-            case "captured":
-                if (GameManager.currentCamera) {
-                    GameManager.onMouseMoveFollowCamera();
-                }
-                break;
-            case "free":
-            case "ui":
-            case "disabled":
-            default:
-                break;
+        if (GameManager.mouseState === "captured") {
+            if (GameManager.input.cameratype === "ThirdPersonPointMove" && GameManager.cameraControlMode === "freeLook") {
+                GameManager.onMouseMoveFreeLookCamera();
+            } else if (GameManager.currentCamera) {
+                GameManager.onMouseMoveFollowCamera();
+            }
         }
 
         GameManager.input.lookLastDeltaX = deltaX;
         GameManager.input.lookLastDeltaY = deltaY;
-
         GameManager.input.previousX = event.clientX;
         GameManager.input.previousY = event.clientY;
 
         GameManager.__gameMouseMoved = true;
         GameManager.__gameMouse_busy = false;
     }
-}
+};
 
 GameManager.updateMouseState = function () {
 
@@ -1040,6 +1033,7 @@ GameManager._onPointerLockChange = function () {
     // Si el lock volvió y el menú está abierto, no hacemos nada aquí.
 };
 
+
 GameManager.getDesiredMouseState = function () {
     if (GameManager._app && GameManager._app.isMenuMode) {
         return "ui";
@@ -1058,6 +1052,7 @@ GameManager.getDesiredMouseState = function () {
             return "free";
     }
 };
+
 
 GameManager.applyMousePolicy = function () {
     GameManager.setMouseState(GameManager.getDesiredMouseState());
@@ -1084,6 +1079,15 @@ GameManager.onMouseMoveFollowCamera = function () {
     }
 }
 
+
+GameManager.onMouseMoveFreeLookCamera = function () {
+    GameManager.pointMoveLook.yaw -= (GameManager.input.mouseDx * GameManager.input.mouseSensitivity) / 60;
+    GameManager.pointMoveLook.pitch -= (GameManager.input.mouseDy * GameManager.input.mouseSensitivity) / 60;
+
+    GameManager.pointMoveLook.pitch = pc.math.clamp(GameManager.pointMoveLook.pitch, -90, 90);
+};
+
+
 GameManager.getMouseWorldPoint = function () {
 
     if (!GameManager.currentCamera) return null;
@@ -1106,8 +1110,19 @@ GameManager.getMouseWorldPoint = function () {
 };
 
 
+
 GameManager.updateCameraOrientation = function () {
     if (GameManager.mouseState !== "captured") return;
+    if (!GameManager.currentCamera) return;
+
+    if (GameManager.input.cameratype === "ThirdPersonPointMove" && GameManager.cameraControlMode === "freeLook") {
+        GameManager.currentCamera.entity.setEulerAngles(
+            GameManager.pointMoveLook.pitch,
+            GameManager.pointMoveLook.yaw,
+            0
+        );
+        return;
+    }
 
     if (GameManager.followCamera && GameManager.followCamera.eulers) {
         GameManager.currentCamera.entity.setEulerAngles(new pc.Vec3(
@@ -1121,41 +1136,39 @@ GameManager.updateCameraOrientation = function () {
 
 
 GameManager.updateCameraPosition = function (dt) {
-    /*dt = this.app.dt;*/
-    //if (this.playerPersonStyle === "FlyCamera") {
-    if (GameManager.input.cameratype === "FlyCamera") {
+    if (GameManager.input.cameratype === "ThirdPersonPointMove" && GameManager.cameraControlMode === "freeLook") {
+        const cam = GameManager.currentCamera.entity;
+        const speed = GameManager.flyCamera.speed || 20;
 
-        if (this.input.x < 0) {
-            this.camera.translateLocal(-this.flyCamera.speed * dt, 0, 0);
-        }
-        if (this.input.x > 0) {
-            this.camera.translateLocal(this.flyCamera.speed * dt, 0, 0);
-        }
-        if (this.input.z < 0) {
-            this.camera.translateLocal(0, 0, this.flyCamera.speed * dt);
-        }
-        if (this.input.z > 0) {
-            this.camera.translateLocal(0, 0, -this.flyCamera.speed * dt);
-        }
+        if (GameManager.input.z > 0) cam.translateLocal(0, 0, -speed * dt);
+        if (GameManager.input.z < 0) cam.translateLocal(0, 0, speed * dt);
+        if (GameManager.input.x > 0) cam.translateLocal(speed * dt, 0, 0);
+        if (GameManager.input.x < 0) cam.translateLocal(-speed * dt, 0, 0);
+
+        return;
+    }
+
+    if (GameManager.input.cameratype === "FlyCamera") {
+        if (this.input.x < 0) this.camera.translateLocal(-this.flyCamera.speed * dt, 0, 0);
+        if (this.input.x > 0) this.camera.translateLocal(this.flyCamera.speed * dt, 0, 0);
+        if (this.input.z < 0) this.camera.translateLocal(0, 0, this.flyCamera.speed * dt);
+        if (this.input.z > 0) this.camera.translateLocal(0, 0, -this.flyCamera.speed * dt);
         return;
     }
 
     if (!GameManager.followCamera.target) return;
-
     if (!GameManager.followCamera.smoothedPosition) return;
 
     var targetPosition = GameManager.followCamera.target.getPosition();
 
-    //if (this.playerPersonStyle === "FirstPerson") {
     if (GameManager.input.cameratype === "FirstPerson") {
         GameManager.currentCamera.entity.setPosition(targetPosition);
         return;
     }
 
-
+    // órbita normal de tercera persona
     var cameraPosition = targetPosition.clone().add(GameManager.currentCamera.entity.forward.scale(-GameManager.followCamera.orbitRadius));
     cameraPosition.y = pc.math.clamp(cameraPosition.y, 0.5, Number.POSITIVE_INFINITY);
-
 
     const hit = GameManager._app.systems.rigidbody.raycastFirst(targetPosition, cameraPosition);
 
@@ -1164,12 +1177,9 @@ GameManager.updateCameraPosition = function (dt) {
         cameraPosition = hit.point.clone().add(direction.scale(0.1));
     }
 
-
-
-
-    const deltaTimeAdjustment = dt / (1.0 / 60); // 60 es la tasa de frames objetivo (puedes ajustarla según tu necesidad)
+    const deltaTimeAdjustment = dt / (1.0 / 60);
     const smoothFactor = GameManager.followCamera.smoothFactor * deltaTimeAdjustment;
-    //const smoothFactor = 1;
+
     if (smoothFactor > 0 && smoothFactor < 1) {
         GameManager.followCamera.smoothedPosition.lerp(GameManager.followCamera.smoothedPosition, cameraPosition, smoothFactor);
     } else {
@@ -1180,18 +1190,6 @@ GameManager.updateCameraPosition = function (dt) {
 
     targetPosition = GameManager.followCamera.target.getPosition();
     GameManager.currentCamera.entity.lookAt(targetPosition);
-
-
-    var distanceToTarget = targetPosition.distance(GameManager.currentCamera.entity.getPosition());
-
-    if (GameManager.followCamera.autofov) {
-        var fov = GameManager.followCamera.initialFov + (GameManager.followCamera.initialFov * (1 - Math.min(distanceToTarget, GameManager.followCamera.orbitRadius) / GameManager.followCamera.orbitRadius));
-        // Limitar el FOV a un rango válido
-        fov = pc.math.clamp(fov, GameManager.followCamera.initialFov, 90);
-        // Aplicar el FOV a la cámara
-        GameManager.currentCamera.fov = fov;
-    }
-
 };
 
 
@@ -1219,13 +1217,15 @@ GameManager._onMouseDownUp = function (event) {
         return;
     }
 
-    // Unreal-style look en ThirdPersonPointMove
+    // Unreal-style free look solo en ThirdPersonPointMove
     if (GameManager.input.cameratype === "ThirdPersonPointMove") {
         GameManager.__rightMouseLook = GameManager.input.mouseSecondaryButton;
 
         if (GameManager.__rightMouseLook) {
+            GameManager.cameraControlMode = "freeLook";
             GameManager.setMouseState("captured");
         } else if (!GameManager._app.isMenuMode) {
+            GameManager.cameraControlMode = "orbit";
             GameManager.setMouseState("free");
         }
     }
