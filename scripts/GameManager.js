@@ -576,7 +576,8 @@ GameManager.input = {
     lookLastDeltaX: 0,
     lookLastDeltaY: 0,
     dt: 0,
-    mode: 0
+    mode: 0,
+    targetPoint: pc.Vec3.ZERO
 };
 GameManager.sceneCharacters = [];
 
@@ -604,8 +605,10 @@ GameManager.prototype.initialize = function () {
     GameManager._app.isMenuMode = false;
 
 
+
     GameManager.cameraOptions = this.cameraOptions;
     GameManager.currentCamera = GameManager.calculateCameraScene();
+    GameManager.initCameraPos = GameManager.currentCamera ? GameManager.currentCamera.entity.getPosition().clone() : new pc.Vec3.ZERO;
     GameManager.cameraPostProcessing = this.cameraPostProcessing;
     GameManager.applyCameraPostProcessing(this.cameraPostProcessing);
     GameManager.input.camera = GameManager.currentCamera;
@@ -613,11 +616,11 @@ GameManager.prototype.initialize = function () {
     GameManager.followCamera = this.followCamera;
     GameManager.followCamera.initialFov = GameManager.currentCamera ? GameManager.currentCamera.fov : 45;
     GameManager.followCamera.eulers = new pc.Vec3();
+    GameManager.followCamera.pointMoveOffset = new pc.Vec3();
     GameManager.followCamera.smoothedPosition = new pc.Vec3();
     GameManager.followCamera.target = null;
 
     GameManager.playerEntity = null;
-    GameManager.playerTargetPoint = null;
     GameManager.playerEntityScript = null;
     GameManager.checkForPlayerAndTargetEntities = true;
 
@@ -628,17 +631,30 @@ GameManager.prototype.initialize = function () {
     GameManager.flyCamera.moved = false;
     GameManager.flyCamera.ex = 0;
     GameManager.flyCamera.ey = 0;
-    GameManager.cameraControlMode = "orbit"; // "orbit" | "freeLook"
+    GameManager.cameraControlMode = "orbit"; // "orbit" | "freeLook" | "returnToOrbit"
     GameManager.pointMoveLook = {
         pitch: 0,
         yaw: 0
     };
-
+    GameManager.pointMoveReturn = {
+        active: false,
+        time: 0,
+        duration: 0.28
+    };
 
     GameManager.enableCharacterController = this.characterController.enabled;
     GameManager.enableSubtitles = this.subtitles.enabled;
 
+    document.addEventListener('contextmenu', function (e) {
+        e.preventDefault();
+        return false;
+    });
     var canvas = this.app.graphicsDevice.canvas;
+    canvas.addEventListener('contextmenu', function (e) {
+        e.preventDefault();
+        return false;
+    });
+    canvas.setAttribute('tabindex', '0');
     canvas.focus();
 
     canvas.requestPointerLock = canvas.requestPointerLock ||
@@ -798,8 +814,8 @@ GameManager.prototype.initialize = function () {
         GameManager.unbindInputs();
     }, this);
 
-    canvas.setAttribute('tabindex', '0');
-    canvas.focus();
+
+
 
 
 
@@ -812,7 +828,7 @@ GameManager.prototype.initialize = function () {
     }, this);
 
 
-    ///VARIABLES PARA EL MOVE CONTROLLER
+    ///VARIABLES PARA EL MOVE CONTROLLER DE CHARACTERES
     this._movementIndex = 0;        // índice circular para los NPCs
     this._avgMsPerChar = 0.02;      // estimación EWMA (ms) por entidad (inicial)
     this._ewmaAlpha = 0.12;         // sensibilidad EWMA
@@ -927,12 +943,27 @@ GameManager._onMouseMove = function (event) {
     if (!GameManager.__gameMouse_busy) {
         GameManager.__gameMouse_busy = true;
 
-        const x = event.x, y = event.y;
-        let deltaX = event.clientX ? event.clientX - GameManager.input.previousX : event.dx;
-        let deltaY = event.clientY ? event.clientY - GameManager.input.previousY : event.dy;
+        const locked = pc.Mouse.isPointerLocked();
+        const hasClientCoords =
+            typeof event.clientX === "number" &&
+            typeof event.clientY === "number";
 
-        GameManager.input.mouseX = x;
-        GameManager.input.mouseY = y;
+        let deltaX = locked
+            ? (event.dx || 0)
+            : (hasClientCoords ? (event.clientX - GameManager.input.previousX) : (event.dx || 0));
+
+        let deltaY = locked
+            ? (event.dy || 0)
+            : (hasClientCoords ? (event.clientY - GameManager.input.previousY) : (event.dy || 0));
+
+        if (GameManager.__ignoreNextMouseDelta) {
+            deltaX = 0;
+            deltaY = 0;
+            GameManager.__ignoreNextMouseDelta = false;
+        }
+
+        GameManager.input.mouseX = event.x;
+        GameManager.input.mouseY = event.y;
         GameManager.input.mouseDx = deltaX;
         GameManager.input.mouseDy = deltaY;
 
@@ -949,43 +980,39 @@ GameManager._onMouseMove = function (event) {
 
         GameManager.input.lookLastDeltaX = deltaX;
         GameManager.input.lookLastDeltaY = deltaY;
-        GameManager.input.previousX = event.clientX;
-        GameManager.input.previousY = event.clientY;
+        GameManager.input.previousX = hasClientCoords ? event.clientX : GameManager.input.previousX;
+        GameManager.input.previousY = hasClientCoords ? event.clientY : GameManager.input.previousY;
 
         GameManager.__gameMouseMoved = true;
         GameManager.__gameMouse_busy = false;
     }
 };
 
-GameManager.updateMouseState = function () {
 
-    // PRIORIDAD TOTAL: menú
+
+GameManager.updateMouseState = function () {
     if (GameManager._app.isMenuMode) {
         GameManager.setMouseState("ui");
         return;
     }
 
     switch (GameManager.input.cameratype) {
-
         case "FirstPerson":
-            GameManager.setMouseState("captured");
-            break;
-
         case "FlyCamera":
+        case "ThirdPerson":
             GameManager.setMouseState("captured");
             break;
 
         case "ThirdPersonPointMove":
-            GameManager.setMouseState("free");
+            GameManager.setMouseState(GameManager.__rightMouseLook ? "captured" : "free");
             break;
 
         default:
             GameManager.setMouseState("free");
             break;
     }
-
-
 };
+
 
 GameManager.setMouseState = function (state) {
 
@@ -1058,6 +1085,29 @@ GameManager.applyMousePolicy = function () {
     GameManager.setMouseState(GameManager.getDesiredMouseState());
 };
 
+/* HELPERS */
+GameManager._lerpAngle = function (a, b, t) {
+    t = pc.math.clamp(t, 0, 1);
+    const delta = ((((b - a) % 360) + 540) % 360) - 180;
+    return a + delta * t;
+};
+
+GameManager._angleDistance = function (a, b) {
+    return Math.abs(((((b - a) % 360) + 540) % 360) - 180);
+};
+
+GameManager._getLookAtAngles = function (from, to) {
+    const dir = to.clone().sub(from);
+    const len = dir.length();
+    if (!len) return { pitch: 0, yaw: 0 };
+
+    dir.scale(1 / len);
+
+    const yaw = Math.atan2(dir.x, dir.z) * 180 / Math.PI;
+    const pitch = -Math.atan2(dir.y, Math.sqrt(dir.x * dir.x + dir.z * dir.z)) * 180 / Math.PI;
+
+    return { pitch: pitch, yaw: yaw };
+};
 
 
 GameManager.onMouseMoveFollowCamera = function () {
@@ -1112,17 +1162,53 @@ GameManager.getMouseWorldPoint = function () {
 
 
 GameManager.updateCameraOrientation = function () {
-    if (GameManager.mouseState !== "captured") return;
     if (!GameManager.currentCamera) return;
+    if (!GameManager.followCamera || !GameManager.followCamera.target) return;
 
-    if (GameManager.input.cameratype === "ThirdPersonPointMove" && GameManager.cameraControlMode === "freeLook") {
-        GameManager.currentCamera.entity.setEulerAngles(
-            GameManager.pointMoveLook.pitch,
-            GameManager.pointMoveLook.yaw,
-            0
-        );
+    const cam = GameManager.currentCamera.entity;
+    const targetPosition = GameManager.followCamera.target.getPosition();
+
+    if (GameManager.input.cameratype === "ThirdPersonPointMove") {
+        if (GameManager.cameraControlMode === "freeLook") {
+            cam.setEulerAngles(
+                GameManager.pointMoveLook.pitch,
+                GameManager.pointMoveLook.yaw,
+                0
+            );
+            return;
+        }
+
+        if (GameManager.cameraControlMode === "returnToOrbit") {
+            const currentPosition = cam.getPosition();
+            const desired = GameManager._getLookAtAngles(currentPosition, targetPosition);
+
+            const t = Math.min(1, GameManager.input.dt * 8);
+
+            GameManager.pointMoveLook.pitch = GameManager._lerpAngle(GameManager.pointMoveLook.pitch, desired.pitch, t);
+            GameManager.pointMoveLook.yaw = GameManager._lerpAngle(GameManager.pointMoveLook.yaw, desired.yaw, t);
+
+            cam.setEulerAngles(
+                GameManager.pointMoveLook.pitch,
+                GameManager.pointMoveLook.yaw,
+                0
+            );
+
+            const donePitch = GameManager._angleDistance(GameManager.pointMoveLook.pitch, desired.pitch) < 0.5;
+            const doneYaw = GameManager._angleDistance(GameManager.pointMoveLook.yaw, desired.yaw) < 0.5;
+
+            if (donePitch && doneYaw) {
+                GameManager.cameraControlMode = "orbit";
+                GameManager.pointMoveReturn.active = false;
+            }
+
+            return;
+        }
+
+        cam.lookAt(targetPosition);
         return;
     }
+
+    if (GameManager.mouseState !== "captured") return;
 
     if (GameManager.followCamera && GameManager.followCamera.eulers) {
         GameManager.currentCamera.entity.setEulerAngles(new pc.Vec3(
@@ -1134,25 +1220,48 @@ GameManager.updateCameraOrientation = function () {
 };
 
 
-
 GameManager.updateCameraPosition = function (dt) {
-    if (GameManager.input.cameratype === "ThirdPersonPointMove" && GameManager.cameraControlMode === "freeLook") {
+    const speed = GameManager.flyCamera.speed || 20;
+    if (GameManager.input.cameratype === "ThirdPersonPointMove") {
         const cam = GameManager.currentCamera.entity;
-        const speed = GameManager.flyCamera.speed || 20;
 
-        if (GameManager.input.z > 0) cam.translateLocal(0, 0, -speed * dt);
-        if (GameManager.input.z < 0) cam.translateLocal(0, 0, speed * dt);
-        if (GameManager.input.x > 0) cam.translateLocal(speed * dt, 0, 0);
-        if (GameManager.input.x < 0) cam.translateLocal(-speed * dt, 0, 0);
+        if (GameManager.cameraControlMode === "freeLook") {
+            if (GameManager.input.z > 0) cam.translateLocal(0, 0, -speed * dt);
+            if (GameManager.input.z < 0) cam.translateLocal(0, 0, speed * dt);
+            if (GameManager.input.x > 0) cam.translateLocal(speed * dt, 0, 0);
+            if (GameManager.input.x < 0) cam.translateLocal(-speed * dt, 0, 0);
 
-        return;
+            return;
+        } else if (GameManager.cameraControlMode === "orbit") {
+            if (!GameManager.followCamera.target) return;
+            if (!GameManager.followCamera.pointMoveOffset) return;
+
+            const targetPosition = GameManager.followCamera.target.getPosition();
+            const desiredPosition = targetPosition.clone().add(GameManager.followCamera.pointMoveOffset);
+
+            const currentPosition = cam.getPosition();
+            const deltaTimeAdjustment = dt / (1.0 / 60);
+            const smoothFactor = GameManager.followCamera.smoothFactor * deltaTimeAdjustment;
+
+            const newPosition = new pc.Vec3();
+
+            if (smoothFactor > 0 && smoothFactor < 1) {
+                newPosition.lerp(currentPosition, desiredPosition, smoothFactor);
+            } else {
+                newPosition.copy(desiredPosition);
+            }
+
+            cam.setPosition(newPosition);
+
+            return;
+        }
     }
 
     if (GameManager.input.cameratype === "FlyCamera") {
-        if (this.input.x < 0) this.camera.translateLocal(-this.flyCamera.speed * dt, 0, 0);
-        if (this.input.x > 0) this.camera.translateLocal(this.flyCamera.speed * dt, 0, 0);
-        if (this.input.z < 0) this.camera.translateLocal(0, 0, this.flyCamera.speed * dt);
-        if (this.input.z > 0) this.camera.translateLocal(0, 0, -this.flyCamera.speed * dt);
+        if (this.input.x < 0) this.camera.translateLocal(-speed * dt, 0, 0);
+        if (this.input.x > 0) this.camera.translateLocal(speed * dt, 0, 0);
+        if (this.input.z < 0) this.camera.translateLocal(0, 0, speed * dt);
+        if (this.input.z > 0) this.camera.translateLocal(0, 0, -speed * dt);
         return;
     }
 
@@ -1166,7 +1275,8 @@ GameManager.updateCameraPosition = function (dt) {
         return;
     }
 
-    // órbita normal de tercera persona
+    ///ThirdPerson: 
+
     var cameraPosition = targetPosition.clone().add(GameManager.currentCamera.entity.forward.scale(-GameManager.followCamera.orbitRadius));
     cameraPosition.y = pc.math.clamp(cameraPosition.y, 0.5, Number.POSITIVE_INFINITY);
 
@@ -1192,55 +1302,43 @@ GameManager.updateCameraPosition = function (dt) {
     GameManager.currentCamera.entity.lookAt(targetPosition);
 };
 
-
 GameManager._onMouseDownUp = function (event) {
+    if (event.button === pc.MOUSEBUTTON_RIGHT && event.event) {
+        event.event.preventDefault();
+        if (event.event.stopPropagation) event.event.stopPropagation();
+    }
+
     GameManager.input.mouseXButton = event.x;
     GameManager.input.mouseYButton = event.y;
 
-    const isDown = event.type === pc.EVENT_MOUSEDOWN;
-    const isUp = event.type === pc.EVENT_MOUSEUP;
+    GameManager.input.mousePrimaryButton = (event.buttons[pc.MOUSEBUTTON_LEFT]);
+    GameManager.input.mouseSecondaryButton = (event.buttons[pc.MOUSEBUTTON_RIGHT]);
 
-    if (event.button === pc.MOUSEBUTTON_LEFT) {
-        GameManager.input.mousePrimaryButton = isDown ? true : (isUp ? false : GameManager.input.mousePrimaryButton);
-    }
-
-    if (event.button === pc.MOUSEBUTTON_RIGHT) {
-        GameManager.input.mouseSecondaryButton = isDown ? true : (isUp ? false : GameManager.input.mouseSecondaryButton);
-    }
-
-    // Point & Click normal
-    if (isDown && event.button === pc.MOUSEBUTTON_LEFT) {
-        if (GameManager.mouseState !== "free") return;
-        const point = GameManager.getMouseWorldPoint();
-        if (!point) return;
-        GameManager.onMouseClickWorld(point);
-        return;
-    }
-
-    // Unreal-style free look solo en ThirdPersonPointMove
+    GameManager.__rightMouseLook = GameManager.input.mouseSecondaryButton;
     if (GameManager.input.cameratype === "ThirdPersonPointMove") {
-        GameManager.__rightMouseLook = GameManager.input.mouseSecondaryButton;
-
         if (GameManager.__rightMouseLook) {
+
+            if (GameManager.currentCamera && GameManager.currentCamera.entity) {
+                const e = GameManager.currentCamera.entity.getEulerAngles();
+                GameManager.pointMoveLook.pitch = e.x;
+                GameManager.pointMoveLook.yaw = e.y;
+            }
+
             GameManager.cameraControlMode = "freeLook";
-            GameManager.setMouseState("captured");
-        } else if (!GameManager._app.isMenuMode) {
+        } else {
+            if (GameManager.currentCamera && GameManager.followCamera.target) {
+                const camPos = GameManager.currentCamera.entity.getPosition().clone();
+                const targetPos = GameManager.followCamera.target.getPosition().clone();
+
+                GameManager.initCameraPos = camPos.clone();
+                GameManager.followCamera.pointMoveOffset = camPos.sub(targetPos);
+            }
+
             GameManager.cameraControlMode = "orbit";
-            GameManager.setMouseState("free");
         }
     }
 };
 
-GameManager.onMouseClickWorld = function (point) {
-
-    if (!GameManager.playerEntity) return;
-
-    // ejemplo simple: teletransportar (debug)
-    // GameManager.playerEntity.setPosition(point);
-
-    // mejor: guardar destino
-    GameManager.playerTargetPoint = point.clone();
-};
 
 
 GameManager._onMouseWheel = function (event) {
@@ -1279,6 +1377,16 @@ GameManager.updateGameManager = async function (dt) {
         if (!GameManager.followCamera.target) {
             GameManager.followCamera.target = GameManager.playerEntity;
         }
+        if (!GameManager.currentCamera) {
+            GameManager.currentCamera = GameManager.calculateCameraScene();
+            GameManager.applyCameraPostProcessing(GameManager.cameraPostProcessing);
+            GameManager.input.camera = GameManager.currentCamera;
+        }
+        if (GameManager.currentCamera) {
+            GameManager.initCameraPos = GameManager.currentCamera.entity.getPosition().clone();
+            const targetPos = GameManager.followCamera.target.getPosition().clone();
+            GameManager.followCamera.pointMoveOffset = GameManager.initCameraPos.sub(targetPos);
+        }
         GameManager.sceneCharacters = this.app.scene.root.children.filter(function (char) {
             return (char.isCharacter || char.tags.has("is-character"))
         });
@@ -1293,6 +1401,7 @@ GameManager.updateGameManager = async function (dt) {
 
     GameManager.readKeyboardInput();
     GameManager.handleEscToggle();
+    GameManager.updateMouseState();
 
 
     ///MOVE CHARACTERS
@@ -1828,6 +1937,7 @@ GameManager.loadScene = function (sceneName) {
                     }
 
                     GameManager.currentCamera = GameManager.calculateCameraScene();
+                    GameManager.initCameraPos = GameManager.currentCamera ? GameManager.currentCamera.entity.getPosition().clone() : new pc.Vec3.ZERO;
                     GameManager.applyCameraPostProcessing(GameManager.cameraPostProcessing);
                     GameManager.input.camera = GameManager.currentCamera;
                     GameManager.followCamera.initialFov = GameManager.currentCamera ? GameManager.currentCamera.fov : 45;
