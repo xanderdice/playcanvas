@@ -604,9 +604,9 @@ Character.prototype.initialize = function () {
 
     var ccd;
     if (this.ccd.enabled) {
-        (ccd = this.entity.rigidbody.body).setCcdMotionThreshold(this.ccd.motionThreshold);
-        ccd.setCcdSweptSphereRadius(this.ccd.sweptSphereRadius);
-        ccd.setContactProcessingThreshold(this.ccd.contactProcessingThreshold);
+        (ccd = this.entity.rigidbody.body)?.setCcdMotionThreshold(this.ccd.motionThreshold);
+        ccd?.setCcdSweptSphereRadius(this.ccd.sweptSphereRadius);
+        ccd?.setContactProcessingThreshold(this.ccd.contactProcessingThreshold);
     }
 
     this.prepareAnimComponent();

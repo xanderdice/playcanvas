@@ -616,10 +616,12 @@ GameManager.prototype.initialize = function () {
     GameManager.followCamera.target = null;
 
     GameManager.playerEntity = null;
+    GameManager.playerTargetPoint = null;
     GameManager.playerEntityScript = null;
     GameManager.checkForPlayerAndTargetEntities = true;
 
     GameManager.mouseOptions = this.mouseOptions;
+    GameManager.mouseState = "ui"; // default seguro
     GameManager.flyCamera = this.flyCamera;
     GameManager.flyCamera.moved = false;
     GameManager.flyCamera.ex = 0;
@@ -746,6 +748,7 @@ GameManager.prototype.initialize = function () {
                     GameManager.menuDIV.style.display = "none";
                     GameManager.menuDIV.style.opacity = "0";
                     GameManager._app.isMenuMode = false;
+                    GameManager.applyMousePolicy(); // fuerza "ui"
                 }
             });
         }
@@ -764,6 +767,7 @@ GameManager.prototype.initialize = function () {
                     GameManager.menuDIV.style.display = "block";
                     GameManager.menuDIV.style.opacity = "1";
                     this.app.isMenuMode = true;
+                    GameManager.applyMousePolicy(); // según cámara: captured o free
                 }
             });
         }
@@ -842,11 +846,13 @@ GameManager.bindInputs = function () {
     GameManager._app.mouse.on(pc.EVENT_MOUSEMOVE, GameManager._onMouseMove, GameManager);
     GameManager._app.mouse.on(pc.EVENT_MOUSEUP, GameManager._onMouseDownUp, GameManager);
     GameManager._app.mouse.on(pc.EVENT_MOUSEWHEEL, GameManager._onMouseWheel, GameManager);
+    document.addEventListener("pointerlockchange", GameManager._onPointerLockChange, false);
 };
 GameManager.unbindInputs = function () {
     GameManager._app.mouse.off(pc.EVENT_MOUSEMOVE, GameManager._onMouseMove);
-    GameManager._app.mouse.off(pc.EVENT_MOUSEDOWN, GameManager._onMouseDownUp);
+    GameManager._app.mouse.off(pc.EVENT_MOUSEUP, GameManager._onMouseDownUp);
     GameManager._app.mouse.off(pc.EVENT_MOUSEWHEEL, GameManager._onMouseWheel);
+    document.removeEventListener("pointerlockchange", GameManager._onPointerLockChange, false);
 };
 
 
@@ -910,9 +916,27 @@ GameManager._onMouseMove = function (event) {
 
         if (GameManager.input.lookLastDeltaX === deltaX) deltaX = 0;
         if (GameManager.input.lookLastDeltaY === deltaY) deltaY = 0;
-        if (GameManager.currentCamera) {
-            GameManager.onMouseMoveFollowCamera();
+        //if (GameManager.currentCamera) {
+        //    GameManager.onMouseMoveFollowCamera();
+        //}
+
+        switch (GameManager.mouseState) {
+
+            case "captured":
+                if (GameManager.currentCamera) {
+                    GameManager.onMouseMoveFollowCamera();
+                }
+                break;
+
+            case "free":
+                // acá va raycast, selección, etc (futuro)
+                break;
+
+            case "ui":
+                // no hacer nada
+                break;
         }
+
         GameManager.input.lookLastDeltaX = deltaX;
         GameManager.input.lookLastDeltaY = deltaY;
 
@@ -923,6 +947,105 @@ GameManager._onMouseMove = function (event) {
         GameManager.__gameMouse_busy = false;
     }
 }
+
+GameManager.updateMouseState = function () {
+
+    // PRIORIDAD TOTAL: menú
+    if (GameManager._app.isMenuMode) {
+        GameManager.setMouseState("ui");
+        return;
+    }
+
+    switch (GameManager.input.cameratype) {
+
+        case "FirstPerson":
+            GameManager.setMouseState("captured");
+            break;
+
+        case "FlyCamera":
+            GameManager.setMouseState("captured");
+            break;
+
+        case "ThirdPersonPointMove":
+            GameManager.setMouseState("free");
+            break;
+
+        default:
+            GameManager.setMouseState("free");
+            break;
+    }
+
+
+};
+
+GameManager.setMouseState = function (state) {
+
+    if (GameManager.mouseState === state) return;
+
+    switch (state) {
+
+        case "ui":
+            GameManager.showhideMousePointer("show");   // cursor visible
+            GameManager._app.mouse.disableContextMenu = false;
+            break;
+
+        case "captured":
+            GameManager.showhideMousePointer("hide");
+            GameManager._app.mouse.disableContextMenu = true;
+            break;
+
+        case "free":
+            GameManager.showhideMousePointer("show");
+            GameManager._app.mouse.disableContextMenu = true;
+            break;
+
+        case "disabled":
+            GameManager.showhideMousePointer("show");
+            break;
+    }
+
+    GameManager.mouseState = state;
+    Trace('mouseState', GameManager.mouseState);
+};
+
+GameManager._onPointerLockChange = function () {
+    if (!GameManager._app) return;
+
+    const locked = pc.Mouse.isPointerLocked();
+
+    // Si el usuario salió del lock con ESC y el juego estaba en modo capturado,
+    // abrimos el menú inmediatamente.
+    if (!locked && !GameManager._app.isMenuMode && GameManager.getDesiredMouseState() === "captured") {
+        GameManager._app.fire("showmenu");
+        return;
+    }
+
+    // Si el lock volvió y el menú está abierto, no hacemos nada aquí.
+};
+
+GameManager.getDesiredMouseState = function () {
+    if (GameManager._app && GameManager._app.isMenuMode) {
+        return "ui";
+    }
+
+    switch (GameManager.input.cameratype) {
+        case "FirstPerson":
+        case "FlyCamera":
+            return "captured";
+
+        case "ThirdPersonPointMove":
+            return "free";
+
+        default:
+            return "free";
+    }
+};
+
+GameManager.applyMousePolicy = function () {
+    GameManager.setMouseState(GameManager.getDesiredMouseState());
+};
+
+
 
 GameManager.onMouseMoveFollowCamera = function () {
     GameManager.followCamera.eulers.x -= ((GameManager.input.mouseSensitivity * GameManager.input.mouseDx) / 60) % 360;
@@ -943,23 +1066,30 @@ GameManager.onMouseMoveFollowCamera = function () {
     }
 }
 
+GameManager.getMouseWorldPoint = function () {
 
+    if (!GameManager.currentCamera) return null;
+
+    const camera = GameManager.currentCamera;
+    const mouse = GameManager.input;
+
+    const from = camera.screenToWorld(mouse.mouseX, mouse.mouseY, camera.nearClip);
+    const to = camera.screenToWorld(mouse.mouseX, mouse.mouseY, camera.farClip);
+
+    const result = GameManager._app.systems.rigidbody.raycastFirst(from, to, {
+        filterCollisionGroup: 1
+    });
+
+    if (result) {
+        return result.point;
+    }
+
+    return null;
+};
 
 
 GameManager.updateCameraOrientation = function () {
-
-    //if (GameManager.playerPersonStyle === "FlyCamera") {
-    if (GameManager.input.cameratype === "FlyCamera") {
-
-        if (this.mouseOptions.hideMousePointer) {
-            if (pc.Mouse.isPointerLocked()) {
-                this.camera.setLocalEulerAngles(this.flyCamera.ex, this.flyCamera.ey, 0);
-            }
-        } else {
-            this.camera.setLocalEulerAngles(this.flyCamera.ex, this.flyCamera.ey, 0);
-        }
-        return;
-    }
+    if (GameManager.mouseState !== "captured") return;
 
     if (GameManager.followCamera && GameManager.followCamera.eulers) {
         GameManager.currentCamera.entity.setEulerAngles(new pc.Vec3(
@@ -967,17 +1097,6 @@ GameManager.updateCameraOrientation = function () {
             GameManager.followCamera.eulers.x + 180,
             0
         ));
-
-        if (GameManager.input.cameratype === "FirstPerson") {
-            if (GameManager.playerEntity && GameManager.playerEntityScript) {
-                //GameManager.playerEntityScript
-                //if (otherScript) {
-                //    otherScript.rotateCharacter(0, 0, this.camera, 0);
-                //}
-
-            }
-        };
-
     }
 };
 
@@ -1064,7 +1183,27 @@ GameManager._onMouseDownUp = function (event) {
 
     GameManager.input.mousePrimaryButton = (event.buttons[pc.MOUSEBUTTON_LEFT]);
     GameManager.input.mouseSecondaryButton = (event.buttons[pc.MOUSEBUTTON_RIGHT]);
+
+    if (GameManager.input.mousePrimaryButton) {
+        if (GameManager.mouseState !== "free") return;
+        var point = GameManager.getMouseWorldPoint();
+        if (!point) return;
+        GameManager.onMouseClickWorld(point);
+    }
+
 };
+
+GameManager.onMouseClickWorld = function (point) {
+
+    if (!GameManager.playerEntity) return;
+
+    // ejemplo simple: teletransportar (debug)
+    // GameManager.playerEntity.setPosition(point);
+
+    // mejor: guardar destino
+    GameManager.playerTargetPoint = point.clone();
+};
+
 
 GameManager._onMouseWheel = function (event) {
     GameManager.input.mouseWheel = event.wheelDelta;
@@ -1156,20 +1295,7 @@ GameManager.updateGameManager = async function (dt) {
     GameManager.__menuchecktime += dt;
     if (GameManager.__menuchecktime >= 0.5) {
         if (GameManager._app) {
-            if (GameManager.showMenuOnEnabledPointer) {
-                if (!pc.Mouse.isPointerLocked()) {
-                    GameManager._app.fire("showmenu");
-                }
-            }
-            if (GameManager._app.isMenuMode) {
-                if (!pc.Mouse.isPointerLocked()) {
-                    GameManager.showhideMousePointer("show");
-                }
-            } else {
-                if (pc.Mouse.isPointerLocked()) {
-                    GameManager.showhideMousePointer("hide");
-                }
-            }
+            GameManager.applyMousePolicy();
         }
         GameManager.__menuchecktime = 0;
     }
