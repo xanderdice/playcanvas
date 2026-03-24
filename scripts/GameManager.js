@@ -785,6 +785,7 @@ GameManager.prototype.initialize = function () {
     TracerScript.initialize();
 
     /* KEYBOARD AND MOUSE */
+    GameManager.__prevEsc = false;
     GameManager.bindInputs();
     this.on("destroy", function () {
         GameManager.unbindInputs();
@@ -833,12 +834,12 @@ GameManager.prototype.postInitialize = function () {
     /* ************* */
     this.app.on("update", GameManager.updateGameManager, this);
 
-
-
-
-    if (GameManager.currentScene === GameManager.mainScene) {
+    if (GameManager.currentScene === GameManager.mainScene &&
+        GameManager.input.cameratype !== "ThirdPersonPointMove") {
         this.app.fire("showmenu");
     }
+
+
 }
 
 
@@ -884,6 +885,21 @@ GameManager.readKeyboardInput = function () {
     GameManager.input.impact = keyboard.isPressed(pc.KEY_I);
     GameManager.input.death = keyboard.isPressed(pc.KEY_U);
     //GameManager.input.mode = +(keyboard.isPressed(pc.KEY_M));
+};
+
+GameManager.handleEscToggle = function () {
+    const esc = GameManager.input.esc;
+
+    // flanco de subida: solo una vez por pulsación
+    if (esc && !GameManager.__prevEsc) {
+        if (GameManager._app && GameManager._app.isMenuMode) {
+            GameManager.resumeGame();
+        } else if (GameManager._app) {
+            GameManager._app.fire("showmenu");
+        }
+    }
+
+    GameManager.__prevEsc = esc;
 };
 
 
@@ -983,9 +999,8 @@ GameManager.setMouseState = function (state) {
     if (GameManager.mouseState === state) return;
 
     switch (state) {
-
         case "ui":
-            GameManager.showhideMousePointer("show");   // cursor visible
+            GameManager.showhideMousePointer("show");
             GameManager._app.mouse.disableContextMenu = false;
             break;
 
@@ -1000,6 +1015,7 @@ GameManager.setMouseState = function (state) {
             break;
 
         case "disabled":
+        default:
             GameManager.showhideMousePointer("show");
             break;
     }
@@ -1007,6 +1023,7 @@ GameManager.setMouseState = function (state) {
     GameManager.mouseState = state;
     Trace('mouseState', GameManager.mouseState);
 };
+
 
 GameManager._onPointerLockChange = function () {
     if (!GameManager._app) return;
@@ -1031,6 +1048,7 @@ GameManager.getDesiredMouseState = function () {
     switch (GameManager.input.cameratype) {
         case "FirstPerson":
         case "FlyCamera":
+        case "ThirdPerson":
             return "captured";
 
         case "ThirdPersonPointMove":
@@ -1253,7 +1271,8 @@ GameManager.updateGameManager = async function (dt) {
     GameManager.input.dt = dt;
     Timer.evaluateTimers(dt);
 
-    GameManager.readKeyboardInput()
+    GameManager.readKeyboardInput();
+    GameManager.handleEscToggle();
 
 
     ///MOVE CHARACTERS
@@ -1295,6 +1314,10 @@ GameManager.updateGameManager = async function (dt) {
     GameManager.__menuchecktime += dt;
     if (GameManager.__menuchecktime >= 0.5) {
         if (GameManager._app) {
+            if (!pc.Mouse.isPointerLocked()) {
+                GameManager._onPointerLockChange();
+            }
+
             GameManager.applyMousePolicy();
         }
         GameManager.__menuchecktime = 0;
