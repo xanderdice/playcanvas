@@ -603,6 +603,7 @@ GameManager.prototype.initialize = function () {
     GameManager._app.mouse.disableContextMenu();
     GameManager._app.isMenuMode = false;
 
+
     GameManager.cameraOptions = this.cameraOptions;
     GameManager.currentCamera = GameManager.calculateCameraScene();
     GameManager.cameraPostProcessing = this.cameraPostProcessing;
@@ -620,6 +621,7 @@ GameManager.prototype.initialize = function () {
     GameManager.playerEntityScript = null;
     GameManager.checkForPlayerAndTargetEntities = true;
 
+    GameManager.__rightMouseLook = false;
     GameManager.mouseOptions = this.mouseOptions;
     GameManager.mouseState = "ui"; // default seguro
     GameManager.flyCamera = this.flyCamera;
@@ -834,8 +836,7 @@ GameManager.prototype.postInitialize = function () {
     /* ************* */
     this.app.on("update", GameManager.updateGameManager, this);
 
-    if (GameManager.currentScene === GameManager.mainScene &&
-        GameManager.input.cameratype !== "ThirdPersonPointMove") {
+    if (GameManager.currentScene === GameManager.mainScene) {
         this.app.fire("showmenu");
     }
 
@@ -845,12 +846,14 @@ GameManager.prototype.postInitialize = function () {
 
 GameManager.bindInputs = function () {
     GameManager._app.mouse.on(pc.EVENT_MOUSEMOVE, GameManager._onMouseMove, GameManager);
+    GameManager._app.mouse.on(pc.EVENT_MOUSEDOWN, GameManager._onMouseDownUp, GameManager);
     GameManager._app.mouse.on(pc.EVENT_MOUSEUP, GameManager._onMouseDownUp, GameManager);
     GameManager._app.mouse.on(pc.EVENT_MOUSEWHEEL, GameManager._onMouseWheel, GameManager);
     document.addEventListener("pointerlockchange", GameManager._onPointerLockChange, false);
 };
 GameManager.unbindInputs = function () {
     GameManager._app.mouse.off(pc.EVENT_MOUSEMOVE, GameManager._onMouseMove);
+    GameManager._app.mouse.off(pc.EVENT_MOUSEDOWN, GameManager._onMouseDownUp);
     GameManager._app.mouse.off(pc.EVENT_MOUSEUP, GameManager._onMouseDownUp);
     GameManager._app.mouse.off(pc.EVENT_MOUSEWHEEL, GameManager._onMouseWheel);
     document.removeEventListener("pointerlockchange", GameManager._onPointerLockChange, false);
@@ -943,13 +946,10 @@ GameManager._onMouseMove = function (event) {
                     GameManager.onMouseMoveFollowCamera();
                 }
                 break;
-
             case "free":
-                // acá va raycast, selección, etc (futuro)
-                break;
-
             case "ui":
-                // no hacer nada
+            case "disabled":
+            default:
                 break;
         }
 
@@ -1052,7 +1052,7 @@ GameManager.getDesiredMouseState = function () {
             return "captured";
 
         case "ThirdPersonPointMove":
-            return "free";
+            return GameManager.__rightMouseLook ? "captured" : "free";
 
         default:
             return "free";
@@ -1199,16 +1199,36 @@ GameManager._onMouseDownUp = function (event) {
     GameManager.input.mouseXButton = event.x;
     GameManager.input.mouseYButton = event.y;
 
-    GameManager.input.mousePrimaryButton = (event.buttons[pc.MOUSEBUTTON_LEFT]);
-    GameManager.input.mouseSecondaryButton = (event.buttons[pc.MOUSEBUTTON_RIGHT]);
+    const isDown = event.type === pc.EVENT_MOUSEDOWN;
+    const isUp = event.type === pc.EVENT_MOUSEUP;
 
-    if (GameManager.input.mousePrimaryButton) {
-        if (GameManager.mouseState !== "free") return;
-        var point = GameManager.getMouseWorldPoint();
-        if (!point) return;
-        GameManager.onMouseClickWorld(point);
+    if (event.button === pc.MOUSEBUTTON_LEFT) {
+        GameManager.input.mousePrimaryButton = isDown ? true : (isUp ? false : GameManager.input.mousePrimaryButton);
     }
 
+    if (event.button === pc.MOUSEBUTTON_RIGHT) {
+        GameManager.input.mouseSecondaryButton = isDown ? true : (isUp ? false : GameManager.input.mouseSecondaryButton);
+    }
+
+    // Point & Click normal
+    if (isDown && event.button === pc.MOUSEBUTTON_LEFT) {
+        if (GameManager.mouseState !== "free") return;
+        const point = GameManager.getMouseWorldPoint();
+        if (!point) return;
+        GameManager.onMouseClickWorld(point);
+        return;
+    }
+
+    // Unreal-style look en ThirdPersonPointMove
+    if (GameManager.input.cameratype === "ThirdPersonPointMove") {
+        GameManager.__rightMouseLook = GameManager.input.mouseSecondaryButton;
+
+        if (GameManager.__rightMouseLook) {
+            GameManager.setMouseState("captured");
+        } else if (!GameManager._app.isMenuMode) {
+            GameManager.setMouseState("free");
+        }
+    }
 };
 
 GameManager.onMouseClickWorld = function (point) {
