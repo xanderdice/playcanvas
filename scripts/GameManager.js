@@ -1291,11 +1291,19 @@ GameManager._onMouseDownUp = function (event) {
     if (GameManager.input.cameratype === "ThirdPersonPointMove") {
         if (GameManager.__rightMouseLook) {
 
+
             if (GameManager.currentCamera && GameManager.currentCamera.entity) {
-                const e = GameManager.currentCamera.entity.getEulerAngles();
-                GameManager.pointMoveLook.pitch = e.x;
-                GameManager.pointMoveLook.yaw = e.y;
+                const forward = GameManager.currentCamera.entity.forward;
+                // yaw
+                GameManager.pointMoveLook.yaw = Math.atan2(-forward.x, -forward.z) * pc.math.RAD_TO_DEG;
+
+                // pitch
+                GameManager.pointMoveLook.pitch = Math.atan2(forward.y, Math.sqrt(forward.x * forward.x + forward.z * forward.z)) * pc.math.RAD_TO_DEG;
+
+                GameManager.input.lookLastDeltaX = 0;
+                GameManager.input.lookLastDeltaY = 0;
             }
+
 
             GameManager.cameraControlMode = "freeLook";
         } else {
