@@ -598,7 +598,7 @@ Character.prototype.initialize = function () {
             linearDamping: 0.0,     // Amortiguación lineal
             angularDamping: 0.0,    // Amortiguación angular
             linearFactor: new pc.Vec3(1, 1, 1),  // Permitir movimiento en los ejes X y Z, pero no en el eje Y
-            angularFactor: new pc.Vec3(0, 0, 0)
+            angularFactor: new pc.Vec3(0, 1, 0)
         });
     }
 
@@ -664,7 +664,7 @@ Character.prototype.initialize = function () {
         this.prevtracerOptions = JSON.parse(JSON.stringify(this.tracerOptions));
     }, this);
 
-
+    this._traceInputCache = {};
 };
 
 
@@ -682,6 +682,8 @@ Character.prototype.getYaw = function (rotation) {
     var angleDegrees = angleRadians * (180 / Math.PI);
     return angleDegrees;
 }
+
+
 
 Character.prototype.stopMovement = function () {
 
@@ -709,189 +711,221 @@ Character.prototype.doAI = async function () {
 /*              */
 /* D O  M O V E */
 /*              */
-Character.prototype.doMove = async function () {
+Character.prototype.doMove = function (i, oldInput, cameraRotation, dt) {
+    if (this.doMoveCharacter_busy) return;
+    this.doMoveCharacter_busy = true;
 
+    const input = i || this.entity.input || {};
+    oldInput = oldInput || this.old_input || {};
+    dt = (typeof dt === "number") ? dt : (input.dt || 0);
 
-    if (!this.doMoveCharacter_busy) {
-        this.doMoveCharacter_busy = true;
+    this.CHAR_CUR_POSITION = this.entity.getPosition();
+    this.CHAR_CUR_ROTATION = this.entity.getRotation();
 
-        const input = this.entity.input;
-        var dt = input.dt;
-
-        this.CHAR_CUR_POSITION = this.entity.getPosition();
-        this.CHAR_CUR_ROTATION = this.entity.getRotation();
-
+    if (this.pointCharacterEntity) {
         this.pointCharacterEntity.setPosition(this.CHAR_CUR_POSITION);
+    }
 
-        const visibleThisFrame = this.meshInstancesCharacter.visibleThisFrame;
+    const visibleThisFrame = (this.meshInstancesCharacter && typeof this.meshInstancesCharacter.visibleThisFrame === "boolean")
+        ? this.meshInstancesCharacter.visibleThisFrame
+        : true;
 
-
+    if (this.entity.anim) {
         this.entity.anim.enabled = visibleThisFrame;
-        if (visibleThisFrame) {
-            this.doSensors2();
-        }
+    }
 
+    if (visibleThisFrame) {
+        this.doSensors2();
+    }
 
-        if (!visibleThisFrame) {
-            this.doMoveCharacter_busy = false; return;
+    if (!visibleThisFrame) {
+        this.doMoveCharacter_busy = false;
+        return;
+    }
 
-        }
-
-
-
-
-        if (this.tracerOptions.traceinput && this.entity.isPlayer) {
-            const clonedObject = Object.assign({}, input);
-            delete clonedObject.camera;
-            clonedObject.camera = null;
-            Trace("input", clonedObject);
-        }
-
-        var spherePoint = null;
-        if (this.entity.isPlayer) {
-            //            spherePoint = this.app.scene.root.findByTag("player-point-character-entity")[0];
-        }
-        var targetDirection = null;
-        if (spherePoint) {
-            targetDirection = spherePoint;
-        } else {
-
-        }
-        if (this.entity.isPlayer) {
-            /*
-            if (spherePoint) {
-                targetDirection = spherePoint;
-            } else {
-                targetDirection = input.camera;
+    if (this.tracerOptions && this.tracerOptions.traceinput && this.entity.isPlayer) {
+        const t = this._traceInputCache || (this._traceInputCache = {});
+        for (const k in input) {
+            if (k !== "camera") {
+                t[k] = input[k];
             }
-            */
-            targetDirection = input.camera.entity;
+        }
+        t.camera = null;
+        Trace("input", t);
+    }
+
+    let targetDirection = null;
+    if (this.entity.isPlayer) {
+        targetDirection = (input.camera && input.camera.entity) ? input.camera.entity : input.camera;
+    } else {
+        targetDirection = input.targetEntity;
+
+        if (targetDirection) {
+            const directionToTarget = targetDirection.getPosition().clone().sub(this.CHAR_CUR_POSITION).normalize();
+
+            input.x = directionToTarget.x;
+            if (input.x < 0.1 && input.x > -0.1) input.x = 0;
+
+            input.z = -directionToTarget.z;
+            if (input.z < 0.1 && input.z > -0.1) input.z = 0;
         } else {
-            targetDirection = input.targetEntity;
+            input.z = 0;
+            input.x = 0;
+        }
+    }
 
-            if (targetDirection) {
-                const direction = targetDirection.getPosition().clone().sub(this.CHAR_CUR_POSITION).normalize();
+    if (this.playerOptions.playerControllerOnKeyRight === "Strafe") {
+        if (input.x !== 0) input.z = 0;
+        if (input.z !== 0) input.x = 0;
+    }
 
-                input.x = direction.x;
-                if (input.x < 0.1 && input.x > -0.1) input.x = 0;
-                input.z = -direction.z;
-                if (input.z < 0.1 && input.z > -0.1) input.z = 0;
-            } else {
-                input.z = 0;
-                input.x = 0;
+    const hasTargetPoint = !!(input.targetPoint || (this.entity.input && this.entity.input.targetPoint));
+    const targetPoint = input.targetPoint || (this.entity.input && this.entity.input.targetPoint) || null;
+
+    let direction = new pc.Vec3();
+    let moveSpeed = (input.sprint ? this.speed * 2 : this.speed);
+    let stopMovementNow = false;
+
+    if (hasTargetPoint && targetPoint) {
+        const tp = targetPoint.getPosition ? targetPoint.getPosition() : targetPoint;
+
+        const dx = tp.x - this.CHAR_CUR_POSITION.x;
+        const dy = (tp.y || 0) - this.CHAR_CUR_POSITION.y;
+        const dz = tp.z - this.CHAR_CUR_POSITION.z;
+
+        direction.set(dx, dy, dz);
+        direction.y = 0;
+
+        const distance = direction.length();
+        const stopRadius = 0.25;
+        const slowRadius = 1.25;
+
+        if (distance <= stopRadius) {
+            stopMovementNow = true;
+            this.isMoving = false;
+
+            if (this.entity.input && this.entity.input.targetPoint === targetPoint) {
+                this.entity.input.targetPoint = null;
             }
+        } else {
+            this.isMoving = true;
+            direction.normalize();
 
+            if (distance < slowRadius) {
+                moveSpeed *= (distance / slowRadius);
+            }
         }
-
-
-
-
-        if (this.playerOptions.playerControllerOnKeyRight === "Strafe") {
-            if (input.x !== 0) input.z = 0;
-            if (input.z !== 0) input.x = 0;
-        }
-
-        var moveSpeed = (input.sprint ? this.speed * 2 : this.speed);
-
-
+    } else {
         this.isMoving = input.x !== 0 || input.z !== 0;
-        !this.isMoving && (moveSpeed = 0);
+        if (!this.isMoving) moveSpeed = 0;
 
-        this.charSpeed < moveSpeed - 0.1 ? this.charSpeed = pc.math.lerp(this.charSpeed, moveSpeed, dt * this.speed * 4) : this.charSpeed = moveSpeed;
+        if (this.isMoving && targetDirection) {
+            const forwardDirection = targetDirection.forward.clone().scale(input.z);
+            const strafeDirection = targetDirection.right.clone().scale(input.x);
+            direction = forwardDirection.add(strafeDirection);
 
-
-        this.speedAnimBlend = input.sprint ? moveSpeed / this.speed * 5 : moveSpeed / this.speed - 0.3;
-        this.speedAnimBlend < 0.01 && (this.speedAnimBlend = 0);
-
-
-        if (this.entity.attackSystem.canAttack && !this.entity.attackSystem.walkAndAttack && this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
-            this.isMoving = false;
-        }
-        this.isMoving = this.isMoving && this.entity.anim.getInteger("turn180") === 0;
-
-
-        if (this.isMoving && !this.canmoveonair && this.entity.isonair) {
-            this.isMoving = false;
-        }
-
-
-
-
-
-        if (this.isMoving) {
-
-
-            var newPosition = this.CHAR_CUR_POSITION.clone();
-
-            // Obtener la dirección de movimiento relativa a la cámara
-            const forwardDirection = targetDirection.forward.clone().scale(input.z).normalize();
-            const strafeDirection = targetDirection.right.clone().scale(input.x).normalize();
-
-            // Combinar las direcciones para obtener la dirección final del movimiento
-            const direction = forwardDirection.add(strafeDirection).normalize();
             if (!this.canmoveonair) direction.y = 0;
 
-
-            if (!this.useteleport) {
-                if (visibleThisFrame) {
-                    const velocity = direction.clone().scale(this.charSpeed);
-                    this.entity.rigidbody.linearVelocity = velocity;
-                }
-            }
-
-
-
-            // Calcular la nueva posición del jugador
-            newPosition = newPosition.add(direction.scale(this.charSpeed * dt));
-
-            //if (this.entity.isPlayer && (input.cameratype !== "FirstPerson")) {
-            this.calculateCharacterCurrentRotation(input, this.old_input, targetDirection, this.speed * 4 * dt);
-            //}
-
-
-
-            if (this.useteleport) {
-                this.entity.rigidbody.teleport(newPosition, new pc.Quat().setFromEulerAngles(0, this.currenRotation, 0));
+            if (direction.lengthSq() > 0.000001) {
+                direction.normalize();
             } else {
-                this.entity.rigidbody.teleport(this.entity.getPosition(), new pc.Quat().setFromEulerAngles(0, this.currenRotation, 0));
+                this.isMoving = false;
             }
-
-
-
+        } else {
+            direction.set(0, 0, 0);
         }
-
-
-        if (visibleThisFrame) {
-
-            if (!this.useteleport && !this.isMoving && !this.inertia) {
-                const velocity = this.entity.rigidbody.linearVelocity;
-                velocity.x = 0;
-                velocity.z = 0;
-                if (this.canmoveonair && !this.isonair) { velocity.y = 0; }
-                this.entity.rigidbody.linearVelocity = velocity;
-            }
-
-
-            this.doInteraction(input);
-
-
-            this.entity.anim.setInteger("mode", +(input.mode));
-            this.entity.anim.setFloat("speed", this.speedAnimBlend);
-            this.entity.anim.setInteger("onair", +(this.entity.isonair));
-            this.entity.anim.setInteger("impact", input.impact ? Math.floor(Math.random() * 2) + 1 : 0);
-            this.entity.anim.setInteger("death", input.death ? Math.floor(Math.random() * 2) + 1 : 0);
-
-
-            this.doAttackSystem(input);
-        }
-
-
-        this.old_input = Object.assign({}, input);
-
-
-        this.doMoveCharacter_busy = false;
     }
-}
+
+    this.charSpeed = this.isMoving
+        ? (this.charSpeed < moveSpeed - 0.1
+            ? pc.math.lerp(this.charSpeed, moveSpeed, dt * this.speed * 4)
+            : moveSpeed)
+        : 0;
+
+    this.speedAnimBlend = this.isMoving
+        ? (input.sprint ? moveSpeed / this.speed * 5 : moveSpeed / this.speed - 0.3)
+        : 0;
+
+    if (this.speedAnimBlend < 0.01) this.speedAnimBlend = 0;
+
+    if (this.entity.attackSystem.canAttack &&
+        !this.entity.attackSystem.walkAndAttack &&
+        this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
+        this.isMoving = false;
+        stopMovementNow = true;
+    }
+
+    this.isMoving = this.isMoving && this.entity.anim.getInteger("turn180") === 0;
+
+    if (this.isMoving && !this.canmoveonair && this.entity.isonair) {
+        this.isMoving = false;
+        stopMovementNow = true;
+    }
+
+    if (this.isMoving && direction.lengthSq() > 0.000001) {
+        const desiredVelocity = direction.clone().scale(this.charSpeed);
+        const currentVelocity = this.entity.rigidbody.linearVelocity.clone();
+
+        currentVelocity.y = 0;
+        desiredVelocity.y = 0;
+
+        const accel = desiredVelocity.sub(currentVelocity);
+        const force = accel.scale(this.entity.rigidbody.mass * 8);
+        force.y = 0;
+
+        this.entity.rigidbody.applyForce(force);
+
+        const forward = this.entity.forward.clone();
+        forward.y = 0;
+
+        if (forward.lengthSq() > 0.000001) {
+            forward.normalize();
+
+            let delta = Math.atan2(direction.x, direction.z) - Math.atan2(forward.x, forward.z);
+            delta = Math.atan2(Math.sin(delta), Math.cos(delta));
+
+            const turnSpeed = 20;
+            const maxTurnSpeed = 8;
+
+            const ang = this.entity.rigidbody.angularVelocity.clone();
+            ang.x = 0;
+            ang.z = 0;
+            ang.y = pc.math.clamp(delta * turnSpeed, -maxTurnSpeed, maxTurnSpeed);
+
+            this.entity.rigidbody.angularVelocity = ang;
+        }
+    } else if (stopMovementNow || (!this.isMoving && !this.inertia)) {
+        const v = this.entity.rigidbody.linearVelocity.clone();
+        v.x = 0;
+        v.z = 0;
+        if (this.canmoveonair && !this.entity.isonair) {
+            v.y = 0;
+        }
+        this.entity.rigidbody.linearVelocity = v;
+
+        const a = this.entity.rigidbody.angularVelocity.clone();
+        a.x = 0;
+        a.y = 0;
+        a.z = 0;
+        this.entity.rigidbody.angularVelocity = a;
+    }
+
+    this.doInteraction(input);
+
+    if (this.entity.anim) {
+        this.entity.anim.setInteger("mode", +(input.mode || 0));
+        this.entity.anim.setFloat("speed", this.speedAnimBlend);
+        this.entity.anim.setInteger("onair", +(this.entity.isonair));
+        this.entity.anim.setInteger("impact", input.impact ? Math.floor(Math.random() * 2) + 1 : 0);
+        this.entity.anim.setInteger("death", input.death ? Math.floor(Math.random() * 2) + 1 : 0);
+    }
+
+    this.doAttackSystem(input);
+
+    //this.old_input = input;
+    this.doMoveCharacter_busy = false;
+};
+
 
 
 

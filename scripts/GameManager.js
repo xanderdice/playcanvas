@@ -283,20 +283,21 @@ GameManager.attributes.add('characterController', {
     type: 'json',
     schema: [
         {
-            name: 'enabled',
-            type: 'boolean',
+            name: "enabled",
+            type: "boolean",
             default: true,
-            title: 'enabled',
-            description: 'enables characterController'
+            title: "enabled",
+            description: "enables characterController"
         },
 
-        /*{
-            name: 'bloom',
-            type: 'boolean',
-            default: true,
-            title: 'bloom',
-            description: 'bloom'
-        }*/
+        {
+            name: "interv",
+            type: "string",
+            enum: [{ "update": "update" }, { "internalTimer": "internalTimer" }, { "requestAnimationFrame": "requestAnimationFrame" }],
+            default: "update",
+            title: "interv",
+            description: "interv"
+        }
     ]
 });
 
@@ -636,13 +637,11 @@ GameManager.prototype.initialize = function () {
         pitch: 0,
         yaw: 0
     };
-    GameManager.pointMoveReturn = {
-        active: false,
-        time: 0,
-        duration: 0.28
-    };
+
 
     GameManager.enableCharacterController = this.characterController.enabled;
+    GameManager.characterControllerInterv = this.characterController.interv;
+
     GameManager.enableSubtitles = this.subtitles.enabled;
 
     document.addEventListener('contextmenu', function (e) {
@@ -844,6 +843,27 @@ GameManager.prototype.initialize = function () {
     // telemetría / tuning (opcional)
     this._debug = false;
 
+    window.requestAnimationFrame =
+        window.requestAnimationFrame ||
+        window.webkitRequestAnimationFrame ||
+        window.mozRequestAnimationFrame ||
+        function (callback) {
+            return setTimeout(callback, 1000 / 60);
+        };
+
+    if (GameManager.characterControllerInterv !== "update") {
+        GameManager.setInterval_busy = false;
+
+        if (GameManager.characterControllerInterv === "internalTimer") {
+            this.interval_accumul = 1;
+            this.interval_time = 1000 / 60;
+            this.interval_deltatime = this.interval_time;
+            Timer.addTimer(0.016, GameManager.setInterval, GameManager, false);
+        } else if (GameManager.characterControllerInterv === "requestAnimationFrame") {
+            requestAnimationFrame(GameManager.setInterval);
+        }
+    }
+
 };
 
 
@@ -881,7 +901,7 @@ GameManager.unbindInputs = function () {
 };
 
 
-GameManager.readKeyboardInput = function () {
+GameManager.readKeyboardInput = async function () {
     const keyboard = GameManager._app.keyboard;
 
     // Movimiento horizontal
@@ -911,7 +931,7 @@ GameManager.readKeyboardInput = function () {
     //GameManager.input.mode = +(keyboard.isPressed(pc.KEY_M));
 };
 
-GameManager.handleEscToggle = function () {
+GameManager.handleEscToggle = async function () {
     const esc = GameManager.input.esc;
 
     // flanco de subida: solo una vez por pulsación
@@ -990,7 +1010,7 @@ GameManager._onMouseMove = function (event) {
 
 
 
-GameManager.updateMouseState = function () {
+GameManager.updateMouseState = async function () {
     if (GameManager._app.isMenuMode) {
         GameManager.setMouseState("ui");
         return;
@@ -1085,30 +1105,6 @@ GameManager.applyMousePolicy = function () {
     GameManager.setMouseState(GameManager.getDesiredMouseState());
 };
 
-/* HELPERS */
-GameManager._lerpAngle = function (a, b, t) {
-    t = pc.math.clamp(t, 0, 1);
-    const delta = ((((b - a) % 360) + 540) % 360) - 180;
-    return a + delta * t;
-};
-
-GameManager._angleDistance = function (a, b) {
-    return Math.abs(((((b - a) % 360) + 540) % 360) - 180);
-};
-
-GameManager._getLookAtAngles = function (from, to) {
-    const dir = to.clone().sub(from);
-    const len = dir.length();
-    if (!len) return { pitch: 0, yaw: 0 };
-
-    dir.scale(1 / len);
-
-    const yaw = Math.atan2(dir.x, dir.z) * 180 / Math.PI;
-    const pitch = -Math.atan2(dir.y, Math.sqrt(dir.x * dir.x + dir.z * dir.z)) * 180 / Math.PI;
-
-    return { pitch: pitch, yaw: yaw };
-};
-
 
 GameManager.onMouseMoveFollowCamera = function () {
     GameManager.followCamera.eulers.x -= ((GameManager.input.mouseSensitivity * GameManager.input.mouseDx) / 60) % 360;
@@ -1161,12 +1157,11 @@ GameManager.getMouseWorldPoint = function () {
 
 
 
-GameManager.updateCameraOrientation = function () {
+GameManager.updateCameraOrientation = async function () {
     if (!GameManager.currentCamera) return;
     if (!GameManager.followCamera || !GameManager.followCamera.target) return;
 
     const cam = GameManager.currentCamera.entity;
-    const targetPosition = GameManager.followCamera.target.getPosition();
 
     if (GameManager.input.cameratype === "ThirdPersonPointMove") {
         if (GameManager.cameraControlMode === "freeLook") {
@@ -1192,7 +1187,7 @@ GameManager.updateCameraOrientation = function () {
 };
 
 
-GameManager.updateCameraPosition = function (dt) {
+GameManager.updateCameraPosition = async function (dt) {
     const speed = GameManager.flyCamera.speed || 20;
     if (GameManager.input.cameratype === "ThirdPersonPointMove") {
         const cam = GameManager.currentCamera.entity;
@@ -1380,14 +1375,14 @@ GameManager.updateGameManager = async function (dt) {
     GameManager.input.dt = dt;
     Timer.evaluateTimers(dt);
 
-    GameManager.readKeyboardInput();
-    GameManager.handleEscToggle();
-    GameManager.updateMouseState();
+    await GameManager.readKeyboardInput();
+    await GameManager.handleEscToggle();
+    await GameManager.updateMouseState();
 
 
     ///MOVE CHARACTERS
-    if (GameManager.enableCharacterController) {
-        await this.updateCharactersMovement(dt);
+    if (GameManager.enableCharacterController && GameManager.characterControllerInterv === "update") {
+        await GameManager.updateCharactersMovement();
     }
     ///MOVE CHARACTERS
 
@@ -1436,11 +1431,35 @@ GameManager.updateGameManager = async function (dt) {
 
     /* CAMERA MOVEMENT */
     if (GameManager.currentCamera) {
-        GameManager.updateCameraOrientation();
-        GameManager.updateCameraPosition(dt);
+        await GameManager.updateCameraOrientation();
+        await GameManager.updateCameraPosition(dt);
     }
 
     GameManager.__gameMouseMoved = false;
+};
+
+
+GameManager.setInterval = async function () {
+    if (GameManager.setInterval_busy) {
+        this.interval_accumul++;
+
+    } else {
+        GameManager.setInterval_busy = true;
+        const startTime = performance.now();
+        await GameManager.updateCharactersMovement();
+        const endTime = performance.now();    // Toma el tiempo de finalización
+        const elapsedTime = endTime - startTime;
+        /*if (elapsedTime > 0.2) {
+            Tracer("updateCharactersMovement", elapsedTime);
+        }*/
+
+        this.interval_accumul = 1;
+        GameManager.setInterval_busy = false;
+
+        if (GameManager.characterControllerInterv === "requestAnimationFrame") {
+            requestAnimationFrame(GameManager.setInterval);
+        }
+    }
 };
 
 
@@ -1462,8 +1481,8 @@ GameManager.prototype._rebuildPlayerCacheIfNeeded = function (characters) {
 
 
 // Public API: llama cada frame (dt en segundos)
-GameManager.prototype.updateCharactersMovement = async function (dt) {
-
+GameManager.updateCharactersMovement = async function () {
+    const dt = GameManager.input.dt;
     const characters = GameManager.sceneCharacters;
     if (!characters || characters.length === 0) {
         this._globalFrame++;
