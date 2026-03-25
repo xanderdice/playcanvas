@@ -1177,34 +1177,6 @@ GameManager.updateCameraOrientation = function () {
             );
             return;
         }
-
-        if (GameManager.cameraControlMode === "returnToOrbit") {
-            const currentPosition = cam.getPosition();
-            const desired = GameManager._getLookAtAngles(currentPosition, targetPosition);
-
-            const t = Math.min(1, GameManager.input.dt * 8);
-
-            GameManager.pointMoveLook.pitch = GameManager._lerpAngle(GameManager.pointMoveLook.pitch, desired.pitch, t);
-            GameManager.pointMoveLook.yaw = GameManager._lerpAngle(GameManager.pointMoveLook.yaw, desired.yaw, t);
-
-            cam.setEulerAngles(
-                GameManager.pointMoveLook.pitch,
-                GameManager.pointMoveLook.yaw,
-                0
-            );
-
-            const donePitch = GameManager._angleDistance(GameManager.pointMoveLook.pitch, desired.pitch) < 0.5;
-            const doneYaw = GameManager._angleDistance(GameManager.pointMoveLook.yaw, desired.yaw) < 0.5;
-
-            if (donePitch && doneYaw) {
-                GameManager.cameraControlMode = "orbit";
-                GameManager.pointMoveReturn.active = false;
-            }
-
-            return;
-        }
-
-        cam.lookAt(targetPosition);
         return;
     }
 
@@ -1252,6 +1224,7 @@ GameManager.updateCameraPosition = function (dt) {
             }
 
             cam.setPosition(newPosition);
+            cam.lookAt(targetPosition);
 
             return;
         }
