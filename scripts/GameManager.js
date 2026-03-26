@@ -247,8 +247,10 @@ GameManager.attributes.add('cameraPostProcessing', {
 
         {
             name: 'bloom',
-            type: 'boolean',
-            default: true,
+            type: 'number',
+            default: 0.01,
+            min: 0,
+            max: 1,
             title: 'bloom',
             description: 'bloom'
         },
@@ -2012,7 +2014,7 @@ GameManager.calculateCameraScene = function () {
 GameManager.applyCameraPostProcessing = function (options) {
     var app = GameManager._app;
     if (!app) return null;
-
+    debugger;
     if (options.enabled) {
 
         var cameraFrame = new pc.CameraFrame(app, GameManager.currentCamera);
@@ -2023,8 +2025,8 @@ GameManager.applyCameraPostProcessing = function (options) {
         cameraFrame.rendering.samples = 4;
         cameraFrame.rendering.toneMapping = pc.TONEMAP_LINEAR;
 
-        cameraFrame.bloom.enabled = options.bloom;
-        cameraFrame.bloom.intensity = 0.1;
+        cameraFrame.bloom.enabled = options.bloom > 0 ? true : false;
+        cameraFrame.bloom.intensity = options.bloom;
         //cameraFrame.bloom.blur = 4;
 
 
