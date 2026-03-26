@@ -124,9 +124,9 @@ Timer.clearAllTimers = function () {
  * @param {number} dt - The delta time since the last evaluation. This value is added to each timer's elapsed time to track the passage of time.
  * @returns {void} This function does not return any value.
  */
-Timer.evaluateTimers = function (dt) {
+Timer.evaluateTimers = async function (dt) {
     for (let key in this._timers) {
-        var timer = this._timers[key];
+        const timer = this._timers[key];
         timer.__elapsedTime += dt;
         if (timer.time && timer.__elapsedTime >= timer.time) {
             timer.callback.call(timer.scope);
@@ -505,6 +505,11 @@ GameManager.attributes.add('tracer', {
             default: false
         },
         {
+            name: 'trtargetpoint',
+            type: 'boolean',
+            default: false
+        },
+        {
             name: 'trenablelightingdebugLayer',
             type: 'boolean',
             default: false
@@ -578,7 +583,8 @@ GameManager.input = {
     lookLastDeltaY: 0,
     dt: 0,
     mode: 0,
-    targetPoint: pc.Vec3.ZERO
+    targetPoint: pc.Vec3.ZERO,
+    mouseRaycast: null
 };
 GameManager.sceneCharacters = [];
 
@@ -669,6 +675,7 @@ GameManager.prototype.initialize = function () {
     TracerScript.trordermode = this.tracer.trordermode;
     TracerScript.trenablefps = TracerScript.trenable ? this.tracer.trenablefps : false;
     TracerScript.trshowstats = TracerScript.trenable ? this.tracer.trshowstats : false;
+    TracerScript.trtargetpoint = TracerScript.trenable ? this.tracer.trtargetpoint : false;
     TracerScript.trenablelightingdebugLayer = TracerScript.trenable ? this.tracer.trenablelightingdebugLayer : false;
 
     if (TracerScript.trenablefps) {
@@ -1005,6 +1012,8 @@ GameManager._onMouseMove = function (event) {
 
         GameManager.__gameMouseMoved = true;
         GameManager.__gameMouse_busy = false;
+
+        //mouseRaycast
     }
 };
 
@@ -1189,6 +1198,8 @@ GameManager.updateCameraOrientation = async function () {
 
 GameManager.updateCameraPosition = async function (dt) {
     const speed = GameManager.flyCamera.speed || 20;
+    const targetPosition = GameManager.followCamera.target.getPosition();
+
     if (GameManager.input.cameratype === "ThirdPersonPointMove") {
         const cam = GameManager.currentCamera.entity;
 
@@ -1203,7 +1214,7 @@ GameManager.updateCameraPosition = async function (dt) {
             if (!GameManager.followCamera.target) return;
             if (!GameManager.followCamera.pointMoveOffset) return;
 
-            const targetPosition = GameManager.followCamera.target.getPosition();
+
             const desiredPosition = targetPosition.clone().add(GameManager.followCamera.pointMoveOffset);
 
             const currentPosition = cam.getPosition();
@@ -1236,7 +1247,7 @@ GameManager.updateCameraPosition = async function (dt) {
     if (!GameManager.followCamera.target) return;
     if (!GameManager.followCamera.smoothedPosition) return;
 
-    var targetPosition = GameManager.followCamera.target.getPosition();
+
 
     if (GameManager.input.cameratype === "FirstPerson") {
         GameManager.currentCamera.entity.setPosition(targetPosition);
@@ -1245,13 +1256,13 @@ GameManager.updateCameraPosition = async function (dt) {
 
     ///ThirdPerson: 
 
-    var cameraPosition = targetPosition.clone().add(GameManager.currentCamera.entity.forward.scale(-GameManager.followCamera.orbitRadius));
+    const cameraPosition = targetPosition.clone().add(GameManager.currentCamera.entity.forward.scale(-GameManager.followCamera.orbitRadius));
     cameraPosition.y = pc.math.clamp(cameraPosition.y, 0.5, Number.POSITIVE_INFINITY);
 
     const hit = GameManager._app.systems.rigidbody.raycastFirst(targetPosition, cameraPosition);
 
     if (hit && hit.entity && !(hit.entity.isPlayer ?? false) && hit.entity.name.toLowerCase() !== "charactersensor" && !hit.entity.tags.has('ignore-camera-collision')) {
-        var direction = GameManager.followCamera.target.getPosition().sub(hit.point).normalize();
+        const direction = GameManager.followCamera.target.getPosition().sub(hit.point).normalize();
         cameraPosition = hit.point.clone().add(direction.scale(0.1));
     }
 
@@ -1281,6 +1292,17 @@ GameManager._onMouseDownUp = function (event) {
 
     GameManager.input.mousePrimaryButton = (event.buttons[pc.MOUSEBUTTON_LEFT]);
     GameManager.input.mouseSecondaryButton = (event.buttons[pc.MOUSEBUTTON_RIGHT]);
+
+    // botón izquierdo al pulsar
+
+
+    if (GameManager.input.mousePrimaryButton) {
+        const p = GameManager.getMouseWorldPoint();
+        if (p) {
+            GameManager.input.targetPoint = p.clone ? p.clone() : p;
+        }
+    }
+
 
     GameManager.__rightMouseLook = GameManager.input.mouseSecondaryButton;
     if (GameManager.input.cameratype === "ThirdPersonPointMove") {
@@ -1373,7 +1395,7 @@ GameManager.updateGameManager = async function (dt) {
 
     GameManager._app.dt = dt;
     GameManager.input.dt = dt;
-    Timer.evaluateTimers(dt);
+    await Timer.evaluateTimers(dt);
 
     await GameManager.readKeyboardInput();
     await GameManager.handleEscToggle();

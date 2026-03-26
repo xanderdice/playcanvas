@@ -17,9 +17,9 @@ Character.attributes.add('speed', { type: 'number', default: 1.5, title: "speed"
 Character.attributes.add('gravity', { type: 'number', default: -9.8, title: "gravity", description: "gravity del personaje.", min: -9.8, max: -9.8, precision: 1 });
 Character.attributes.add('isSelectable', { type: 'boolean', default: false });
 Character.attributes.add('isPlayer', { type: 'boolean', default: false });
+Character.attributes.add('defaultrun', { type: 'boolean', default: true });
 Character.attributes.add('inertia', { type: 'boolean', default: true });
 Character.attributes.add('canmoveonair', { type: 'boolean', default: false });
-//Character.attributes.add('useteleport', { type: 'boolean', default: false });
 Character.attributes.add('playerOptions',
     {
         title: "Player options",
@@ -783,7 +783,11 @@ Character.prototype.doMove = function (i, oldInput, cameraRotation, dt) {
     const targetPoint = input.targetPoint || (this.entity.input && this.entity.input.targetPoint) || null;
 
     let direction = new pc.Vec3();
-    let moveSpeed = (input.sprint ? this.speed * 2 : this.speed);
+    //let moveSpeed = (input.sprint ? this.speed * 2 : this.speed);
+    let moveSpeed = this.defaultrun
+        ? (input.sprint ? this.speed : this.speed * 2)
+        : (input.sprint ? this.speed * 2 : this.speed);
+
     let stopMovementNow = false;
 
     if (hasTargetPoint && targetPoint) {
@@ -885,7 +889,7 @@ Character.prototype.doMove = function (i, oldInput, cameraRotation, dt) {
             delta = Math.atan2(Math.sin(delta), Math.cos(delta));
 
             const turnSpeed = 20;
-            const maxTurnSpeed = 8;
+            const maxTurnSpeed = 14;
 
             const ang = this.entity.rigidbody.angularVelocity.clone();
             ang.x = 0;
