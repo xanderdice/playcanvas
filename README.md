@@ -13,6 +13,8 @@ playcanvas scripts textures and more
 * //https://github.com/huwb/volsample?tab=readme-ov-file VOLUMETRIC SHADERS
 * //https://playcanv.as/p/5QoTo3QT/ PLAYCANVAS EXCAMPLE
 
+* //https://boundingboxsoftware.com/materialize/downloads.php MATERIALIZE
+
 * https://github.com/yandongCoder/circular-menu (CIRCULAR MENU)
 
 * https://cgdownload.ru/catalog/5216-ascent-combat-framework-acf-c-action-rpg-creator/
