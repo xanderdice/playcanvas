@@ -588,7 +588,7 @@ Character.prototype.initialize = function () {
 
 
     if (!this.entity.rigidbody) {
-        var mass = 90;
+        var mass = getCharacterMassFromCapsule(this.entity.capsule_collision);
 
         this.entity.addComponent('rigidbody', {
             type: 'dynamic',         // Tipo de cuerpo rígido (puede ser 'dynamic', 'static' o 'kinematic')
@@ -665,10 +665,87 @@ Character.prototype.initialize = function () {
     }, this);
 
     this._traceInputCache = {};
+
+
+    /* ******************************************************************************** */
+    /* HELPER FUNCTIONS
+    /* ******************************************************************************** */
+
+    function getCharacterMassFromCapsule(entity) {
+        var DEFAULT_MASS = 70;                 // kg
+        var ORGANIC_CAPSULE_DENSITY = 170;     // kg/m³
+
+        if (!entity || !entity.collision || !entity.collision.enabled) {
+            return DEFAULT_MASS;
+        }
+
+        var collision = entity.collision;
+
+        if (collision.type !== 'capsule') {
+            return DEFAULT_MASS;
+        }
+
+        var scale = null;
+
+        // Preferimos escala mundial; si no existe, caemos a local.
+        if (entity.getWorldScale) {
+            scale = entity.getWorldScale();
+        } else if (entity.getLocalScale) {
+            scale = entity.getLocalScale();
+        }
+
+        if (!scale) {
+            return DEFAULT_MASS;
+        }
+
+        var sx = Math.abs(scale.x || 1);
+        var sy = Math.abs(scale.y || 1);
+        var sz = Math.abs(scale.z || 1);
+
+        var axis = collision.axis; // 0 = X, 1 = Y, 2 = Z
+
+        var radiusScale;
+        var heightScale;
+
+        switch (axis) {
+            case 0: // X
+                radiusScale = Math.max(sy, sz);
+                heightScale = sx;
+                break;
+            case 2: // Z
+                radiusScale = Math.max(sx, sy);
+                heightScale = sz;
+                break;
+            case 1: // Y
+            default:
+                radiusScale = Math.max(sx, sz);
+                heightScale = sy;
+                break;
+        }
+
+        var radius = collision.radius * radiusScale;
+        var height = collision.height * heightScale;
+
+        // Height en PlayCanvas es tip-to-tip, así que el cilindro central es:
+        var cylinderHeight = height - (2 * radius);
+        if (cylinderHeight < 0) cylinderHeight = 0;
+
+        // Volumen cápsula = cilindro + 2 semiesferas
+        var volume = (Math.PI * radius * radius * cylinderHeight) +
+            ((4.0 / 3.0) * Math.PI * radius * radius * radius);
+
+        var mass = volume * ORGANIC_CAPSULE_DENSITY;
+
+        if (!isFinite(mass) || mass <= 0) {
+            return DEFAULT_MASS;
+        }
+
+        return mass;
+    }
+
+
+
 };
-
-
-
 
 
 
@@ -1879,7 +1956,7 @@ Character.prototype.prepareAnimComponent = function () {
                     {
                         from: 'START',
                         to: 'idle',
-                        time: 0.2,
+                        time: 0.0,
                         priority: 0
                     }, {
                         from: 'idle',
@@ -1894,7 +1971,7 @@ Character.prototype.prepareAnimComponent = function () {
                     }, {
                         from: 'walking',
                         to: 'idle',
-                        time: 0.2,
+                        time: 0.0,
                         priority: 0,
                         conditions: [{
                             parameterName: 'speed',
@@ -1952,7 +2029,7 @@ Character.prototype.prepareAnimComponent = function () {
                     {
                         from: 'attack',
                         to: 'idle',
-                        time: 0.2,
+                        time: 0.0,
                         priority: 0,
                         conditions: [
                             {
@@ -2149,7 +2226,7 @@ Character.prototype.prepareAnimComponent = function () {
                 this.animPlayerStateGraphData.layers[0].transitions.push({
                     from: 'START',
                     to: modeName + "_" + idles[i],
-                    time: 0.2,
+                    time: 0.1,
                     priority: 0,
                     conditions: [
                         { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
@@ -2168,7 +2245,7 @@ Character.prototype.prepareAnimComponent = function () {
                 this.animPlayerStateGraphData.layers[0].transitions.push({
                     from: modeName + "_" + idles[i],
                     to: modeName + "_" + idles[i - 1],
-                    time: 0.2,
+                    time: 0.1,
                     priority: 0,
                     conditions: [
                         { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
@@ -2201,7 +2278,7 @@ Character.prototype.prepareAnimComponent = function () {
                         {
                             from: modeName + '_walking',
                             to: modeName + "_" + idles[i],
-                            time: 0.2,
+                            time: 0.1,
                             priority: 0,
                             conditions: [
                                 { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
@@ -2307,7 +2384,7 @@ Character.prototype.prepareAnimComponent = function () {
                         {
                             from: modeName + '_running',
                             to: modeName + "_" + idles[i],
-                            time: 0.2,
+                            time: 0.1,
                             priority: 0,
                             conditions: [
                                 { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },

@@ -270,10 +270,12 @@ GameManager.attributes.add('cameraPostProcessing', {
         },
         {
             name: 'lut',
-            type: 'boolean',
-            default: true,
             title: 'lut',
-            description: 'lut'
+            description: 'lut',
+            type: 'number',
+            default: 0.5,
+            min: 0,
+            max: 1,
         },
     ]
 });
@@ -763,6 +765,10 @@ GameManager.prototype.initialize = function () {
 
 
 
+    ///MOUSE MOVE:
+    GameManager._app.on("game:mousehover", function (hoverData) {
+        Trace("mousemovephase", hoverData.phase)
+    });
 
 
 
@@ -966,7 +972,7 @@ GameManager.handleEscToggle = async function () {
 /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/
 /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/
 /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/
-GameManager._onMouseMove = function (event) {
+GameManager._onMouseMove = async function (event) {
     if (GameManager.__gameMouseMoved) return;
 
     if (!GameManager.__gameMouse_busy) {
@@ -1011,6 +1017,10 @@ GameManager._onMouseMove = function (event) {
         GameManager.input.lookLastDeltaY = deltaY;
         GameManager.input.previousX = hasClientCoords ? event.clientX : GameManager.input.previousX;
         GameManager.input.previousY = hasClientCoords ? event.clientY : GameManager.input.previousY;
+
+        // Hover/raycast solo cuando el mouse no está capturado
+        await GameManager._updateMouseHoverTarget(event);
+
 
         GameManager.__gameMouseMoved = true;
         GameManager.__gameMouse_busy = false;
@@ -1167,6 +1177,153 @@ GameManager.getMouseWorldPoint = function () {
 };
 
 
+// ================================
+// HOVER / PICKING STATE
+// ================================
+GameManager.__mouseHoverEntity = null;
+GameManager.__mouseHoverData = null;
+
+/**
+ * Devuelve true si la entidad o alguno de sus padres
+ * tiene tag is-selectable o is-player.
+ */
+GameManager._isMouseHoverTarget = function (entity) {
+    let current = entity;
+
+    while (current) {
+        if (current.tags &&
+            (current.tags.has("is-selectable") || current.tags.has("is-player"))) {
+            return true;
+        }
+        current = current.parent || null;
+    }
+
+    return false;
+};
+
+GameManager._clearMouseHoverTarget = function (fireLeave) {
+    const prevEntity = GameManager.__mouseHoverEntity;
+    if (!prevEntity) return;
+
+    if (fireLeave && GameManager._app) {
+        const prevData = GameManager.__mouseHoverData;
+
+        GameManager._app.fire("game:mousehover", {
+            enterEntity: null,
+            leaveEntity: prevEntity,
+            point: prevData ? prevData.point : null,
+            normal: prevData ? prevData.normal : null,
+            screenX: prevData ? prevData.screenX : null,
+            screenY: prevData ? prevData.screenY : null,
+            phase: "leave"
+        });
+    }
+
+    GameManager.__mouseHoverEntity = null;
+    GameManager.__mouseHoverData = null;
+    GameManager.input.mouseRaycast = null;
+};
+
+
+GameManager._updateMouseHoverTarget = async function (event) {
+    if (!GameManager._app || !GameManager.currentCamera) {
+        GameManager._clearMouseHoverTarget(true);
+        return;
+    }
+
+    if (GameManager._app.isMenuMode || GameManager.mouseState === "captured" || pc.Mouse.isPointerLocked()) {
+        GameManager._clearMouseHoverTarget(true);
+        return;
+    }
+
+    const canvas = GameManager._app.graphicsDevice && GameManager._app.graphicsDevice.canvas;
+    if (!canvas) {
+        GameManager._clearMouseHoverTarget(true);
+        return;
+    }
+
+    const rect = canvas.getBoundingClientRect();
+
+    let x = null, y = null;
+
+    if (typeof event.x === "number" && typeof event.y === "number") {
+        x = event.x;
+        y = event.y;
+    } else if (typeof event.clientX === "number" && typeof event.clientY === "number") {
+        x = event.clientX - rect.left;
+        y = event.clientY - rect.top;
+    }
+
+    if (x === null || y === null) return;
+
+    const camera = GameManager.currentCamera;
+
+    // ⚠️ Evitamos crear nuevos Vec3 cada frame (si podés cachearlos arriba mejor aún)
+    const from = camera.screenToWorld(x, y, camera.nearClip);
+    const to = camera.screenToWorld(x, y, camera.farClip);
+
+    const rigidbodySystem = GameManager._app.systems && GameManager._app.systems.rigidbody;
+    if (!rigidbodySystem || !rigidbodySystem.raycastFirst) {
+        GameManager._clearMouseHoverTarget(true);
+        return;
+    }
+
+    const hit = rigidbodySystem.raycastFirst(from, to);
+    const hitEntity = (hit && hit.entity && GameManager._isMouseHoverTarget(hit.entity))
+        ? hit.entity
+        : null;
+
+    const prevEntity = GameManager.__mouseHoverEntity;
+
+    // 🔴 CASO 1: NO HAY HIT
+    if (!hitEntity) {
+        if (prevEntity) {
+            GameManager._clearMouseHoverTarget(true);
+        }
+        return;
+    }
+
+    // 🟢 CASO 2: MISMA ENTIDAD → NO HACER NADA (clave performance)
+    if (prevEntity === hitEntity) {
+        return;
+    }
+
+    if (!hitEntity.tags.has('is-character')) {
+        return;
+    }
+
+    // 🔴 SALIDA (si había algo antes)
+    if (prevEntity && GameManager._app) {
+        const prevData = GameManager.__mouseHoverData;
+
+        GameManager._app.fire("game:mousehover", {
+            enterEntity: null,
+            leaveEntity: prevEntity,
+            point: prevData ? prevData.point : null,
+            normal: prevData ? prevData.normal : null,
+            screenX: prevData ? prevData.screenX : null,
+            screenY: prevData ? prevData.screenY : null,
+            phase: "leave"
+        });
+    }
+
+    // 🟢 ENTRADA
+    const hoverData = {
+        enterEntity: hitEntity,
+        leaveEntity: prevEntity || null,
+        point: hit.point || null,
+        normal: hit.normal || null,
+        screenX: x,
+        screenY: y,
+        phase: "enter"
+    };
+
+    GameManager.__mouseHoverEntity = hitEntity;
+    GameManager.__mouseHoverData = hoverData;
+    GameManager.input.mouseRaycast = hoverData;
+
+    GameManager._app.fire("game:mousehover", hoverData);
+};
 
 GameManager.updateCameraOrientation = async function () {
     if (!GameManager.currentCamera) return;
@@ -2014,7 +2171,6 @@ GameManager.calculateCameraScene = function () {
 GameManager.applyCameraPostProcessing = function (options) {
     var app = GameManager._app;
     if (!app) return null;
-    debugger;
     if (options.enabled) {
 
         var cameraFrame = new pc.CameraFrame(app, GameManager.currentCamera);
@@ -2065,7 +2221,7 @@ GameManager.applyCameraPostProcessing = function (options) {
         //var colorLUT = app.assets.find("lut-blue.png");
         var colorLUT = app.assets.find("luck.cube-s32.png");
         cameraFrame.colorLUT.texture = colorLUT?.resource;
-        cameraFrame.colorLUT.intensity = options.lut ? 1.0 : 0.0;
+        cameraFrame.colorLUT.intensity = options.lut;
 
 
         cameraFrame.update();
