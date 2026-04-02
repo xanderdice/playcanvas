@@ -1,5 +1,5 @@
 // --------------- POST EFFECT DEFINITION --------------- //
-var SAMPLE_COUNT = 15;
+var SAMPLE_COUNT = 5;
 
 function computeGaussian(n, theta) {
     return ((1.0 / Math.sqrt(2 * Math.PI * theta)) * Math.exp(-(n * n) / (2 * theta * theta)));
@@ -88,10 +88,26 @@ class BloomEffect extends pc.PostEffect {
             "    gl_FragColor = base + bloom;",
             "}"
         ].join("\n");
+        this.extractShader = pc.ShaderUtils.createShader(graphicsDevice, {
+            uniqueName: 'BloomExtractShader',
+            attributes: attributes,
+            vertexGLSL: pc.PostEffect.quadVertexShader,
+            fragmentGLSL: extractFrag
+        });
+        this.blurShader = pc.ShaderUtils.createShader(graphicsDevice, {
+            uniqueName: 'BloomBlurShader',
+            attributes: attributes,
+            vertexGLSL: pc.PostEffect.quadVertexShader,
+            fragmentGLSL: gaussianBlurFrag
+        });
+        this.combineShader = pc.ShaderUtils.createShader(graphicsDevice, {
+            uniqueName: 'BloomCombineShader',
+            attributes: attributes,
+            vertexGLSL: pc.PostEffect.quadVertexShader,
+            fragmentGLSL: combineFrag
+        });
 
-        this.extractShader = pc.createShaderFromCode(graphicsDevice, pc.PostEffect.quadVertexShader, extractFrag, 'BloomExtractShader', attributes);
-        this.blurShader = pc.createShaderFromCode(graphicsDevice, pc.PostEffect.quadVertexShader, gaussianBlurFrag, 'BloomBlurShader', attributes);
-        this.combineShader = pc.createShaderFromCode(graphicsDevice, pc.PostEffect.quadVertexShader, combineFrag, 'BloomCombineShader', attributes);
+
 
         this.targets = [];
 
