@@ -402,7 +402,7 @@ Character.prototype.initialize = function () {
 
 
     this.doMoveCharacter_busy = false;
-    this.doAICharacter_busy = false;
+
 
     this.CHAR_CUR_POSITION = this.entity.getPosition();
     this.CHAR_CUR_ROTATION = this.entity.getRotation();
@@ -751,15 +751,29 @@ Character.prototype.initialize = function () {
 
 
 
-// Función para calcular la rotación en grados dado un quaternion de rotación
-Character.prototype.getYaw = function (rotation) {
-    // Calcular el ángulo en radianes del eje Y (Yaw) de la rotación
-    var angleRadians = Math.atan2(2 * (rotation.w * rotation.y + rotation.x * rotation.z), 1 - 2 * (rotation.y * rotation.y + rotation.z * rotation.z));
-    // Convertir el ángulo de radianes a grados
-    var angleDegrees = angleRadians * (180 / Math.PI);
-    return angleDegrees;
-}
 
+Character.prototype.updateSpeedAnimBlendFromVelocity = async function (dt) {
+
+    const v = this.entity.rigidbody.linearVelocity;
+    const horizontalSpeed = Math.sqrt(v.x * v.x + v.z * v.z);
+
+    const idleThreshold = 0.12; // m/s: por debajo de esto debe quedar en idle
+
+    let targetBlend = 0;
+    if (horizontalSpeed > idleThreshold) {
+        // Normaliza contra tu speed base para que:
+        // ~0 = idle, ~1 = walk, >1 = run
+        targetBlend = pc.math.clamp(horizontalSpeed / Math.max(this.speed, 0.001), 0, 2);
+    }
+
+    // Suavizado corto para evitar jitter entre idle/walk
+    const lerpT = pc.math.clamp(dt * 12, 0, 1);
+    this.speedAnimBlend = pc.math.lerp(this.speedAnimBlend || 0, targetBlend, lerpT);
+
+    if (this.speedAnimBlend < 0.05) {
+        this.speedAnimBlend = 0;
+    }
+};
 
 
 Character.prototype.stopMovement = function () {
@@ -771,24 +785,14 @@ Character.prototype.stopMovement = function () {
 }
 
 
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * */
-/* D O    A R T I F I C I A L   I N T E L I G E N CE   */
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * */
-Character.prototype.doAI = async function () {
-    if (!this.doAICharacter_busy) {
-        this.doAICharacter_busy = true;
-        const otherScript = this.entity.script.characterNpc
-        if (otherScript) {
-            otherScript.doAI();
-        }
-        this.doAICharacter_busy = false;
-    }
-}
-
 /*              */
 /* D O  M O V E */
 /*              */
 Character.prototype.doMove = async function () {
+    if (!this.entity || !this.entity.rigidbody) {
+        return;
+    }
+
     if (this.doMoveCharacter_busy) return;
     this.doMoveCharacter_busy = true;
 
@@ -922,11 +926,17 @@ Character.prototype.doMove = async function () {
             : moveSpeed)
         : 0;
 
-    this.speedAnimBlend = this.isMoving
-        ? (input.sprint ? moveSpeed / this.speed * 5 : moveSpeed / this.speed - 0.3)
-        : 0;
+    /*
+        this.speedAnimBlend = this.isMoving
+            ? (input.sprint ? moveSpeed / this.speed * 5 : moveSpeed / this.speed - 0.3)
+            : 0;
+    
+        if (this.speedAnimBlend < 0.01) this.speedAnimBlend = 0;
+    */
 
-    if (this.speedAnimBlend < 0.01) this.speedAnimBlend = 0;
+    //Calcula la animacion de movimiento que ira:
+    await this.updateSpeedAnimBlendFromVelocity(dt);
+
 
     if (this.entity.attackSystem.canAttack &&
         !this.entity.attackSystem.walkAndAttack &&
