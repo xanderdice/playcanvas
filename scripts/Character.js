@@ -1237,102 +1237,11 @@ const CharacterLocomotionEnum = Object.freeze({
 
 
 
-Character.prototype.doCalculateLocomotionDirection = function (dt) {
-    var direction = CharacterLocomotionEnum.IDLE;
-    // Calcular el vector de movimiento
-    var movimiento = new pc.Vec3();
-    movimiento.sub2(this.CHAR_CUR_POSITION.clone(), this.CHAR_LAST_POSITION.clone());
-
-
-    // Determinar si la magnitud del movimiento es pequeña (está quieto)
-    var umbralMovimiento = 0.001; // Puedes ajustar este umbral según sea necesario
-    if (movimiento.length() < umbralMovimiento) {
-        direction = CharacterLocomotionEnum.IDLE;
-    } else {
-        movimiento.normalize(); // Normalizar solo si la magnitud es mayor al umbral
-
-        // Obtener el vector forward de la entidad
-        var ejeAdelante = this.entity.forward.clone().normalize();
-
-        // Calcular la velocidad dividiendo la distancia entre fotogramas por el tiempo transcurrido
-        var velocidad = movimiento.length() / dt;
-        var velocidadRelativa = movimiento.dot(ejeAdelante) / dt;
-        var distanciaRecorrida = movimiento.length();
-
-
-
-        // Calcular el ángulo entre el vector de movimiento y el vector forward
-        var anguloRad = Math.atan2(movimiento.z, movimiento.x) - Math.atan2(ejeAdelante.z, ejeAdelante.x);
-        var anguloDeg = anguloRad * (180 / Math.PI);
-
-        // Normalizar el ángulo dentro del rango de -180 a 180 grados
-        if (anguloDeg > 180) {
-            anguloDeg -= 360;
-        } else if (anguloDeg < -180) {
-            anguloDeg += 360;
-        }
-
-        // Determinar la dirección de movimiento dentro del rango de ±22.5 grados
-        if (Math.abs(anguloDeg) <= 22.5 || Math.abs(anguloDeg) >= 337.5) {
-            direction = CharacterLocomotionEnum.FORWARD;
-        } else if (Math.abs(anguloDeg - 180) <= 22.5 || Math.abs(anguloDeg + 180) <= 22.5) {
-            direction = CharacterLocomotionEnum.BACKWARD;
-        } else if (Math.abs(anguloDeg - 90) <= 22.5 || Math.abs(anguloDeg + 270) <= 22.5) {
-            direction = CharacterLocomotionEnum.RIGHT;
-        } else if (Math.abs(anguloDeg + 90) <= 22.5 || Math.abs(anguloDeg - 270) <= 22.5) {
-            direction = CharacterLocomotionEnum.LEFT;
-        } else if (Math.abs(anguloDeg - 45) <= 22.5 || Math.abs(anguloDeg + 315) <= 22.5) {
-            direction = CharacterLocomotionEnum.FORWARDRIGHT;
-        } else if (Math.abs(anguloDeg + 45) <= 22.5 || Math.abs(anguloDeg - 315) <= 22.5) {
-            direction = CharacterLocomotionEnum.FORWARDLEFT;
-        } else if (Math.abs(anguloDeg + 135) <= 22.5 || Math.abs(anguloDeg - 225) <= 22.5) {
-            direction = CharacterLocomotionEnum.BACKWARDRIGHT;
-        } else if (Math.abs(anguloDeg - 135) <= 22.5 || Math.abs(anguloDeg + 225) <= 22.5) {
-            direction = CharacterLocomotionEnum.BACKWARDLEFT;
-        } else {
-            direction = CharacterLocomotionEnum.IDLE;
-        }
-    }
-
-    return direction;
-}
-
-/* e n t i t y   a n i m a t o r */
-/**
- * its creates an animation.
- * @param {number} forwardVector - Direction vector.
- * @param {number} animatorDuration - Time to destroy the animator.
- * @param {string} animForce - Animacion you want to force while pays the movement.
- * @returns {void} void function.
- */
-Character.prototype.createAnimator = function (forwardVector, animatorDuration, animForce, speed, rigidBodyType) {
-    this.animatorAnimForce = animForce ?? null;
-    this.animatorElapsedTime = 0;
-    this.animatorTargetForwardVector = forwardVector;
-    this.animatorDuration = animatorDuration;
-    this.animatorTargetReached = false;
-    this.animatorSpeed = speed ?? this.speed * 2;
-    this.animatorRestoreToRigidBodyType = this.entity.rigidbody.type;
-    this.entity.rigidbody.type = rigidBodyType ?? this.animatorRestoreToRigidBodyType;
-}
-Character.prototype.destroyAnimator = function () {
-    this.animatorTargetReached = true;
-    this.animatorElapsedTime = 0;
-    this.animatorSpeed = 0;
-    this.entity.rigidbody.type = this.animatorRestoreToRigidBodyType;
-    this.animatorAnimForce = null;
-    this.animatorAnimMotionRootMode = null;
-}
 
 
 
 
-/* ****************************************************** */
-/*   C A L C U L A T E S    T H E    A N I M A T I O N    */
-/* ****************************************************** */
-Character.prototype.doCalculateAnimation = function (animVelocityMode, dt) {
 
-}
 
 
 
