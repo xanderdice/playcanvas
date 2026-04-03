@@ -209,40 +209,40 @@ TracerScript.__tracer_busy = false;
 /**************************************************/
 /*             G A M E   M A N A G E R            */
 /**************************************************/
-var GameManager = pc.createScript('gameManager');
+var GameManager = pc.createScript("gameManager");
 
-GameManager.attributes.add('cameraOptions', {
+GameManager.attributes.add("cameraOptions", {
     title: "Camera Options",
-    type: 'json',
+    type: "json",
     schema: [
 
 
         {
-            name: 'cameratype',
+            name: "cameratype",
             title: "cameratype",
-            type: 'string', enum: [
-                { 'FirstPerson': 'FirstPerson' },
-                { 'ThirdPerson': 'ThirdPerson' },
-                { 'ThirdPersonPointMove': 'ThirdPersonPointMove' },
-                { 'FlyCamera': 'FlyCamera' }
-            ], default: 'ThirdPerson',
+            type: "string", enum: [
+                { "FirstPerson": "FirstPerson" },
+                { "ThirdPerson": "ThirdPerson" },
+                { "ThirdPersonPointMove": "ThirdPersonPointMove" },
+                { "FlyCamera": "FlyCamera" }
+            ], default: "ThirdPerson",
             description: "General style of player view for this game.",
         }
 
     ]
 });
 
-GameManager.attributes.add('cameraPostProcessing', {
+GameManager.attributes.add("cameraPostProcessing", {
     title: "CameraPostProcessing",
     description: "CameraPostProcessing effects",
-    type: 'json',
+    type: "json",
     schema: [
         {
-            name: 'enabled',
-            type: 'boolean',
+            name: "enabled",
+            type: "boolean",
             default: true,
-            title: 'enabled',
-            description: 'enables CameraPostProcessing'
+            title: "enabled",
+            description: "enables CameraPostProcessing"
         },
 
         {
@@ -281,22 +281,22 @@ GameManager.attributes.add('cameraPostProcessing', {
         },
 
         {
-            name: 'stencil',
-            type: 'boolean',
+            name: "stencil",
+            type: "boolean",
             default: false,
-            title: 'stencil',
-            description: 'stencil'
+            title: "stencil",
+            description: "stencil"
         },
 
         {
-            name: 'renderTargetScale',
-            type: 'number',
+            name: "renderTargetScale",
+            type: "number",
             default: 1.0,
             precision: 2,
             min: 0,
             max: 1,
-            title: 'renderTargetScale',
-            description: 'renderTargetScale'
+            title: "renderTargetScale",
+            description: "renderTargetScale"
         },
 
 
@@ -313,19 +313,19 @@ GameManager.attributes.add('cameraPostProcessing', {
 
 
         {
-            name: 'sceneColorMap',
-            type: 'boolean',
+            name: "sceneColorMap",
+            type: "boolean",
             default: false,
-            title: 'sceneColorMap',
-            description: 'sceneColorMap'
+            title: "sceneColorMap",
+            description: "sceneColorMap"
         },
 
         {
-            name: 'sceneDepthMap',
-            type: 'boolean',
+            name: "sceneDepthMap",
+            type: "boolean",
             default: false,
-            title: 'sceneDepthMap',
-            description: 'sceneDepthMap'
+            title: "sceneDepthMap",
+            description: "sceneDepthMap"
         },
 
         {
@@ -341,39 +341,39 @@ GameManager.attributes.add('cameraPostProcessing', {
 
 
         {
-            name: 'bloom',
-            type: 'number',
+            name: "bloom",
+            type: "number",
             default: 0.01,
             min: 0,
             max: 1,
-            title: 'bloom',
-            description: 'bloom'
+            title: "bloom",
+            description: "bloom"
         },
         {
-            name: 'ssao',
-            type: 'boolean',
+            name: "ssao",
+            type: "boolean",
             default: true,
-            title: 'ssao',
-            description: 'ssao'
+            title: "ssao",
+            description: "ssao"
         },
 
         {
-            name: 'taa',
-            type: 'number',
+            name: "taa",
+            type: "number",
             default: 0.0,
             min: 0,
             precision: 1,
             max: 1,
-            title: 'taa',
-            description: 'taa'
+            title: "taa",
+            description: "taa"
         },
 
 
         {
-            name: 'lut',
-            title: 'lut',
-            description: 'lut',
-            type: 'number',
+            name: "lut",
+            title: "lut",
+            description: "lut",
+            type: "number",
             default: 0.5,
             min: 0,
             max: 1,
@@ -395,10 +395,10 @@ GameManager.attributes.add('cameraPostProcessing', {
 });
 
 
-GameManager.attributes.add('characterController', {
+GameManager.attributes.add("characterController", {
     title: "characterController",
     description: "characterController",
-    type: 'json',
+    type: "json",
     schema: [
         {
             name: "enabled",
@@ -420,80 +420,80 @@ GameManager.attributes.add('characterController', {
 });
 
 
-GameManager.attributes.add('scenesConfig', {
+GameManager.attributes.add("scenesConfig", {
     title: "scenesConfig",
-    type: 'json',
+    type: "json",
     schema: [
         {
-            name: 'mainMenuScene',
-            title: 'mainMenuScene',
-            type: 'boolean',
+            name: "mainMenuScene",
+            title: "mainMenuScene",
+            type: "boolean",
             array: false,
             default: true,
-            description: 'mainMenuScene'
+            description: "mainMenuScene"
         }
     ]
 });
 
-GameManager.attributes.add('mouseOptions', {
+GameManager.attributes.add("mouseOptions", {
     title: "Mouse Options",
-    type: 'json',
+    type: "json",
     schema: [
         {
-            name: 'hideMousePointer',
-            title: 'hideMousePointer',
-            type: 'boolean',
+            name: "hideMousePointer",
+            title: "hideMousePointer",
+            type: "boolean",
             default: false,
-            description: 'hideMousePointer'
+            description: "hideMousePointer"
         },
         {
-            name: 'fireMenuEventOnMouseMove',
-            title: 'fireMenuEventOnMouseMove',
-            type: 'boolean',
+            name: "fireMenuEventOnMouseMove",
+            title: "fireMenuEventOnMouseMove",
+            type: "boolean",
             default: false,
-            description: 'fireMenuEventOnMouseMove'
+            description: "fireMenuEventOnMouseMove"
         },
         {
             name: "mouseSensitivity",
-            type: 'number',
+            type: "number",
             default: 10,
-            title: 'Mouse Sensitivity'
+            title: "Mouse Sensitivity"
         }
 
     ]
 });
 
 
-GameManager.attributes.add('ui', {
+GameManager.attributes.add("ui", {
     title: "UI",
-    type: 'json',
+    type: "json",
     schema: [
         {
-            name: 'mainMenuType',
-            type: 'string',
-            enum: [{ 'none': 'none' }, { 'default': 'default' }, { 'custom': 'custom' }],
+            name: "mainMenuType",
+            type: "string",
+            enum: [{ "none": "none" }, { "default": "default" }, { "custom": "custom" }],
             default: "default",
-            description: 'mainMenuType'
+            description: "mainMenuType"
         },
         {
-            name: 'mainMenuHtmlFile',
-            type: 'asset',
-            assetType: 'html',
+            name: "mainMenuHtmlFile",
+            type: "asset",
+            assetType: "html",
             array: false,
             default: null,
-            description: 'mainMenuHtmlFile'
+            description: "mainMenuHtmlFile"
         },
         {
-            name: 'hudHtmlFile',
-            type: 'asset',
-            assetType: 'html',
+            name: "hudHtmlFile",
+            type: "asset",
+            assetType: "html",
             array: false,
             default: null,
-            description: 'hudHtmlFile'
+            description: "hudHtmlFile"
         },
         {
-            name: 'showMenuOnEnabledPointer',
-            type: 'boolean',
+            name: "showMenuOnEnabledPointer",
+            type: "boolean",
             default: true
         }
 
@@ -503,74 +503,74 @@ GameManager.attributes.add('ui', {
 
 
 
-GameManager.attributes.add('followCamera', {
+GameManager.attributes.add("followCamera", {
     title: "Follow Camera",
-    type: 'json',
+    type: "json",
     schema: [
         {
-            name: 'targetName',
-            type: 'string',
+            name: "targetName",
+            type: "string",
             default: "targetEntity",
-            title: 'Target Entity Name',
-            description: "Select the entity name around which the camera will orbit. recoment use: 'targetEntity'. "
+            title: "Target Entity Name",
+            description: "Select the entity name around which the camera will orbit. recoment use: \"targetEntity\". "
         },
         {
-            name: 'orbitRadius',
-            type: 'number',
+            name: "orbitRadius",
+            type: "number",
             default: 3,
-            title: 'Orbit Radius'
+            title: "Orbit Radius"
         },
         {
-            name: 'bottomClamp',
-            type: 'number',
+            name: "bottomClamp",
+            type: "number",
             default: 320,
             min: 320,
             max: 340,
             precision: 0,
-            title: 'bottomClamp',
+            title: "bottomClamp",
             description: "The maximum value in angle degrees for the camera downwards movement."
         },
         {
-            name: 'topClamp',
-            type: 'number',
+            name: "topClamp",
+            type: "number",
             default: 70,
             min: 50,
             max: 70,
             precision: 0,
-            title: 'topClamp',
+            title: "topClamp",
             description: "The maximum value in angle degrees for the camera upwards movement."
         },
         {
-            name: 'smoothFactor',
-            type: 'number',
+            name: "smoothFactor",
+            type: "number",
             default: 0.2,
             min: 0.01,
             max: 1,
-            title: 'Smooth Factor',
-            description: 'Adjusts the smoothness of camera movement (0.1 for more smooth, 1 for immediate response)'
+            title: "Smooth Factor",
+            description: "Adjusts the smoothness of camera movement (0.1 for more smooth, 1 for immediate response)"
         },
         {
-            name: 'autofov',
-            type: 'boolean',
+            name: "autofov",
+            type: "boolean",
             default: false,
-            title: 'autofov'
+            title: "autofov"
         },
 
     ]
 });
 
 
-GameManager.attributes.add('flyCamera', {
+GameManager.attributes.add("flyCamera", {
     title: "Fly Camera",
     description: "Only works for playerPersonStyle = FlyCamera.",
-    type: 'json',
+    type: "json",
     schema: [
         {
-            name: 'speed',
-            type: 'number',
+            name: "speed",
+            type: "number",
             default: 20,
-            title: 'speed',
-            description: 'speed',
+            title: "speed",
+            description: "speed",
             min: 10,
             max: 20,
             precision: 1
@@ -584,78 +584,78 @@ GameManager.attributes.add("subtitles", {
     schema: [
 
         {
-            name: 'enabled',
-            type: 'boolean',
+            name: "enabled",
+            type: "boolean",
             default: true,
-            title: 'enabled',
-            description: 'enables subtitles'
+            title: "enabled",
+            description: "enables subtitles"
         },
 
         {
-            name: 'enableSubtitles',
-            type: 'boolean',
+            name: "enableSubtitles",
+            type: "boolean",
             default: true,
         },
     ]
 });
 
-GameManager.attributes.add('tracer', {
+GameManager.attributes.add("tracer", {
     title: "Tracer",
-    type: 'json',
+    type: "json",
     schema: [
         {
-            name: 'enabled',
-            type: 'boolean',
+            name: "enabled",
+            type: "boolean",
             default: false,
-            title: 'enabled',
-            description: 'enables Tracer'
+            title: "enabled",
+            description: "enables Tracer"
         },
 
         {
-            name: 'trenablefps',
+            name: "trenablefps",
             title: "FPS Enabled",
-            type: 'boolean',
+            type: "boolean",
             default: true
         },
         {
-            name: 'trshowstats',
-            type: 'boolean',
+            name: "trshowstats",
+            type: "boolean",
             default: false
         },
         {
-            name: 'trtargetpoint',
-            type: 'boolean',
+            name: "trtargetpoint",
+            type: "boolean",
             default: false
         },
         {
-            name: 'trenablelightingdebugLayer',
-            type: 'boolean',
+            name: "trenablelightingdebugLayer",
+            type: "boolean",
             default: false
         },
         {
-            name: 'tralwaysshow',
+            name: "tralwaysshow",
             title: "Always show",
-            type: 'boolean',
+            type: "boolean",
             default: false
         },
         {
-            name: 'trordermode',
+            name: "trordermode",
             title: "Order mode",
-            type: 'string',
-            enum: [{ 'newlestlast': 'newlestlast' }, { 'oldestfirst': 'oldestfirst' }],
+            type: "string",
+            enum: [{ "newlestlast": "newlestlast" }, { "oldestfirst": "oldestfirst" }],
             default: "oldestfirst"
         },
         {
-            name: 'trgamesleep',
+            name: "trgamesleep",
             title: "gamesleep",
-            type: 'number',
+            type: "number",
             default: 0,
             min: 0, max: 100, precision: 0
         },
         {
-            name: 'trgametimescale',
+            name: "trgametimescale",
             title: "trgametimescale",
-            type: 'number',
+            type: "number",
             default: 1,
             min: 0, max: 1, precision: 2
         },
@@ -707,17 +707,6 @@ GameManager.input = {
 GameManager.sceneCharacters = [];
 
 
-function onYouTubeIframeAPIReady() {
-    GameManager.backgroundMusicYTPlayer = new YT.Player('backgroundMusicYTPlayer', {
-        height: '0',
-        width: '0',
-        videoId: 'M7lc1UVf-VE',
-        events: {
-            /*'onReady': onPlayerReady,
-            'onStateChange': onPlayerStateChange*/
-        }
-    });
-}
 
 
 // initialize code called once per entity
@@ -768,16 +757,16 @@ GameManager.prototype.initialize = function () {
 
     GameManager.enableSubtitles = this.subtitles.enabled;
 
-    document.addEventListener('contextmenu', function (e) {
+    document.addEventListener("contextmenu", function (e) {
         e.preventDefault();
         return false;
     });
     var canvas = this.app.graphicsDevice.canvas;
-    canvas.addEventListener('contextmenu', function (e) {
+    canvas.addEventListener("contextmenu", function (e) {
         e.preventDefault();
         return false;
     });
-    canvas.setAttribute('tabindex', '0');
+    canvas.setAttribute("tabindex", "0");
     canvas.focus();
 
     canvas.requestPointerLock = canvas.requestPointerLock ||
@@ -788,26 +777,6 @@ GameManager.prototype.initialize = function () {
         document.mozExitPointerLock ||
         document.webkitExitPointerLock;
 
-    TracerScript.trenable = this.tracer.enabled;
-    TracerScript.tralwaysshow = this.tracer.tralwaysshow;
-    TracerScript.trordermode = this.tracer.trordermode;
-    TracerScript.trenablefps = TracerScript.trenable ? this.tracer.trenablefps : false;
-    TracerScript.trshowstats = TracerScript.trenable ? this.tracer.trshowstats : false;
-    TracerScript.trtargetpoint = TracerScript.trenable ? this.tracer.trtargetpoint : false;
-    TracerScript.trenablelightingdebugLayer = TracerScript.trenable ? this.tracer.trenablelightingdebugLayer : false;
-
-    if (TracerScript.trenablefps) {
-        TracerScript.fps = new FPSMeter({ heat: true, graph: true });
-    }
-    if (TracerScript.trenable) {
-        TracerScript.trgamesleep = this.tracer.trgamesleep;
-        TracerScript.trgametimescale = this.tracer.trgametimescale;
-    } else {
-        TracerScript.trgamesleep = 0;
-        TracerScript.trgametimescale = 1;
-    }
-
-
 
     this.app.root.name = "APPROOT";
     this.app.maxDeltaTime = 0.2;
@@ -817,13 +786,6 @@ GameManager.prototype.initialize = function () {
     /* UI                                 */
     /* ********************************** */
     document.body.style.backgroundColor = "#000";
-    var YTtagScript = document.createElement('script');
-    YTtagScript.src = "https://www.youtube.com/iframe_api";
-    var firstScriptTag = document.getElementsByTagName('script')[0];
-    firstScriptTag.parentNode.insertBefore(YTtagScript, firstScriptTag);
-    GameManager.backgroundMusicYTPlayer = null;
-
-
     this.createHudDIV(canvas);
     this.createMenuDIV(canvas);
     this.createSceneLoaderDIV(canvas);
@@ -845,7 +807,7 @@ GameManager.prototype.initialize = function () {
             fetch(htmlUrl)
                 .then(response => {
                     if (!response.ok) {
-                        throw new Error('Network response was not ok');
+                        throw new Error("Network response was not ok");
                     }
                     return response.text();
                 })
@@ -853,7 +815,7 @@ GameManager.prototype.initialize = function () {
                     GameManager.menuDIV.innerHTML += htmlContent;
                 })
                 .catch(error => {
-                    console.error('Error fetching HTML:', error);
+                    console.error("Error fetching HTML:", error);
                 });
         }
     }
@@ -865,7 +827,7 @@ GameManager.prototype.initialize = function () {
         fetch(htmlUrl)
             .then(response => {
                 if (!response.ok) {
-                    throw new Error('Network response was not ok');
+                    throw new Error("Network response was not ok");
                 }
                 return response.text();
             })
@@ -873,21 +835,21 @@ GameManager.prototype.initialize = function () {
                 GameManager.hudDIV.innerHTML += htmlContent;
             })
             .catch(error => {
-                console.error('Error fetching HUD HTML:', error);
+                console.error("Error fetching HUD HTML:", error);
             });
     }
 
     ///VIGNETTE:
     // Crear el div viñeta
-    this.vignetteDiv = document.createElement('div');
-    this.vignetteDiv.id = 'vignette-overlay';
-    this.vignetteDiv.className = 'vignette-overlay';
-    if (getComputedStyle(canvas.parentNode).position === 'static') {
-        canvas.parentNode.style.position = 'relative';
+    this.vignetteDiv = document.createElement("div");
+    this.vignetteDiv.id = "vignette-overlay";
+    this.vignetteDiv.className = "vignette-overlay";
+    if (getComputedStyle(canvas.parentNode).position === "static") {
+        canvas.parentNode.style.position = "relative";
     }
     // Insertar el div como HERMANO del canvas (mismo contenedor padre)
     canvas.parentNode.insertBefore(this.vignetteDiv, canvas.nextSibling);
-    const styleTag = document.createElement('style');
+    const styleTag = document.createElement("style");
     styleTag.innerHTML = `
     .vignette-overlay {
         position: absolute;
@@ -905,15 +867,6 @@ GameManager.prototype.initialize = function () {
     }
         `;
     document.body.appendChild(styleTag);
-
-
-
-
-
-    ///MOUSE MOVE:
-    GameManager._app.on("game:mousehover", function (hoverData) {
-        Trace("mousemovephase", hoverData.phase)
-    });
 
 
 
@@ -981,9 +934,17 @@ GameManager.prototype.initialize = function () {
 
     /*POST PROCESSING ATRIBUTE SCRIPT EVENT*/
     GameManager.cameraPostProcessing = this.cameraPostProcessing
-    this.on('attr:cameraPostProcessing', function (nuevoValor) {
+    this.on("attr:cameraPostProcessing", function (nuevoValor) {
         GameManager.applyCameraPostProcessing(nuevoValor);
         GameManager.cameraPostProcessing = nuevoValor
+    }, this);
+
+    //TracerScript:
+    GameManager.tracerScriptOptions = this.tracer;
+    GameManager.applyTracerOptions(GameManager.tracerScriptOptions);
+    this.on("attr:tracer", function (nuevoValor) {
+        GameManager.applyTracerOptions(nuevoValor);
+        GameManager.tracerScriptOptions = nuevoValor
     }, this);
 
 
@@ -1024,13 +985,6 @@ GameManager.prototype.initialize = function () {
         }
     }
 
-};
-
-
-
-
-/**/
-GameManager.prototype.postInitialize = function () {
 
     /* ************* */
     /* APP UPDATE    */
@@ -1042,7 +996,11 @@ GameManager.prototype.postInitialize = function () {
     }
 
 
-}
+};
+
+
+
+
 
 
 GameManager.bindInputs = function () {
@@ -1227,7 +1185,7 @@ GameManager.setMouseState = function (state) {
     }
 
     GameManager.mouseState = state;
-    Trace('mouseState', GameManager.mouseState);
+    Trace("mouseState", GameManager.mouseState);
 };
 
 
@@ -1433,7 +1391,7 @@ GameManager._updateMouseHoverTarget = async function (event) {
         return;
     }
 
-    if (!hitEntity.tags.has('is-character')) {
+    if (!hitEntity.tags.has("is-character")) {
         return;
     }
 
@@ -1565,7 +1523,7 @@ GameManager.updateCameraPosition = async function (dt) {
 
     const hit = GameManager._app.systems.rigidbody.raycastFirst(targetPosition, cameraPosition);
 
-    if (hit && hit.entity && !(hit.entity.isPlayer ?? false) && hit.entity.name.toLowerCase() !== "charactersensor" && !hit.entity.tags.has('ignore-camera-collision')) {
+    if (hit && hit.entity && !(hit.entity.isPlayer ?? false) && hit.entity.name.toLowerCase() !== "charactersensor" && !hit.entity.tags.has("ignore-camera-collision")) {
         const direction = GameManager.followCamera.target.getPosition().sub(hit.point).normalize();
         cameraPosition = hit.point.clone().add(direction.scale(0.1));
     }
@@ -1723,9 +1681,9 @@ GameManager.updateGameManager = async function (dt) {
     if (TracerScript.trshowstats) {
         if (window.performance && window.performance.memory) {
             var memoryInfo = window.performance.memory;
-            Trace('totalJSHeapSize', parseInt(memoryInfo.totalJSHeapSize / 1048576) + "mb");
-            Trace('usedJSHeapSize', parseInt(memoryInfo.usedJSHeapSize / 1048576) + "mb");
-            Trace('jsHeapSizeLimit', parseInt(memoryInfo.jsHeapSizeLimit / 1048576) + "mb");
+            Trace("totalJSHeapSize", parseInt(memoryInfo.totalJSHeapSize / 1048576) + "mb");
+            Trace("usedJSHeapSize", parseInt(memoryInfo.usedJSHeapSize / 1048576) + "mb");
+            Trace("jsHeapSizeLimit", parseInt(memoryInfo.jsHeapSizeLimit / 1048576) + "mb");
         }
         const vram = GameManager._app.stats.vram;
         Trace("vram",
@@ -2049,10 +2007,10 @@ GameManager.prototype.createHudDIV = function (canvas) {
             const rect = canvas.getBoundingClientRect();
 
             // Ajustar el div para que coincida con el canvas
-            GameManager.hudDIV.style.width = rect.width + 'px';
-            GameManager.hudDIV.style.height = rect.height + 'px';
-            GameManager.hudDIV.style.top = (rect.top + window.scrollY) + 'px';
-            GameManager.hudDIV.style.left = (rect.left + window.scrollX) + 'px';
+            GameManager.hudDIV.style.width = rect.width + "px";
+            GameManager.hudDIV.style.height = rect.height + "px";
+            GameManager.hudDIV.style.top = (rect.top + window.scrollY) + "px";
+            GameManager.hudDIV.style.left = (rect.left + window.scrollX) + "px";
         }
 
         // Solución para manejar múltiples eventos resize
@@ -2386,6 +2344,39 @@ GameManager.applyCameraPostProcessing = function (options) {
 
 }
 
+GameManager.applyTracerOptions = async function (options) {
+
+    TracerScript.trenable = options.enabled;
+    TracerScript.tralwaysshow = options.tralwaysshow;
+    TracerScript.trordermode = options.trordermode;
+    TracerScript.trenablefps = TracerScript.trenable ? options.trenablefps : false;
+    TracerScript.trshowstats = TracerScript.trenable ? options.trshowstats : false;
+    TracerScript.trtargetpoint = TracerScript.trenable ? options.trtargetpoint : false;
+    TracerScript.trenablelightingdebugLayer = TracerScript.trenable ? options.trenablelightingdebugLayer : false;
+    TracerScript.trgamesleep = TracerScript.trenable ? options.trgamesleep : 0;
+    TracerScript.trgametimescale = TracerScript.trenable ? options.trgametimescale : 1;
+
+
+
+    if (TracerScript.trenablelightingdebugLayer) {
+        GameManager._app.scene.lighting.debugLayer = GameManager._app.scene.layers.getLayerByName("World").id;
+    }
+
+    if (TracerScript.trenablefps) {
+        if (!TracerScript.fps) {
+            TracerScript.fps = new FPSMeter({ heat: true, graph: true });
+            const container = document.body.lastChild;
+            container.id = "divFPSMeter";
+        }
+        const el = document.getElementById("divFPSMeter");
+        if (el) el.style.display = "block";
+    } else {
+        const el = document.getElementById("divFPSMeter");
+        if (el) el.style.display = "none";
+    }
+
+};
+
 
 
 GameManager.freeAssets = function () {
@@ -2462,8 +2453,8 @@ GameManager.fadeOut = function (element, duration, callback) {
         if (progress < duration) {
             requestAnimationFrame(animate); // Solicita el siguiente cuadro de animación
         } else {
-            element.style.display = 'none'; // Oculta el elemento al finalizar la animación
-            if (typeof callback === 'function') {
+            element.style.display = "none"; // Oculta el elemento al finalizar la animación
+            if (typeof callback === "function") {
                 callback(); // Ejecuta la función de callback si está definida y es una función
             }
         }
@@ -2481,7 +2472,7 @@ GameManager.fadeIn = function (element, duration, callback) {
 
     // Aseguramos que el elemento esté inicialmente invisible para el efecto fadeIn
     element.style.opacity = initialOpacity;
-    element.style.display = 'block'; // Asegura que el elemento esté visible antes de la animación
+    element.style.display = "block"; // Asegura que el elemento esté visible antes de la animación
 
     // Función de animación
     function animate(timestamp) {
@@ -2501,7 +2492,7 @@ GameManager.fadeIn = function (element, duration, callback) {
         if (progress < duration) {
             requestAnimationFrame(animate); // Solicita el siguiente cuadro de animación
         } else {
-            if (typeof callback === 'function') {
+            if (typeof callback === "function") {
                 callback(); // Ejecuta la función de callback si está definida y es una función
             }
         }
@@ -2572,7 +2563,7 @@ GameManager.calculateSceneAssets = function (loadedSceneRootEntity, callback) {
                 if (assetsToLoad.length === 0) {
                     resolve();
                 } else if (Date.now() - startTime >= maxTime) {
-                    reject(new Error('Tiempo máximo de carga de assets alcanzado.'));
+                    reject(new Error("Tiempo máximo de carga de assets alcanzado."));
                 } else {
                     setTimeout(checkAssets, 100); // Revisar cada 100ms
                 }
@@ -2683,9 +2674,7 @@ TracerScript.initialize = function () {
     TracerScript.divValues.style.left = "60%";
     document.body.appendChild(TracerScript.divValues);
 
-    if (TracerScript.trenablelightingdebugLayer) {
-        GameManager._app.scene.lighting.debugLayer = GameManager._app.scene.layers.getLayerByName("World").id;
-    }
+
 
     TracerScript.__tracer_busy = false;
 
@@ -2703,7 +2692,7 @@ TracerScript.print = async function (text, value) {
 
             TracerScript.__tracer_busy = true;
 
-            if (TracerScript.div.style.display === 'none') {
+            if (TracerScript.div.style.display === "none") {
                 TracerScript.div.style.display = "block";
                 TracerScript.divValues.style.display = "block";
                 TracerScript.div.innerHTML = text + "";
@@ -2746,11 +2735,11 @@ TracerScript.print = async function (text, value) {
 
     TracerScript.timer = setTimeout(function () {
         if (TracerScript.tralwaysshow) {
-            TracerScript.div.style.display = 'block';
-            TracerScript.divValues.style.display = 'block';
+            TracerScript.div.style.display = "block";
+            TracerScript.divValues.style.display = "block";
         } else {
-            TracerScript.div.style.display = 'none';  // Ocultar el div
-            TracerScript.divValues.style.display = 'none';
+            TracerScript.div.style.display = "none";  // Ocultar el div
+            TracerScript.divValues.style.display = "none";
         }
     }, 3000);
 
@@ -2775,7 +2764,7 @@ async function Tracer(text, value) {
 /*********************************//*********************************//*********************************/
 /*********************************//*********************************//*********************************/
 GameManager.createCircularMenu = function (circularMenuConfig) {
-    var ele = document.getElementById('circle-menu1');
+    var ele = document.getElementById("circle-menu1");
     if (!ele) return;
 
 
@@ -2790,15 +2779,15 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
             pageBackground: "#0c0c0c",
             percent: 0.25,//%
             diameter: ((rect.width || screen.width) || 600) / 4,//px
-            position: 'top',
+            position: "top",
             horizontal: true,
             start: -45,//deg
             animation: "into",
             hideAfterClick: false,
             menus: [
                 {
-                    title: 'resume',
-                    icon: 'fa fa-circle',
+                    title: "resume",
+                    icon: "fa fa-circle",
                     /*
                     href: {
                         url: "http://github.com",
@@ -2810,101 +2799,101 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
                     },
                     menus: [
                         {
-                            title: 'menu1-1',
-                            icon: 'fa fa-circle',
+                            title: "menu1-1",
+                            icon: "fa fa-circle",
                         },
                         {
-                            title: 'menu1-2',
-                            icon: 'fa fa-cc-visa'
+                            title: "menu1-2",
+                            icon: "fa fa-cc-visa"
                         }
                     ]
                 },
                 {
                     disabled: true,
-                    title: '菜单2',
-                    icon: 'my-icon icon1',
-                    href: '#2'
+                    title: "菜单2",
+                    icon: "my-icon icon1",
+                    href: "#2"
                 },
                 {
-                    title: 'menu3',
+                    title: "menu3",
                     disabled: function () {
                         return true;
                     },
-                    icon: '',
-                    href: '#3'
+                    icon: "",
+                    href: "#3"
                 },
                 {
-                    title: '菜单4',
-                    icon: 'my-icon icon2',
-                    href: '#4',
+                    title: "菜单4",
+                    icon: "my-icon icon2",
+                    href: "#4",
                     menus: [
                         {
-                            title: 'menu4-1',
-                            icon: 'fa fa-circle'
+                            title: "menu4-1",
+                            icon: "fa fa-circle"
                         },
                         {
-                            title: 'menu4-2',
-                            icon: 'fa fa-cc-visa'
+                            title: "menu4-2",
+                            icon: "fa fa-cc-visa"
                         },
                         {
-                            title: 'menu4-3',
-                            icon: 'fa fa-cc-visa'
+                            title: "menu4-3",
+                            icon: "fa fa-cc-visa"
                         },
                         {
-                            title: 'menu4-1',
-                            icon: 'fa fa-circle'
+                            title: "menu4-1",
+                            icon: "fa fa-circle"
                         },
                         {
-                            title: 'menu4-2',
-                            icon: 'fa fa-cc-visa'
+                            title: "menu4-2",
+                            icon: "fa fa-cc-visa"
                         },
                         {
-                            title: 'menu4-3',
-                            icon: 'fa fa-cc-visa'
+                            title: "menu4-3",
+                            icon: "fa fa-cc-visa"
                         }
                     ]
                 }, {
-                    title: 'menu5',
-                    icon: '',
-                    href: '#5',
+                    title: "menu5",
+                    icon: "",
+                    href: "#5",
                     menus: [
                         {
-                            title: 'menu1-1',
-                            icon: 'fa fa-circle'
+                            title: "menu1-1",
+                            icon: "fa fa-circle"
                         },
                         {
-                            title: 'menu1-2',
-                            icon: 'fa fa-cc-visa'
+                            title: "menu1-2",
+                            icon: "fa fa-cc-visa"
                         }
                     ]
                 },
                 {
-                    title: '菜单6',
-                    icon: '',
-                    href: '#6',
+                    title: "菜单6",
+                    icon: "",
+                    href: "#6",
                     menus: [
                         {
-                            title: 'menu6-1',
-                            icon: 'fa fa-circle'
+                            title: "menu6-1",
+                            icon: "fa fa-circle"
                         }
                     ]
                 },
                 {
-                    title: 'menu7',
-                    icon: 'my-icon icon3',
-                    href: '#7'
+                    title: "menu7",
+                    icon: "my-icon icon3",
+                    href: "#7"
                 },
                 {
-                    title: '菜单8',
-                    icon: '',
-                    href: '#8'
+                    title: "菜单8",
+                    icon: "",
+                    href: "#8"
                 }
             ]
         });
     cmenu.styles({
-        top: '50%',
-        left: '50%',
-        //width: '100%',
+        top: "50%",
+        left: "50%",
+        //width: "100%",
     });
     cmenu.show();
 
@@ -2913,11 +2902,11 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
 
 //circular-menu
 (function (global, factory) {
-    typeof exports === 'object' && typeof module !== 'undefined' ? module.exports = factory() :
-        typeof define === 'function' && define.amd ? define(factory) :
+    typeof exports === "object" && typeof module !== "undefined" ? module.exports = factory() :
+        typeof define === "function" && define.amd ? define(factory) :
             (global.CMenu = factory());
 }(this, function () {
-    'use strict';
+    "use strict";
 
     function rotateDeg(i) {
         return this.startDeg + this.rotateUnit * i;
@@ -2994,7 +2983,7 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
     }
 
     function listSize(config) {
-        var l = (config.diameter / 2) + 'px';
+        var l = (config.diameter / 2) + "px";
 
         return {
             width: l,
@@ -3005,7 +2994,7 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
     const middleRatio = 0.41;
 
     function textTop(clickZoneRadius) {
-        return clickZoneRadius * middleRatio - fixedTop + 'px';
+        return clickZoneRadius * middleRatio - fixedTop + "px";
 
     }
 
@@ -3085,11 +3074,11 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
 
     function createList(parent, data, index) {
 
-        var list = document.createElement('li');
-        list.setAttribute('tabindex', '-1');
-        style(list, 'width', this._calc.listSize.width);
-        style(list, 'height', this._calc.listSize.height);
-        style(list, 'transform', 'rotate(' + this._calc.rotateDeg(index) + 'deg) skew(' + this._calc.skewDeg + 'deg)');
+        var list = document.createElement("li");
+        list.setAttribute("tabindex", "-1");
+        style(list, "width", this._calc.listSize.width);
+        style(list, "height", this._calc.listSize.height);
+        style(list, "transform", "rotate(" + this._calc.rotateDeg(index) + "deg) skew(" + this._calc.skewDeg + "deg)");
 
         parent.appendChild(list);
 
@@ -3178,8 +3167,8 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
 
         var _this = element;
         var _sheetId = "sheetStyles";
-        var _head = document.head || document.getElementsByTagName('head')[0];
-        var _sheet = document.getElementById(_sheetId) || document.createElement('style');
+        var _head = document.head || document.getElementsByTagName("head")[0];
+        var _sheet = document.getElementById(_sheetId) || document.createElement("style");
         _sheet.id = _sheetId;
         var className = "s-S" + UID.getNew();
 
@@ -3201,11 +3190,11 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
     function createMenu() {
         var p = this._container;
 
-        classed(p, 'circular-menu', true);
-        style(p, 'width', this._calc.menuSize.width);
-        style(p, 'height', this._calc.menuSize.height);
-        style(p, 'margin-top', this._calc.menuSize.marginTop);
-        style(p, 'margin-left', this._calc.menuSize.marginLeft);
+        classed(p, "circular-menu", true);
+        style(p, "width", this._calc.menuSize.width);
+        style(p, "height", this._calc.menuSize.height);
+        style(p, "margin-top", this._calc.menuSize.marginTop);
+        style(p, "margin-left", this._calc.menuSize.marginLeft);
 
         var self = this;
         on(p, "click", function (e) {
@@ -3214,17 +3203,17 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
             }
         });
         setTimeout(function () {
-            style(p, 'display', 'block');
+            style(p, "display", "block");
         }, 100);
 
-        styleSheet(p, 'width', this._calc.coverSize.width, 'after');
-        styleSheet(p, 'height', this._calc.coverSize.height, 'after');
-        styleSheet(p, 'margin-left', this._calc.coverSize.marginLeft, 'after');
-        styleSheet(p, 'margin-top', this._calc.coverSize.marginTop, 'after');
-        styleSheet(p, 'border', "3px solid " + this._config.pageBackground, 'after');
+        styleSheet(p, "width", this._calc.coverSize.width, "after");
+        styleSheet(p, "height", this._calc.coverSize.height, "after");
+        styleSheet(p, "margin-left", this._calc.coverSize.marginLeft, "after");
+        styleSheet(p, "margin-top", this._calc.coverSize.marginTop, "after");
+        styleSheet(p, "border", "3px solid " + this._config.pageBackground, "after");
 
 
-        var ul = p.appendChild(document.createElement('ul'));
+        var ul = p.appendChild(document.createElement("ul"));
         this._createLists(ul);
     }
 
@@ -3258,29 +3247,29 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
 
         var delayHide = null;// delayHide reference the last setTimeout triggered by the menu item itself
 
-        var a = document.createElement('a');
-        a.setAttribute('tabindex', '-1');
+        var a = document.createElement("a");
+        a.setAttribute("tabindex", "-1");
 
         setHref(a, data.href);
 
         a.setDisabled = function () {
-            classed(a, 'disabled', ifDisabled(data.disabled));
+            classed(a, "disabled", ifDisabled(data.disabled));
         };
         this._anchors.push(a);
 
 
-        style(a, 'width', this._calc.clickZoneSize.width);
-        style(a, 'height', this._calc.clickZoneSize.height);
-        style(a, 'right', this._calc.clickZoneSize.marginRight);
-        style(a, 'bottom', this._calc.clickZoneSize.marginBottom);
-        style(a, 'transform', 'skew(' + -this._calc.skewDeg + 'deg) rotate(' + this._calc.unskewDeg + 'deg) scale(1)');
+        style(a, "width", this._calc.clickZoneSize.width);
+        style(a, "height", this._calc.clickZoneSize.height);
+        style(a, "right", this._calc.clickZoneSize.marginRight);
+        style(a, "bottom", this._calc.clickZoneSize.marginBottom);
+        style(a, "transform", "skew(" + -this._calc.skewDeg + "deg) rotate(" + this._calc.unskewDeg + "deg) scale(1)");
 
-        classed(a, 'disabled', ifDisabled(data.disabled));
+        classed(a, "disabled", ifDisabled(data.disabled));
 
 
         var percent = this._config.percent * 100 + "%";
-        styleSheet(a, 'background', 'radial-gradient(transparent ' + percent + ', ' + this._config.background + ' ' + percent + ')');
-        styleSheet(a, 'background', 'radial-gradient(transparent ' + percent + ', ' + this._config.backgroundHover + ' ' + percent + ')', 'hover');
+        styleSheet(a, "background", "radial-gradient(transparent " + percent + ", " + this._config.background + " " + percent + ")");
+        styleSheet(a, "background", "radial-gradient(transparent " + percent + ", " + this._config.backgroundHover + " " + percent + ")", "hover");
 
 
         function clickCallBack(e, data) {
@@ -3293,7 +3282,7 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
             }
         }
 
-        on(a, 'click', clickCallBack, data);
+        on(a, "click", clickCallBack, data);
 
         parent.appendChild(a);
 
@@ -3304,17 +3293,17 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
         if (hasSubMenus(data.menus)) {
             var subMenu = this._createSubMenu(self, data.menus, index);
 
-            on(a, 'mouseenter', function () {
+            on(a, "mouseenter", function () {
                 delayShow = setTimeout(function () {
                     subMenu
                         .styles({
-                            top: self._container.offsetTop + self._calc.radius + 'px',
-                            left: self._container.offsetLeft + self._calc.radius + 'px'
+                            top: self._container.offsetTop + self._calc.radius + "px",
+                            left: self._container.offsetLeft + self._calc.radius + "px"
                         })
                         .show();
                 }, 150);
                 try {
-                    const audio = document.getElementById('audio-menu-hover');
+                    const audio = document.getElementById("audio-menu-hover");
                     audio.pause();
                     audio.currentTime = 0;  // Reiniciar el audio al principio
                     audio.play();
@@ -3322,7 +3311,7 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
 
             });
 
-            on(a, 'mouseleave', function (e) {
+            on(a, "mouseleave", function (e) {
                 if (!subMenu._container.contains(e.toElement)) {
                     delayHide = setTimeout(function () {
                         subMenu.hide();
@@ -3330,11 +3319,11 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
                 }
             });
 
-            on(subMenu._container, 'mouseenter', function () {
+            on(subMenu._container, "mouseenter", function () {
                 clearTimeout(delayShow);
                 clearTimeout(delayHide);
                 try {
-                    const audio = document.getElementById('audio-menu-hover');
+                    const audio = document.getElementById("audio-menu-hover");
                     audio.pause();
                     audio.currentTime = 0;  // Reiniciar el audio al principio
                     audio.play();
@@ -3342,7 +3331,7 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
 
             });
 
-            on(subMenu._container, 'mouseleave', function (e) {
+            on(subMenu._container, "mouseleave", function (e) {
                 if (!a.contains(e.toElement) || e.toElement.children[0] === a) {
                     subMenu.hide();
                 }
@@ -3371,26 +3360,28 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
     function createIcon(parent, data, index) {
         if (!hasIcon(data.icon)) return;
 
-        var span = document.createElement('span');
-        span.setAttribute('tabindex', '-1');
+        var span = document.createElement("span");
+        span.setAttribute("tabindex", "-1");
 
         var icon = getIcon(data.icon),
             color = getIconColor(data.icon);
 
         classed(span, icon + " cm-icon", true);
-        style(span, 'color', color);
+        style(span, "color", color);
 
         var l = this._calc.clickZoneRadius * sizeRatio - fontHeight + "px",
             m = this._calc.clickZoneRadius * marginTopRatio - fontHeight + "px";
-        style(span, 'width', l);
-        style(span, 'height', l);
-        style(span, 'font-size', l);
-        style(span, 'margin-top', m);
+        style(span, "width", l);
+        style(span, "height", l);
+        style(span, "font-size", l);
+        style(span, "margin-top", m);
 
-        span.addEventListener('mouseenter', function () {
-            const audio = document.getElementById('audio-menu-hover');
+        span.addEventListener("mouseenter", function () {
+            const audio = document.getElementById("audio-menu-hover");
             audio.currentTime = 0;  // Reiniciar el audio al principio
-            audio.play();
+            try {
+                audio.play();
+            } catch { }
         });
 
         parent.appendChild(span);
@@ -3401,18 +3392,20 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
 
     function createText(parent, data, index) {
 
-        var span = document.createElement('span');
-        span.setAttribute('tabindex', '-1');
+        var span = document.createElement("span");
+        span.setAttribute("tabindex", "-1");
         span.textContent = data.title;
 
-        classed(span, 'text', true);
-        style(span, 'margin-top', hasIcon(data.icon) ? withIconMarginTop : this._calc.textTop);
-        style(span, 'top', hasIcon(data.icon) ? withIconTop : 0);
+        classed(span, "text", true);
+        style(span, "margin-top", hasIcon(data.icon) ? withIconMarginTop : this._calc.textTop);
+        style(span, "top", hasIcon(data.icon) ? withIconTop : 0);
 
         span.onmouseenter = function (e) {
-            const audio = document.getElementById('audio-menu-hover');
+            const audio = document.getElementById("audio-menu-hover");
             audio.currentTime = 0;  // Reiniciar el audio al principio
-            audio.play();
+            try {
+                audio.play();
+            } catch { }
         };
 
 
@@ -3421,11 +3414,11 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
 
     function createHorizontal(parent, data, index) {
 
-        var div = document.createElement('div');
-        div.setAttribute('tabindex', '-1');
+        var div = document.createElement("div");
+        div.setAttribute("tabindex", "-1");
         classed(div, "horizontal", true);
 
-        if (this._config.horizontal) style(div, 'transform', 'rotate(' + this._calc.horizontalDeg(index) + 'deg)');
+        if (this._config.horizontal) style(div, "transform", "rotate(" + this._calc.horizontalDeg(index) + "deg)");
 
         parent.appendChild(div);
 
@@ -3441,7 +3434,7 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
         var length = arguments.length;
 
         // Check if a deep merge
-        if (Object.prototype.toString.call(arguments[0]) === '[object Boolean]') {
+        if (Object.prototype.toString.call(arguments[0]) === "[object Boolean]") {
             deep = arguments[0];
             i++;
         }
@@ -3451,7 +3444,7 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
             for (var prop in obj) {
                 if (Object.prototype.hasOwnProperty.call(obj, prop)) {
                     // If deep merge and property is an object, merge properties
-                    if (deep && Object.prototype.toString.call(obj[prop]) === '[object Object]') {
+                    if (deep && Object.prototype.toString.call(obj[prop]) === "[object Object]") {
                         extended[prop] = extend(true, extended[prop], obj[prop]);
                     } else {
                         extended[prop] = obj[prop];
@@ -3476,10 +3469,10 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
 
 
     function createSubMenu(creator, menus, index) {
-        var subMenu = document.createElement('div');
-        subMenu.setAttribute('tabindex', '-1');
+        var subMenu = document.createElement("div");
+        subMenu.setAttribute("tabindex", "-1");
 
-        classed(subMenu, 'circular-sub-menu', true);
+        classed(subMenu, "circular-sub-menu", true);
 
         this._container.parentNode.insertBefore(subMenu, this._container);
 
@@ -3528,7 +3521,7 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
         pageBackground: "transparent",
         percent: 0.25,//%
         diameter: 300,//px
-        position: 'top',
+        position: "top",
         horizontal: true,
         animation: "into",
         hideAfterClick: true
@@ -3549,8 +3542,8 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
         if (!(coordinate instanceof Array) || !(coordinate.length === 2)) return;
 
         //TODO verify if has unit
-        style(this._container, 'left', coordinate[0] + "px");
-        style(this._container, 'top', coordinate[1] + "px");
+        style(this._container, "left", coordinate[0] + "px");
+        style(this._container, "top", coordinate[1] + "px");
     }
 
     //check disabled
@@ -3568,12 +3561,12 @@ GameManager.createCircularMenu = function (circularMenuConfig) {
 
         setCoordinate.call(this, coordinate);
 
-        classed(this._container, 'opened-nav', true);
+        classed(this._container, "opened-nav", true);
         return this;
     }
 
     function hide() {
-        classed(this._container, 'opened-nav', false);
+        classed(this._container, "opened-nav", false);
         return this;
     }
 
