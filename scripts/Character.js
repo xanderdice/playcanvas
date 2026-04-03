@@ -638,7 +638,7 @@ Character.prototype.initialize = function () {
     this.quat = new pc.Quat;
 
     this.entity.mode = CharacterLocomotionModeEnum.UNARMED;
-    this.old_input = Object.assign({}, this.entity.input);
+
 
 
     this.on("destroy", function () {
@@ -1212,46 +1212,6 @@ Character.prototype.doAttackSystem = function (input) {
 
 
 
-/**
- * Calculates the current rotation of the character based on input and the target direction.
- * 
- * This function handles smooth character rotation, avoiding sudden jumps and adjusting rotation 
- * based on the player's input, movement direction, and rotation speed.
- *
- * @param {pc.Vec2} input - The player's movement input on the X and Z axes (typically obtained from arrow keys or controls).
- * @param {pc.Vec2} old_input - The previous input of the player, used to determine if there has been a significant change in direction.
- * @param {pc.Entity} targetDirection - The entity representing the target direction the character should rotate towards.
- * @param {number} rotSpeed - The rotation speed, used to smooth the transition of the rotation (default is 0.2).
- */
-Character.prototype.calculateCharacterCurrentRotation = function (input, old_input, targetDirection, rotSpeed) {
-    var self = this;
-    function calculateAngle(x, z) {
-        var addAngle = 0;
-        if (self.playerOptions.playerControllerOnKeyRight === "Rotate") {
-            if (x !== 0 || z !== 0) {
-                const moveAngle = Math.atan2(z, x) * pc.math.RAD_TO_DEG;
-                addAngle = (Math.round(moveAngle / 45) * 45) - 90;
-            }
-        }
-        const direction = new pc.Vec3(-targetDirection.forward.x, 0, -targetDirection.forward.z).normalize();
-        const angle = (Math.atan2(direction.x, direction.z) * pc.math.RAD_TO_DEG) + addAngle;
-
-        return angle;
-    }
-
-    var targetRotation = calculateAngle(input.x, input.z);
-
-    // Maneja la diferencia angular para evitar rotaciones abruptas
-
-    var rotationDifference = Math.abs((targetRotation - this.currenRotation + 180) % 360 - 180);
-    if (rotationDifference >= 181) {
-        // Ajusta la rotación para evitar un gran salto
-        this.currenRotation = targetRotation;
-    }
-
-    this.currenRotation = pc.math.lerpAngle(this.currenRotation, targetRotation, (rotSpeed || 0.2));
-
-}
 
 const CharacterLocomotionEnum = Object.freeze({
     IDLE: 0,
