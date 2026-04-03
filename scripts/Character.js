@@ -388,7 +388,7 @@ Character.prototype.initialize = function () {
     this.entity.tags.add("is-detectable");
 
     /* INPUT */
-    this.entity.input = Object.assign({}, GameManager.input);
+    this.entity.input = {};
     this.entity.input.targetEntity = null;
 
 
@@ -788,13 +788,12 @@ Character.prototype.doAI = async function () {
 /*              */
 /* D O  M O V E */
 /*              */
-Character.prototype.doMove = function (i, oldInput, cameraRotation, dt) {
+Character.prototype.doMove = async function () {
     if (this.doMoveCharacter_busy) return;
     this.doMoveCharacter_busy = true;
 
-    const input = i || this.entity.input || {};
-    oldInput = oldInput || this.old_input || {};
-    dt = (typeof dt === "number") ? dt : (input.dt || 0);
+    const input = this.entity.input || {},
+        dt = this.entity.input.dt;
 
     this.CHAR_CUR_POSITION = this.entity.getPosition();
     this.CHAR_CUR_ROTATION = this.entity.getRotation();
@@ -1003,7 +1002,7 @@ Character.prototype.doMove = function (i, oldInput, cameraRotation, dt) {
 
     this.doAttackSystem(input);
 
-    //this.old_input = input;
+
     this.doMoveCharacter_busy = false;
 };
 

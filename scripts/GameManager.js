@@ -246,6 +246,101 @@ GameManager.attributes.add('cameraPostProcessing', {
         },
 
         {
+            name: "toneMapping",
+            type: "number",
+            default: 0,
+            enum: [
+                { "LINEAR": 0 },
+                { "FILMIC": 1 },
+                { "HEJL": 2 },
+                { "ACES": 3 },
+                { "ACES2": 4 },
+                { "NEUTRAL": 5 }
+            ],
+            title: "toneMapping",
+            description: "toneMapping"
+        },
+
+
+        {
+            name: "renderFormat",
+            type: "number",
+            default: 12,
+            enum: [
+                { "RGBA8": 7 },
+                { "RG11B10": 18 },
+                { "RGBA16": 12 },
+                { "RGBA32": 14 }
+            ],
+            title: "renderFormat",
+            description: `RGBA8 (32 bits per pixel, 8 bits per channel) is a standard LDR (Low Dynamic Range) format. It does not support HDR but fully supports transparency (alpha channel). Performance is excellent, making it ideal for UI elements, non-HDR textures, and LDR render targets.--
+                            RG11B10 (32 bits per pixel, 11 red, 11 green, 10 blue) is a packed floating-point HDR format. It provides HDR support (floating-point range) but lacks an alpha channel (no transparency). Performance is also excellent, making it the top choice for HDR effects that don't need transparency, such as bloom, glows, or specular highlights. **
+                            RGBA16 (64 bits per pixel, 16-bit float per channel) is a medium-precision HDR format. It supports both HDR and transparency (alpha channel). Performance is good (but slightly heavier than 32-bit formats). It is well-suited for HDR color buffers that require transparency, post-processing pipelines, and general HDR rendering. --
+                            RGBA32 (128 bits per pixel, 32-bit float per channel) is a high-precision HDR format with full transparency support. Performance is slow due to high memory bandwidth. It is overkill for most real-time graphics and should be reserved for scientific visualization, accumulation buffers, or debugging where extreme precision is necessary. --
+                            playcanvas default: RG11B10. fallback0: RGBA16, fallback1: RGBA32`
+        },
+
+        {
+            name: 'stencil',
+            type: 'boolean',
+            default: false,
+            title: 'stencil',
+            description: 'stencil'
+        },
+
+        {
+            name: 'renderTargetScale',
+            type: 'number',
+            default: 1.0,
+            precision: 2,
+            min: 0,
+            max: 1,
+            title: 'renderTargetScale',
+            description: 'renderTargetScale'
+        },
+
+
+        {
+            name: "samples",
+            type: "number",
+            default: 1,
+            precision: 0,
+            min: 1,
+            max: 4,
+            title: "samples",
+            description: "samples"
+        },
+
+
+        {
+            name: 'sceneColorMap',
+            type: 'boolean',
+            default: false,
+            title: 'sceneColorMap',
+            description: 'sceneColorMap'
+        },
+
+        {
+            name: 'sceneDepthMap',
+            type: 'boolean',
+            default: false,
+            title: 'sceneDepthMap',
+            description: 'sceneDepthMap'
+        },
+
+        {
+            name: "sharpness",
+            type: "number",
+            default: 0.0,
+            precision: 3,
+            min: 0,
+            max: 1,
+            title: "sharpness",
+            description: "sharpness"
+        },
+
+
+        {
             name: 'bloom',
             type: 'number',
             default: 0.01,
@@ -261,13 +356,19 @@ GameManager.attributes.add('cameraPostProcessing', {
             title: 'ssao',
             description: 'ssao'
         },
+
         {
             name: 'taa',
-            type: 'boolean',
-            default: true,
+            type: 'number',
+            default: 0.0,
+            min: 0,
+            precision: 1,
+            max: 1,
             title: 'taa',
             description: 'taa'
         },
+
+
         {
             name: 'lut',
             title: 'lut',
@@ -277,6 +378,19 @@ GameManager.attributes.add('cameraPostProcessing', {
             min: 0,
             max: 1,
         },
+        {
+            name: "fringing",
+            type: "number",
+            default: 0,
+            min: 0,
+            precision: 0,
+            max: 100,
+            title: "fringing",
+            description: "fringing"
+        },
+
+
+
     ]
 });
 
@@ -762,6 +876,37 @@ GameManager.prototype.initialize = function () {
                 console.error('Error fetching HUD HTML:', error);
             });
     }
+
+    ///VIGNETTE:
+    // Crear el div viñeta
+    this.vignetteDiv = document.createElement('div');
+    this.vignetteDiv.id = 'vignette-overlay';
+    this.vignetteDiv.className = 'vignette-overlay';
+    if (getComputedStyle(canvas.parentNode).position === 'static') {
+        canvas.parentNode.style.position = 'relative';
+    }
+    // Insertar el div como HERMANO del canvas (mismo contenedor padre)
+    canvas.parentNode.insertBefore(this.vignetteDiv, canvas.nextSibling);
+    const styleTag = document.createElement('style');
+    styleTag.innerHTML = `
+    .vignette-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+        border-radius: 0;
+        background-image: radial-gradient(
+            ellipse at center,
+            rgba(0, 0, 0, 0) 60%,
+            rgba(0, 0, 0, 0.7) 100%
+        );
+    }
+        `;
+    document.body.appendChild(styleTag);
+
+
 
 
 
@@ -1698,7 +1843,7 @@ GameManager.updateCharactersMovement = async function () {
         character.input = GameManager.input;
 
         if (script.doMove) {
-            script.doMove();
+            await script.doMove();
             someoneMoved = true;
         }
     }
@@ -1749,8 +1894,8 @@ GameManager.updateCharactersMovement = async function () {
         const script = character.script && character.script.character;
         if (!script) continue;
 
-        script.input = script.input || {};
-        script.input.dt = GameManager.input.dt;
+        character.input = character.input || {};
+        character.input.dt = dt;
 
         // AI distribuida
         const aiFreq = character.aiFrequency || 10;
@@ -1760,7 +1905,7 @@ GameManager.updateCharactersMovement = async function () {
         }
 
         if (script.doMove) {
-            script.doMove();
+            await script.doMove();
             someoneMoved = true;
         }
 
@@ -2177,9 +2322,15 @@ GameManager.applyCameraPostProcessing = function (options) {
 
         app.scene.skyboxHighlightMultiplier = 100;
         app.scene.lighting.physicalUnits = false;
-        //app.scene.skyboxIntensity = 0.1;
-        cameraFrame.rendering.samples = 4;
-        cameraFrame.rendering.toneMapping = pc.TONEMAP_LINEAR;
+        cameraFrame.rendering.toneMapping = options.toneMapping;
+        cameraFrame.rendering.renderFormat = options.renderFormat;
+        cameraFrame.rendering.stencil = options.stencil;
+        cameraFrame.rendering.renderTargetScale = options.renderTargetScale;
+        cameraFrame.rendering.samples = options.samples;
+        cameraFrame.rendering.sceneColorMap = options.sceneColorMap;
+        cameraFrame.rendering.sceneDepthMap = options.sceneDepthMap;
+        cameraFrame.rendering.sharpness = options.sharpness;
+
 
         cameraFrame.bloom.enabled = options.bloom > 0 ? true : false;
         cameraFrame.bloom.intensity = options.bloom;
@@ -2191,8 +2342,11 @@ GameManager.applyCameraPostProcessing = function (options) {
         cameraFrame.vignette.curvature = 0.5;
         cameraFrame.vignette.intensity = 0.75;
 
-        cameraFrame.taa.enabled = options.taa;
-        cameraFrame.taa.jitter = 1;
+        cameraFrame.taa.enabled = options.taa == 0 ? false : true;
+        cameraFrame.taa.jitter = options.taa;
+
+        cameraFrame.fringing.enabled = options.fringing == 0 ? false : true;
+        cameraFrame.fringing.intensity = options.fringing;
 
         //cameraFrame.rendering.sharpness = 1;
         //cameraFrame.debug = "scene";
