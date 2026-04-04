@@ -520,28 +520,29 @@ Character.prototype.initialize = function () {
 
 
 
-    debugger;
-    this.characterHeight = getTotalHeight(this.entity) || 2;
 
+    this.characterHeight = getTotalHeight(this.entity) || 2;
     this.characterRadius = 0.5;
 
+    /*
+        if (!this.entity.collision) {
+            this.entity.addComponent('collision', {
+                type: "compound"
+            });
+        }
+    */
     if (!this.entity.collision) {
+        this.entity.tags.add("uranus-instancing-exclude");
+        this.entity.tags.add("is-capsule-collision");
         this.entity.addComponent('collision', {
-            type: "compound"
+            type: 'capsule',
+            radius: this.characterRadius,
+            height: this.characterHeight
         });
+        this.entity.collision.on('collisionstart', this.characterCollisionStart, this);
+        this.entity.collision.on('collisionend', this.characterCollisionEnd, this);
+        this.entity.other = null;
     }
-    this.entity.capsule_collision = new pc.Entity(this.entity.name + "_capsule_collision");
-    this.entity.capsule_collision.tags.add("uranus-instancing-exclude");
-    this.entity.capsule_collision.tags.add("is-capsule-collision");
-    this.entity.capsule_collision.addComponent('collision', {
-        type: 'capsule',
-        radius: this.characterRadius,
-        height: this.characterHeight
-    });
-    this.entity.addChild(this.entity.capsule_collision);
-    this.entity.collision.on('collisionstart', this.characterCollisionStart, this);
-    this.entity.collision.on('collisionend', this.characterCollisionEnd, this);
-    this.entity.other = null;
 
     /* IS ON AIR  &  IS ON GROUND */
     this.entity.isonair = false;
@@ -566,6 +567,8 @@ Character.prototype.initialize = function () {
         model.graph = new pc.GraphNode();
         model.meshInstances = [meshInstance];
 
+        this.entity.capsule_collision = new pc.Entity(this.entity.name + "_capsule_collision");
+        this.entity.addChild(this.entity.capsule_collision);
         // Añadir el componente de renderizado con las opciones adecuadas
         this.entity.capsule_collision.addComponent('render', {
             type: 'asset',
@@ -592,7 +595,7 @@ Character.prototype.initialize = function () {
 
 
     if (!this.entity.rigidbody) {
-        var mass = getCharacterMassFromCapsule(this.entity.capsule_collision);
+        var mass = getCharacterMassFromCapsule(this.entity);
 
         this.entity.addComponent('rigidbody', {
             type: 'dynamic',         // Tipo de cuerpo rígido (puede ser 'dynamic', 'static' o 'kinematic')
@@ -909,7 +912,7 @@ Character.prototype.doMove = async function () {
         if (input.z !== 0) input.x = 0;
     }
 
-    const hasTargetPoint = !!(input.targetPoint || (this.entity.input && this.entity.input.targetPoint));
+    //const hasTargetPoint = !!(input.targetPoint || (this.entity.input && this.entity.input.targetPoint));
     const targetPoint = input.targetPoint || (this.entity.input && this.entity.input.targetPoint) || null;
 
     let direction = new pc.Vec3();
@@ -920,7 +923,7 @@ Character.prototype.doMove = async function () {
 
     let stopMovementNow = false;
 
-    if (hasTargetPoint && targetPoint) {
+    if (targetPoint) {
         const tp = targetPoint.getPosition ? targetPoint.getPosition() : targetPoint;
 
         const dx = tp.x - this.CHAR_CUR_POSITION.x;
