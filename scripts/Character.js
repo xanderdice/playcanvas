@@ -4,7 +4,7 @@ y detección de colisiones de un personaje en un entorno 3D.
 Algunas características notables incluyen:
 
 ATENCION:
-REQUIERE QUE GameCharactersController.js este instalado en la entidad ROOT.
+REQUIERE QUE GameManager.js este instalado en la entidad ROOT.
 
 */
 
@@ -520,8 +520,10 @@ Character.prototype.initialize = function () {
 
 
 
-    this.characterHeight = 1.8;
-    this.characterRadius = 0.35;
+    debugger;
+    this.characterHeight = getTotalHeight(this.entity) || 2;
+
+    this.characterRadius = 0.5;
 
     if (!this.entity.collision) {
         this.entity.addComponent('collision', {
@@ -530,6 +532,7 @@ Character.prototype.initialize = function () {
     }
     this.entity.capsule_collision = new pc.Entity(this.entity.name + "_capsule_collision");
     this.entity.capsule_collision.tags.add("uranus-instancing-exclude");
+    this.entity.capsule_collision.tags.add("is-capsule-collision");
     this.entity.capsule_collision.addComponent('collision', {
         type: 'capsule',
         radius: this.characterRadius,
@@ -546,7 +549,7 @@ Character.prototype.initialize = function () {
 
 
 
-    if (this.tracerOptions.traceplayercapsule) {
+    if (this.tracerOptions.enabled && this.tracerOptions.traceplayercapsule) {
         // Crear el material transparente
         const transparentMaterial = new pc.StandardMaterial();
         transparentMaterial.diffuse = new pc.Color(1, 0, 0);  // Color rojo para el material
@@ -567,7 +570,8 @@ Character.prototype.initialize = function () {
         this.entity.capsule_collision.addComponent('render', {
             type: 'asset',
             renderStyle: pc.RENDERSTYLE_WIREFRAME,  // Estilo de renderizado en alambre
-            material: transparentMaterial  // Asignamos el material
+            material: transparentMaterial,  // Asignamos el material
+            castShadows: false
         });
 
         this.entity.capsule_collision.render.meshInstances = model.meshInstances;
@@ -742,10 +746,56 @@ Character.prototype.initialize = function () {
 
         return mass;
     }
+    // Calcula la altura total (eje Y) de una entidad y todos sus hijos
+    function getTotalHeight(entity) {
+        // 1. Crear un bounding box vacío
+        const combinedAABB = new pc.BoundingBox();
+        let first = true;
 
+        // 2. Función recursiva para recorrer la jerarquía
+        function collectMeshInstances(node) {
+            // Procesar componentes de modelo o render
+            if (node.model && node.model.meshInstances) {
+                node.model.meshInstances.forEach(mi => addMeshInstanceAABB(mi));
+            }
+            if (node.render && node.render.meshInstances) {
+                node.render.meshInstances.forEach(mi => addMeshInstanceAABB(mi));
+            }
+            // Recursión sobre hijos
+            node.children.forEach(child => collectMeshInstances(child));
+        }
+
+        function addMeshInstanceAABB(meshInstance) {
+            // Actualizar el AABB (importante para mallas dinámicas)
+            if (meshInstance.mesh) meshInstance.mesh.update();
+            const aabb = meshInstance.aabb;
+            if (first) {
+                combinedAABB.copy(aabb);
+                first = false;
+            } else {
+                combinedAABB.add(aabb);
+            }
+        }
+
+        collectMeshInstances(entity);
+
+        // 3. Extraer altura (extensión total en Y)
+        if (first) {
+            console.warn("No se encontraron meshInstances en la jerarquía");
+            return 0;
+        }
+        const height = combinedAABB.halfExtents.y * 2 <= 0.1 ? 0 : combinedAABB.halfExtents.y * 2;
+        return height;
+    }
 
 
 };
+
+
+///
+/// HELPERS:
+///
+
 
 
 
