@@ -2309,7 +2309,7 @@ GameManager.applyCameraPostProcessing = function (options) {
         cameraFrame.update();
 
     } else {
-        GameManager.currentCamera.renderPasses = [];
+        GameManager.currentCamera.framePasses = [];
     }
 
 }
