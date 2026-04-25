@@ -1130,13 +1130,15 @@ GameManager._onMouseMove = async function (event) {
         GameManager.input.previousY = hasClientCoords ? event.clientY : GameManager.input.previousY;
 
         // Hover/raycast solo cuando el mouse no está capturado
-        await GameManager._updateMouseHoverTarget(event);
+        if (GameManager.mouseState === "free") {
+            await GameManager._updateMouseHoverTarget(event);
+        }
 
 
         GameManager.__gameMouseMoved = true;
         GameManager.__gameMouse_busy = false;
 
-        //mouseRaycast
+
     }
 };
 
@@ -1266,51 +1268,12 @@ GameManager.onMouseMoveFreeLookCamera = function () {
 };
 
 
-GameManager.getMouseWorldPoint = function () {
-
-    if (!GameManager.currentCamera) return null;
-
-    const camera = GameManager.currentCamera;
-    const mouse = GameManager.input;
-
-    const from = camera.screenToWorld(mouse.mouseX, mouse.mouseY, camera.nearClip);
-    const to = camera.screenToWorld(mouse.mouseX, mouse.mouseY, camera.farClip);
-
-    const result = GameManager._app.systems.rigidbody.raycastFirst(from, to, {
-        filterCollisionGroup: 1
-    });
-
-    if (result) {
-        return result.point;
-    }
-
-    return null;
-};
-
-
 // ================================
 // HOVER / PICKING STATE
 // ================================
 GameManager.__mouseHoverEntity = null;
 GameManager.__mouseHoverData = null;
 
-/**
- * Devuelve true si la entidad o alguno de sus padres
- * tiene tag is-selectable o is-player.
- */
-GameManager._isMouseHoverTarget = function (entity) {
-    let current = entity;
-
-    while (current) {
-        if (current.tags &&
-            (current.tags.has("is-selectable") || current.tags.has("is-player"))) {
-            return true;
-        }
-        current = current.parent || null;
-    }
-
-    return false;
-};
 
 GameManager._clearMouseHoverTarget = function (fireLeave) {
     const prevEntity = GameManager.__mouseHoverEntity;
@@ -1332,7 +1295,6 @@ GameManager._clearMouseHoverTarget = function (fireLeave) {
 
     GameManager.__mouseHoverEntity = null;
     GameManager.__mouseHoverData = null;
-    GameManager.input.mouseRaycast = null;
 };
 
 
@@ -1367,20 +1329,20 @@ GameManager._updateMouseHoverTarget = async function (event) {
 
     if (x === null || y === null) return;
 
-    const camera = GameManager.currentCamera;
-
-    // ⚠️ Evitamos crear nuevos Vec3 cada frame (si podés cachearlos arriba mejor aún)
-    const from = camera.screenToWorld(x, y, camera.nearClip);
-    const to = camera.screenToWorld(x, y, camera.farClip);
-
     const rigidbodySystem = GameManager._app.systems && GameManager._app.systems.rigidbody;
     if (!rigidbodySystem || !rigidbodySystem.raycastFirst) {
         GameManager._clearMouseHoverTarget(true);
         return;
     }
 
-    const hit = rigidbodySystem.raycastFirst(from, to);
-    const hitEntity = (hit && hit.entity && GameManager._isMouseHoverTarget(hit.entity))
+    // ⚠️ Evitamos crear nuevos Vec3 cada frame (si podés cachearlos arriba mejor aún)
+    const camera = GameManager.currentCamera;
+    const from = camera.screenToWorld(x, y, camera.nearClip);
+    const to = camera.screenToWorld(x, y, camera.farClip);
+
+    const hit = rigidbodySystem.raycastFirst(from, to, { filterCollisionGroup: 1 });
+    GameManager.input.mouseRaycast = hit;
+    const hitEntity = (hit && hit.entity)
         ? hit.entity
         : null;
 
@@ -1431,7 +1393,7 @@ GameManager._updateMouseHoverTarget = async function (event) {
 
     GameManager.__mouseHoverEntity = hitEntity;
     GameManager.__mouseHoverData = hoverData;
-    GameManager.input.mouseRaycast = hoverData;
+
 
     GameManager._app.fire("game:mousehover", hoverData);
 };
@@ -1564,14 +1526,14 @@ GameManager._onMouseDownUp = function (event) {
     GameManager.input.mouseSecondaryButton = (event.buttons[pc.MOUSEBUTTON_RIGHT]);
 
     // botón izquierdo al pulsar
-
-
     if (GameManager.input.mousePrimaryButton) {
-        const p = GameManager.getMouseWorldPoint();
-        if (p) {
-            GameManager.input.targetPoint = p.clone ? p.clone() : p;
+        const point = GameManager.input.mouseRaycast?.point;
+        if (point) {
+            GameManager.input.targetPoint = point;
+            return;
         }
     }
+
 
 
     GameManager.__rightMouseLook = GameManager.input.mouseSecondaryButton;
@@ -2632,6 +2594,7 @@ TracerScript.initialize = function () {
     TracerScript.divValues.style.position = "absolute";
     TracerScript.divValues.style.fontFamily = "'Courier New', Courier, monospace";
     TracerScript.divValues.style.backgroundColor = "rgba(0, 0, 0, 0.5)"; /* Gris semi-transparente */
+    TracerScript.divValues.style.fontSize = "90%";
 
     TracerScript.divValues.style.top = "2em";
     TracerScript.divValues.style.buttom = "2em";

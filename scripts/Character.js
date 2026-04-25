@@ -671,7 +671,7 @@ Character.prototype.initialize = function () {
         this.prevtracerOptions = JSON.parse(JSON.stringify(this.tracerOptions));
     }, this);
 
-    this._traceInputCache = {};
+
 
 
     /* ******************************************************************************** */
@@ -877,13 +877,37 @@ Character.prototype.doMove = async function () {
     }
 
     if (this.tracerOptions && this.tracerOptions.traceinput && this.entity.isPlayer) {
-        const t = this._traceInputCache || (this._traceInputCache = {});
+        const t = {};
+
         for (const k in input) {
-            if (k !== "camera") {
-                t[k] = input[k];
+            if (k === "mouseRaycast") {
+                t[k] = input[k]?.entity?.name ?? "";
+                continue;
             }
+            if (k === "dt") {
+                const p = input[k];
+                t[k] = p.toFixed(4);
+                continue;
+            }
+
+            if (k === "camera") {
+                t[k] = "";
+                continue;
+            }
+
+            if (k === "targetPoint") {
+                const p = input[k];
+                if (p) {
+                    t[k] = `x:${Number(p.x).toFixed(2)}-y:${Number(p.y).toFixed(2)}-z:${Number(p.z).toFixed(2)}`;
+                } else {
+                    t[k] = "";
+                }
+                continue;
+            }
+
+            t[k] = input[k];
         }
-        t.camera = null;
+
         Trace("input", t);
     }
 
