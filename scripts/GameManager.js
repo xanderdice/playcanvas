@@ -1162,7 +1162,7 @@ GameManager._onMouseDownUp = function (type, event) {
     GameManager.input.mouseSecondaryButton = (event.buttons[pc.MOUSEBUTTON_RIGHT]);
 
     // botón izquierdo al pulsar
-    if (GameManager.input.mousePrimaryButton) {
+    if (GameManager.input.mousePrimaryButton && type === "down") {
         const point = GameManager.input.mouseRaycast?.point;
         if (point) {
             if (GameManager.input.targetPoint !== point) {
