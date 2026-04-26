@@ -1013,15 +1013,15 @@ GameManager.prototype.initialize = function () {
 
 GameManager.bindInputs = function () {
     GameManager._app.mouse.on(pc.EVENT_MOUSEMOVE, GameManager._onMouseMove, GameManager);
-    GameManager._app.mouse.on(pc.EVENT_MOUSEDOWN, GameManager._onMouseDownUp, GameManager);
-    GameManager._app.mouse.on(pc.EVENT_MOUSEUP, GameManager._onMouseDownUp, GameManager);
+    GameManager._app.mouse.on(pc.EVENT_MOUSEDOWN, GameManager._onMouseDown, GameManager);
+    GameManager._app.mouse.on(pc.EVENT_MOUSEUP, GameManager._onMouseUp, GameManager);
     GameManager._app.mouse.on(pc.EVENT_MOUSEWHEEL, GameManager._onMouseWheel, GameManager);
     document.addEventListener("pointerlockchange", GameManager._onPointerLockChange, false);
 };
 GameManager.unbindInputs = function () {
     GameManager._app.mouse.off(pc.EVENT_MOUSEMOVE, GameManager._onMouseMove);
-    GameManager._app.mouse.off(pc.EVENT_MOUSEDOWN, GameManager._onMouseDownUp);
-    GameManager._app.mouse.off(pc.EVENT_MOUSEUP, GameManager._onMouseDownUp);
+    GameManager._app.mouse.off(pc.EVENT_MOUSEDOWN, GameManager._onMouseDown);
+    GameManager._app.mouse.off(pc.EVENT_MOUSEUP, GameManager._onMouseUp);
     GameManager._app.mouse.off(pc.EVENT_MOUSEWHEEL, GameManager._onMouseWheel);
     document.removeEventListener("pointerlockchange", GameManager._onPointerLockChange, false);
 };
@@ -1142,6 +1142,77 @@ GameManager._onMouseMove = async function (event) {
     }
 };
 
+GameManager._onMouseDown = function (event) {
+    GameManager._onMouseDownUp("down", event);
+}
+GameManager._onMouseUp = function (event) {
+    GameManager._onMouseDownUp("up", event);
+}
+
+GameManager._onMouseDownUp = function (type, event) {
+    if (event.button === pc.MOUSEBUTTON_RIGHT && event.event) {
+        event.event.preventDefault();
+        if (event.event.stopPropagation) event.event.stopPropagation();
+    }
+
+    GameManager.input.mouseXButton = event.x;
+    GameManager.input.mouseYButton = event.y;
+
+    GameManager.input.mousePrimaryButton = (event.buttons[pc.MOUSEBUTTON_LEFT]);
+    GameManager.input.mouseSecondaryButton = (event.buttons[pc.MOUSEBUTTON_RIGHT]);
+
+    // botón izquierdo al pulsar
+    if (GameManager.input.mousePrimaryButton) {
+        const point = GameManager.input.mouseRaycast?.point;
+        if (point) {
+            if (GameManager.input.targetPoint !== point) {
+                GameManager.input.targetPoint = point;
+                return;
+            }
+        }
+    }
+
+
+
+    GameManager.__rightMouseLook = GameManager.input.mouseSecondaryButton;
+    if (GameManager.input.cameratype === "ThirdPersonPointMove") {
+        if (GameManager.__rightMouseLook) {
+
+
+            if (GameManager.currentCamera && GameManager.currentCamera.entity) {
+                const forward = GameManager.currentCamera.entity.forward;
+                // yaw
+                GameManager.pointMoveLook.yaw = Math.atan2(-forward.x, -forward.z) * pc.math.RAD_TO_DEG;
+
+                // pitch
+                GameManager.pointMoveLook.pitch = Math.atan2(forward.y, Math.sqrt(forward.x * forward.x + forward.z * forward.z)) * pc.math.RAD_TO_DEG;
+
+                GameManager.input.lookLastDeltaX = 0;
+                GameManager.input.lookLastDeltaY = 0;
+            }
+
+
+            GameManager.cameraControlMode = "freeLook";
+        } else {
+            if (GameManager.currentCamera && GameManager.followCamera.target) {
+                const camPos = GameManager.currentCamera.entity.getPosition().clone();
+                const targetPos = GameManager.followCamera.target.getPosition().clone();
+
+                GameManager.initCameraPos = camPos.clone();
+                GameManager.followCamera.pointMoveOffset = camPos.sub(targetPos);
+            }
+
+            GameManager.cameraControlMode = "orbit";
+        }
+    }
+};
+
+
+
+GameManager._onMouseWheel = function (event) {
+    GameManager.input.mouseWheel = event.wheelDelta;
+};
+
 
 
 GameManager.updateMouseState = async function () {
@@ -1195,7 +1266,6 @@ GameManager.setMouseState = function (state) {
     }
 
     GameManager.mouseState = state;
-    Trace("mouseState", GameManager.mouseState);
 };
 
 
@@ -1513,67 +1583,6 @@ GameManager.updateCameraPosition = async function (dt) {
     GameManager.currentCamera.entity.lookAt(targetPosition);
 };
 
-GameManager._onMouseDownUp = function (event) {
-    if (event.button === pc.MOUSEBUTTON_RIGHT && event.event) {
-        event.event.preventDefault();
-        if (event.event.stopPropagation) event.event.stopPropagation();
-    }
-
-    GameManager.input.mouseXButton = event.x;
-    GameManager.input.mouseYButton = event.y;
-
-    GameManager.input.mousePrimaryButton = (event.buttons[pc.MOUSEBUTTON_LEFT]);
-    GameManager.input.mouseSecondaryButton = (event.buttons[pc.MOUSEBUTTON_RIGHT]);
-
-    // botón izquierdo al pulsar
-    if (GameManager.input.mousePrimaryButton) {
-        const point = GameManager.input.mouseRaycast?.point;
-        if (point) {
-            GameManager.input.targetPoint = point;
-            return;
-        }
-    }
-
-
-
-    GameManager.__rightMouseLook = GameManager.input.mouseSecondaryButton;
-    if (GameManager.input.cameratype === "ThirdPersonPointMove") {
-        if (GameManager.__rightMouseLook) {
-
-
-            if (GameManager.currentCamera && GameManager.currentCamera.entity) {
-                const forward = GameManager.currentCamera.entity.forward;
-                // yaw
-                GameManager.pointMoveLook.yaw = Math.atan2(-forward.x, -forward.z) * pc.math.RAD_TO_DEG;
-
-                // pitch
-                GameManager.pointMoveLook.pitch = Math.atan2(forward.y, Math.sqrt(forward.x * forward.x + forward.z * forward.z)) * pc.math.RAD_TO_DEG;
-
-                GameManager.input.lookLastDeltaX = 0;
-                GameManager.input.lookLastDeltaY = 0;
-            }
-
-
-            GameManager.cameraControlMode = "freeLook";
-        } else {
-            if (GameManager.currentCamera && GameManager.followCamera.target) {
-                const camPos = GameManager.currentCamera.entity.getPosition().clone();
-                const targetPos = GameManager.followCamera.target.getPosition().clone();
-
-                GameManager.initCameraPos = camPos.clone();
-                GameManager.followCamera.pointMoveOffset = camPos.sub(targetPos);
-            }
-
-            GameManager.cameraControlMode = "orbit";
-        }
-    }
-};
-
-
-
-GameManager._onMouseWheel = function (event) {
-    GameManager.input.mouseWheel = event.wheelDelta;
-};
 
 
 
