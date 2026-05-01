@@ -1003,13 +1003,6 @@ Character.prototype.doMove = async function () {
             : moveSpeed)
         : 0;
 
-    /*
-        this.speedAnimBlend = this.isMoving
-            ? (input.sprint ? moveSpeed / this.speed * 5 : moveSpeed / this.speed - 0.3)
-            : 0;
-    
-        if (this.speedAnimBlend < 0.01) this.speedAnimBlend = 0;
-    */
 
     //Calcula la animacion de movimiento que ira:
     await this.updateSpeedAnimBlendFromVelocity(dt);
@@ -1029,6 +1022,8 @@ Character.prototype.doMove = async function () {
         stopMovementNow = true;
     }
 
+
+
     if (this.isMoving && direction.lengthSq() > 0.000001) {
         const desiredVelocity = direction.clone().scale(this.charSpeed);
         const currentVelocity = this.entity.rigidbody.linearVelocity.clone();
@@ -1042,24 +1037,27 @@ Character.prototype.doMove = async function () {
 
         this.entity.rigidbody.applyForce(force);
 
-        const forward = this.entity.forward.clone();
-        forward.y = 0;
+        // Solo en tercera persona / lógica actual por dirección
+        if (input.cameratype !== "FirstPerson") {
+            const forward = this.entity.forward.clone();
+            forward.y = 0;
 
-        if (forward.lengthSq() > 0.000001) {
-            forward.normalize();
+            if (forward.lengthSq() > 0.000001) {
+                forward.normalize();
 
-            let delta = Math.atan2(direction.x, direction.z) - Math.atan2(forward.x, forward.z);
-            delta = Math.atan2(Math.sin(delta), Math.cos(delta));
+                let delta = Math.atan2(direction.x, direction.z) - Math.atan2(forward.x, forward.z);
+                delta = Math.atan2(Math.sin(delta), Math.cos(delta));
 
-            const turnSpeed = 20;
-            const maxTurnSpeed = 14;
+                const turnSpeed = 20;
+                const maxTurnSpeed = 14;
 
-            const ang = this.entity.rigidbody.angularVelocity.clone();
-            ang.x = 0;
-            ang.z = 0;
-            ang.y = pc.math.clamp(delta * turnSpeed, -maxTurnSpeed, maxTurnSpeed);
+                const ang = this.entity.rigidbody.angularVelocity.clone();
+                ang.x = 0;
+                ang.z = 0;
+                ang.y = pc.math.clamp(delta * turnSpeed, -maxTurnSpeed, maxTurnSpeed);
 
-            this.entity.rigidbody.angularVelocity = ang;
+                this.entity.rigidbody.angularVelocity = ang;
+            }
         }
     } else if (stopMovementNow || (!this.isMoving && !this.inertia)) {
         const v = this.entity.rigidbody.linearVelocity.clone();
@@ -1076,6 +1074,19 @@ Character.prototype.doMove = async function () {
         a.z = 0;
         this.entity.rigidbody.angularVelocity = a;
     }
+
+
+    if (input.cameratype === "FirstPerson" && !stopMovementNow) {
+        const camWorldTransform = input.camera.entity.getWorldTransform();
+        const forward = new pc.Vec3();
+        camWorldTransform.transformVector(pc.Vec3.FORWARD, forward);
+        // CALCULAR YAW EN GRADOS
+        const yawDegrees = (Math.atan2(forward.x, forward.z) * pc.math.RAD_TO_DEG) + 180;
+        // TELEPORT CON 6 PARÁMETROS (x, y, z, pitch, yaw, roll en GRADOS)
+        this.entity.rigidbody.teleport(this.CHAR_CUR_POSITION.x, this.CHAR_CUR_POSITION.y, this.CHAR_CUR_POSITION.z, 0, yawDegrees, 0);
+    }
+
+
 
     this.doInteraction(input);
 
