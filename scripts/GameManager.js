@@ -1558,7 +1558,7 @@ GameManager.updateCameraPosition = async function (dt) {
 
     ///ThirdPerson: 
 
-    const cameraPosition = targetPosition.clone().add(GameManager.currentCamera.entity.forward.scale(-GameManager.followCamera.orbitRadius));
+    let cameraPosition = targetPosition.clone().add(GameManager.currentCamera.entity.forward.scale(-GameManager.followCamera.orbitRadius));
     cameraPosition.y = pc.math.clamp(cameraPosition.y, 0.5, Number.POSITIVE_INFINITY);
 
     const hit = GameManager._app.systems.rigidbody.raycastFirst(targetPosition, cameraPosition);
@@ -1578,9 +1578,7 @@ GameManager.updateCameraPosition = async function (dt) {
     }
 
     GameManager.currentCamera.entity.setPosition(GameManager.followCamera.smoothedPosition);
-
-    targetPosition = GameManager.followCamera.target.getPosition();
-    GameManager.currentCamera.entity.lookAt(targetPosition);
+    GameManager.currentCamera.entity.lookAt(GameManager.followCamera.target.getPosition());
 };
 
 
