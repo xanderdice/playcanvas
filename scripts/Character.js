@@ -11,53 +11,53 @@ REQUIERE QUE GameManager.js este instalado en la entidad ROOT.
 /* VFX
 // https://mebiusbox.github.io/contents/EffectTextureMaker/ */
 
-var Character = pc.createScript('character');
+var Character = pc.createScript("character");
 
-Character.attributes.add('speed', { type: 'number', default: 1.5, title: "speed", description: "Velocidad del personaje.", min: 1.5, max: 2.5, precision: 1 });
-Character.attributes.add('gravity', { type: 'number', default: -9.8, title: "gravity", description: "gravity del personaje.", min: -9.8, max: -9.8, precision: 1 });
-Character.attributes.add('isSelectable', { type: 'boolean', default: false });
-Character.attributes.add('isPlayer', { type: 'boolean', default: false });
-Character.attributes.add('defaultrun', { type: 'boolean', default: true });
-Character.attributes.add('inertia', { type: 'boolean', default: true });
-Character.attributes.add('canmoveonair', { type: 'boolean', default: false });
-Character.attributes.add('playerOptions',
+Character.attributes.add("speed", { type: "number", default: 1.5, title: "speed", description: "Velocidad del personaje.", min: 1.5, max: 2.5, precision: 1 });
+Character.attributes.add("gravity", { type: "number", default: -9.8, title: "gravity", description: "gravity del personaje.", min: -9.8, max: -9.8, precision: 1 });
+Character.attributes.add("isSelectable", { type: "boolean", default: false });
+Character.attributes.add("isPlayer", { type: "boolean", default: false });
+Character.attributes.add("defaultrun", { type: "boolean", default: true });
+Character.attributes.add("inertia", { type: "boolean", default: true });
+Character.attributes.add("canmoveonair", { type: "boolean", default: false });
+Character.attributes.add("playerOptions",
     {
         title: "Player options",
-        type: 'json',
+        type: "json",
         schema: [
             {
-                name: 'playerControllerOnKeyUP',
-                type: 'string', enum: [
-                    { 'MoveForward': 'MoveForward' },
-                    { 'Jump': 'Jump' }
-                ], default: 'MoveForward'
+                name: "playerControllerOnKeyUP",
+                type: "string", enum: [
+                    { "MoveForward": "MoveForward" },
+                    { "Jump": "Jump" }
+                ], default: "MoveForward"
             }, {
-                name: 'playerControllerOnKeyRight',
-                type: 'string', enum: [
-                    { 'Rotate': 'Rotate' },
-                    { 'Strafe': 'Strafe' }
-                ], default: 'Rotate'
+                name: "playerControllerOnKeyRight",
+                type: "string", enum: [
+                    { "Rotate": "Rotate" },
+                    { "Strafe": "Strafe" }
+                ], default: "Rotate"
             },
             {
-                name: 'rotationEventDelay',
-                title: 'rotationEventDelay',
-                type: 'number',
+                name: "rotationEventDelay",
+                title: "rotationEventDelay",
+                type: "number",
                 default: 0
             }
         ]
     });
 
-Character.attributes.add('ccd',
+Character.attributes.add("ccd",
     {
         title: "ccd",
-        type: 'json',
+        type: "json",
         schema: [
             {
-                name: 'enabled',
-                type: 'boolean',
+                name: "enabled",
+                type: "boolean",
                 default: true,
-                title: 'enabled',
-                description: 'enables ccd'
+                title: "enabled",
+                description: "enables ccd"
             },
             {
                 name: "motionThreshold",
@@ -76,39 +76,39 @@ Character.attributes.add('ccd',
                 type: "number",
                 default: 0,
                 title: "Contact Processing Threshold",
-                description: 'The constraint solver can discard solving contacts, if the distance is above this threshold. 0 by default. \n Note that using contacts with positive distance can improve stability. It increases, however, the chance of colliding with degerate contacts, such as "interior" triangle edges'
+                description: "The constraint solver can discard solving contacts, if the distance is above this threshold. 0 by default. \n Note that using contacts with positive distance can improve stability. It increases, however, the chance of colliding with degerate contacts, such as 'interior' triangle edges"
             }
         ]
     });
 
 
-Character.attributes.add('sensorOptions',
+Character.attributes.add("sensorOptions",
     {
         title: "Sensor options",
-        type: 'json',
+        type: "json",
         schema: [
             {
-                name: 'enabled',
-                type: 'boolean',
+                name: "enabled",
+                type: "boolean",
                 default: true,
-                title: 'enabled',
-                description: 'enables sensorOptions'
+                title: "enabled",
+                description: "enables sensorOptions"
             },
             {
-                name: 'sensorDebug',
-                type: 'boolean',
+                name: "sensorDebug",
+                type: "boolean",
                 default: false
             },
             {
-                name: 'sensorJumpDebug',
-                type: 'boolean',
+                name: "sensorJumpDebug",
+                type: "boolean",
                 default: false
             }
             ,
             {
-                name: 'groundtolerance',
-                type: 'number',
-                description: 'ground tolerance for steps',
+                name: "groundtolerance",
+                type: "number",
+                description: "ground tolerance for steps",
                 default: 0.15,
                 min: 0.1,
                 max: 0.5
@@ -116,51 +116,51 @@ Character.attributes.add('sensorOptions',
         ]
     });
 
-Character.attributes.add('tracerOptions',
+Character.attributes.add("tracerOptions",
     {
         title: "Trace Options",
-        type: 'json',
+        type: "json",
         schema: [
             {
-                name: 'enabled',
-                type: 'boolean',
+                name: "enabled",
+                type: "boolean",
                 default: true,
-                title: 'enabled',
-                description: 'enables Tracer Options'
+                title: "enabled",
+                description: "enables Tracer Options"
             },
             {
-                name: 'traceinput',
-                type: 'boolean',
+                name: "traceinput",
+                type: "boolean",
                 default: false
             },
             {
-                name: 'tracedetector',
-                type: 'boolean',
+                name: "tracedetector",
+                type: "boolean",
                 default: false
             },
             {
-                name: 'traceplayercapsule',
-                type: 'boolean',
+                name: "traceplayercapsule",
+                type: "boolean",
                 default: false
             },
             {
-                name: 'traceattack',
-                type: 'boolean',
+                name: "traceattack",
+                type: "boolean",
                 default: false
             }
         ]
     });
 
 
-Character.attributes.add('playerAnimationsOptions',
+Character.attributes.add("playerAnimationsOptions",
     {
         title: "Player Animations Options",
-        type: 'json',
+        type: "json",
         schema: [
             {
-                name: 'motionrootmode',
+                name: "motionrootmode",
                 title: "Motion root mode",
-                type: 'string', enum: [
+                type: "string", enum: [
                     { "in_place_all_axis": "in_place_all_axis" },
                     { "in_place_z_axis": "in_place_z_axis" },
                     { "teleport": "teleport" },
@@ -171,39 +171,39 @@ Character.attributes.add('playerAnimationsOptions',
     });
 
 
-Character.attributes.add('bones',
+Character.attributes.add("bones",
     {
         title: "bones",
-        type: 'json',
+        type: "json",
         schema: [
             {
-                name: 'autodetectFromMixamoArmature',
-                type: 'boolean',
+                name: "autodetectFromMixamoArmature",
+                type: "boolean",
                 default: true
             },
             {
-                name: 'hips',
-                type: 'entity',
+                name: "hips",
+                type: "entity",
                 default: null
             },
             {
-                name: 'leftHand',
-                type: 'entity',
+                name: "leftHand",
+                type: "entity",
                 default: null
             },
             {
-                name: 'rightHand',
-                type: 'entity',
+                name: "rightHand",
+                type: "entity",
                 default: null
             },
             {
-                name: 'leftFoot',
-                type: 'entity',
+                name: "leftFoot",
+                type: "entity",
                 default: null
             },
             {
-                name: 'rightFoot',
-                type: 'entity',
+                name: "rightFoot",
+                type: "entity",
                 default: null
             },
         ]
@@ -211,20 +211,20 @@ Character.attributes.add('bones',
 
 
 
-Character.attributes.add('carryWeapons',
+Character.attributes.add("carryWeapons",
     {
         title: "Carry Weapons",
-        type: 'json',
+        type: "json",
         schema: [
 
             {
-                name: 'leftHandWeaponEntity',
-                type: 'entity',
+                name: "leftHandWeaponEntity",
+                type: "entity",
                 default: null
             },
             {
-                name: 'rightHandWeaponEntity',
-                type: 'entity',
+                name: "rightHandWeaponEntity",
+                type: "entity",
                 default: null
             }
 
@@ -233,19 +233,19 @@ Character.attributes.add('carryWeapons',
     });
 
 
-Character.attributes.add('attackSystem',
+Character.attributes.add("attackSystem",
     {
         title: "attackSystem",
-        type: 'json',
+        type: "json",
         schema: [
             {
-                name: 'canAttack',
-                type: 'boolean',
+                name: "canAttack",
+                type: "boolean",
                 default: true
             },
             {
-                name: 'walkAndAttack',
-                type: 'boolean',
+                name: "walkAndAttack",
+                type: "boolean",
                 default: false
             }
         ]
@@ -324,10 +324,10 @@ for (var a_s = 0; a_s < Character.animation_modes.length; a_s++) {
     }
 
     if (statesSchema.length > 0) {
-        Character.attributes.add('animations_' + modeName,
+        Character.attributes.add("animations_" + modeName,
             {
-                title: 'Animations ' + modeName,
-                type: 'json',
+                title: "Animations " + modeName,
+                type: "json",
                 schema: statesSchema
             }
         );
@@ -339,7 +339,7 @@ for (var a_s = 0; a_s < Character.animation_modes.length; a_s++) {
 
 
 /**
- * Enumeration representing the various states of the character's attack system.
+ * Enumeration representing the various states of the character"s attack system.
  * @readonly
  * @enum {number}
  */
@@ -415,7 +415,7 @@ Character.prototype.initialize = function () {
 
 
 
-    this.renderCharacterComponent = this.entity.findComponent('render');
+    this.renderCharacterComponent = this.entity.findComponent("render");
 
     this.entity.renderCharacterComponent = this.renderCharacterComponent;
     if (this.renderCharacterComponent) {
@@ -455,18 +455,18 @@ Character.prototype.initialize = function () {
 
     //this.pointEntity = new pc.Entity()
     /*
-    this.pointEntity.addComponent('render', {
-        type: 'sphere',
+    this.pointEntity.addComponent("render", {
+        type: "sphere",
         radius: 0.05
     });
     */
     /*
-        this.pointEntity.addComponent('collision', {
-            type: 'sphere',
+        this.pointEntity.addComponent("collision", {
+            type: "sphere",
             radius: 0.1
         });
     
-        this.pointEntity.collision.on('triggerenter', function () {
+        this.pointEntity.collision.on("triggerenter", function () {
             this.stopMovement();
         }, this);
         this.app.scene.root.addChild(this.pointEntity);
@@ -526,7 +526,7 @@ Character.prototype.initialize = function () {
 
     /*
         if (!this.entity.collision) {
-            this.entity.addComponent('collision', {
+            this.entity.addComponent("collision", {
                 type: "compound"
             });
         }
@@ -534,13 +534,13 @@ Character.prototype.initialize = function () {
     if (!this.entity.collision) {
         this.entity.tags.add("uranus-instancing-exclude");
         this.entity.tags.add("is-capsule-collision");
-        this.entity.addComponent('collision', {
-            type: 'capsule',
+        this.entity.addComponent("collision", {
+            type: "capsule",
             radius: this.characterRadius,
             height: this.characterHeight
         });
-        this.entity.collision.on('collisionstart', this.characterCollisionStart, this);
-        this.entity.collision.on('collisionend', this.characterCollisionEnd, this);
+        this.entity.collision.on("collisionstart", this.characterCollisionStart, this);
+        this.entity.collision.on("collisionend", this.characterCollisionEnd, this);
         this.entity.other = null;
     }
 
@@ -570,8 +570,8 @@ Character.prototype.initialize = function () {
         this.entity.capsule_collision = new pc.Entity(this.entity.name + "_capsule_collision");
         this.entity.addChild(this.entity.capsule_collision);
         // Añadir el componente de renderizado con las opciones adecuadas
-        this.entity.capsule_collision.addComponent('render', {
-            type: 'asset',
+        this.entity.capsule_collision.addComponent("render", {
+            type: "asset",
             renderStyle: pc.RENDERSTYLE_WIREFRAME,  // Estilo de renderizado en alambre
             material: transparentMaterial,  // Asignamos el material
             castShadows: false
@@ -597,8 +597,8 @@ Character.prototype.initialize = function () {
     if (!this.entity.rigidbody) {
         var mass = getCharacterMassFromCapsule(this.entity);
 
-        this.entity.addComponent('rigidbody', {
-            type: 'dynamic',         // Tipo de cuerpo rígido (puede ser 'dynamic', 'static' o 'kinematic')
+        this.entity.addComponent("rigidbody", {
+            type: "dynamic",         // Tipo de cuerpo rígido (puede ser "dynamic", "static" o "kinematic")
             mass: mass,              // Masa del cuerpo rígido
             friction: 1,          // Coeficiente de fricción
             restitution: 0,       // Coeficiente de restitución (rebote)
@@ -621,7 +621,7 @@ Character.prototype.initialize = function () {
 
 
 
-    this.entity.on('character:detector', function (detectedEntities) {
+    this.entity.on("character:detector", function (detectedEntities) {
 
         if (this.tracerOptions.tracedetector) {
             var detEnt = [];
@@ -649,8 +649,8 @@ Character.prototype.initialize = function () {
 
 
     this.on("destroy", function () {
-        this.entity.collision.off('collisionstart', this.characterCollisionStart);
-        this.entity.collision.off('collisionend', this.characterCollisionEnd);
+        this.entity.collision.off("collisionstart", this.characterCollisionStart);
+        this.entity.collision.off("collisionend", this.characterCollisionEnd);
     }, this);
 
     this.entity.on("destroy", function () {
@@ -660,7 +660,7 @@ Character.prototype.initialize = function () {
 
     /*TRACE ATRIBUTE SCRIPT EVENT*/
     this.prevtracerOptions = JSON.parse(JSON.stringify(this.tracerOptions));
-    this.on('attr:tracerOptions', function (nuevoValor) {
+    this.on("attr:tracerOptions", function (nuevoValor) {
         if (nuevoValor.enabled !== this.prevtracerOptions.enabled) {
 
         }
@@ -688,7 +688,7 @@ Character.prototype.initialize = function () {
 
         var collision = entity.collision;
 
-        if (collision.type !== 'capsule') {
+        if (collision.type !== "capsule") {
             return DEFAULT_MASS;
         }
 
@@ -1076,7 +1076,7 @@ Character.prototype.doMove = async function () {
     }
 
 
-    if (input.cameratype === "FirstPerson" && !stopMovementNow) {
+    if (input.cameratype === "FirstPerson" && !stopMovementNow && !this.isMoving) {
         const camWorldTransform = input.camera.entity.getWorldTransform();
         const forward = new pc.Vec3();
         camWorldTransform.transformVector(pc.Vec3.FORWARD, forward);
@@ -1866,47 +1866,47 @@ Character.prototype.prepareAnimComponent = function () {
     const animPlayerStateGraphDataX = {
         layers: [
             {
-                name: 'unarmed',
+                name: "unarmed",
                 states: [
                     {
-                        name: 'START'
+                        name: "START"
                     },
                     {
-                        name: 'ANY'
+                        name: "ANY"
                     },
                     {
-                        name: 'idle'
+                        name: "idle"
                     },
                     {
-                        name: 'walking'
+                        name: "walking"
                     },
                     {
-                        name: 'running'
+                        name: "running"
                     },
                     {
-                        name: 'sprinting'
+                        name: "sprinting"
                     },
                     {
-                        name: 'attack',
+                        name: "attack",
                         loop: false
                     },
                     {
-                        name: 'attack2',
+                        name: "attack2",
                         loop: false
                     },
                     {
-                        name: 'jump',
+                        name: "jump",
                         loop: false
                     },
                     {
-                        name: 'climb',
+                        name: "climb",
                         loop: false
                     },
                     {
-                        name: 'teeter'
+                        name: "teeter"
                     },
                     {
-                        name: 'landing',
+                        name: "landing",
                         loop: false
                     },
                     {
@@ -1920,60 +1920,60 @@ Character.prototype.prepareAnimComponent = function () {
                 ],
                 transitions: [
                     {
-                        from: 'START',
-                        to: 'idle',
+                        from: "START",
+                        to: "idle",
                         time: 0.0,
                         priority: 0
                     }, {
-                        from: 'idle',
-                        to: 'walking',
+                        from: "idle",
+                        to: "walking",
                         time: 0.2,
                         priority: 0,
                         conditions: [{
-                            parameterName: 'speed',
+                            parameterName: "speed",
                             predicate: pc.ANIM_GREATER_THAN,
                             value: 0
                         }]
                     }, {
-                        from: 'walking',
-                        to: 'idle',
+                        from: "walking",
+                        to: "idle",
                         time: 0.0,
                         priority: 0,
                         conditions: [{
-                            parameterName: 'speed',
+                            parameterName: "speed",
                             predicate: pc.ANIM_LESS_THAN,
                             value: 0.01
                         }]
                     },
                     {
-                        from: 'walking',
-                        to: 'running',
+                        from: "walking",
+                        to: "running",
                         time: 0.2,
                         priority: 0,
                         conditions: [{
-                            parameterName: 'speed',
+                            parameterName: "speed",
                             predicate: pc.ANIM_GREATER_THAN,
                             value: 0.99
                         }]
                     },
                     {
-                        from: 'running',
-                        to: 'walking',
+                        from: "running",
+                        to: "walking",
                         time: 0.1,
                         priority: 0,
                         conditions: [{
-                            parameterName: 'speed',
+                            parameterName: "speed",
                             predicate: pc.ANIM_LESS_THAN,
                             value: 1
                         }]
                     },
                     {
-                        from: 'idle',
-                        to: 'running',
+                        from: "idle",
+                        to: "running",
                         time: 0.2,
                         priority: 0,
                         conditions: [{
-                            parameterName: 'speed',
+                            parameterName: "speed",
                             predicate: pc.ANIM_GREATER_THAN_EQUAL_TO,
                             value: 1
                         }
@@ -1981,48 +1981,48 @@ Character.prototype.prepareAnimComponent = function () {
                     },
 
                     {
-                        from: 'ANY',
-                        to: 'attack',
+                        from: "ANY",
+                        to: "attack",
                         time: 0.1,
                         priority: 0,
                         conditions: [{
-                            parameterName: 'attack',
+                            parameterName: "attack",
                             predicate: pc.ANIM_EQUAL_TO,
                             value: 1
                         }]
                     },
 
                     {
-                        from: 'attack',
-                        to: 'idle',
+                        from: "attack",
+                        to: "idle",
                         time: 0.0,
                         priority: 0,
                         conditions: [
                             {
-                                parameterName: 'attack',
+                                parameterName: "attack",
                                 predicate: pc.ANIM_EQUAL_TO,
                                 value: 0
                             },
                             {
-                                parameterName: 'speed',
+                                parameterName: "speed",
                                 predicate: pc.ANIM_LESS_THAN,
                                 value: 0.01
                             }]
                     },
 
                     {
-                        from: 'attack',
-                        to: 'walking',
+                        from: "attack",
+                        to: "walking",
                         time: 0.2,
                         priority: 0,
                         conditions: [
                             {
-                                parameterName: 'attack',
+                                parameterName: "attack",
                                 predicate: pc.ANIM_EQUAL_TO,
                                 value: 0
                             },
                             {
-                                parameterName: 'speed',
+                                parameterName: "speed",
                                 predicate: pc.ANIM_GREATER_THAN,
                                 value: 0.01
                             }
@@ -2031,18 +2031,18 @@ Character.prototype.prepareAnimComponent = function () {
 
 
                     {
-                        from: 'attack',
-                        to: 'running',
+                        from: "attack",
+                        to: "running",
                         time: 0.2,
                         priority: 0,
                         conditions: [
                             {
-                                parameterName: 'attack',
+                                parameterName: "attack",
                                 predicate: pc.ANIM_EQUAL_TO,
                                 value: 0
                             },
                             {
-                                parameterName: 'speed',
+                                parameterName: "speed",
                                 predicate: pc.ANIM_GREATER_THAN,
                                 value: 0.99
                             }
@@ -2057,37 +2057,37 @@ Character.prototype.prepareAnimComponent = function () {
         ],
         parameters: {
             speed: {
-                name: 'speed',
+                name: "speed",
                 type: pc.ANIM_PARAMETER_FLOAT,
                 value: 0
             },
             attack: {
-                name: 'attack',
+                name: "attack",
                 type: pc.ANIM_PARAMETER_INTEGER,
                 value: 0
             },
             Jump: {
-                name: 'Jump',
+                name: "Jump",
                 type: pc.ANIM_PARAMETER_BOOLEAN,
                 value: false
             },
             Grounded: {
-                name: 'Grounded',
+                name: "Grounded",
                 type: pc.ANIM_PARAMETER_BOOLEAN,
                 value: false
             },
             Fly: {
-                name: 'Fly',
+                name: "Fly",
                 type: pc.ANIM_PARAMETER_BOOLEAN,
                 value: false
             },
             FreeFall: {
-                name: 'FreeFall',
+                name: "FreeFall",
                 type: pc.ANIM_PARAMETER_BOOLEAN,
                 value: false
             },
             Swim: {
-                name: 'Swim',
+                name: "Swim",
                 type: pc.ANIM_PARAMETER_BOOLEAN,
                 value: false
             }
@@ -2102,8 +2102,8 @@ Character.prototype.prepareAnimComponent = function () {
     this.animPlayerStateGraphData = {
         layers: [
             {
-                name: 'baseLayer',
-                states: [{ name: 'START' }, { name: 'ANY' }],
+                name: "baseLayer",
+                states: [{ name: "START" }, { name: "ANY" }],
                 transitions: []
             }
         ],
@@ -2190,13 +2190,13 @@ Character.prototype.prepareAnimComponent = function () {
         for (var i = 0; i < idles.length; i++) {
             if (this["animations_" + modeName][modeName + "_" + idles[i]]) {
                 this.animPlayerStateGraphData.layers[0].transitions.push({
-                    from: 'START',
+                    from: "START",
                     to: modeName + "_" + idles[i],
                     time: 0.1,
                     priority: 0,
                     conditions: [
-                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                        { parameterName: 'idle', predicate: pc.ANIM_EQUAL_TO, value: i }
+                        { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                        { parameterName: "idle", predicate: pc.ANIM_EQUAL_TO, value: i }
                     ]
                 });
             }
@@ -2214,8 +2214,8 @@ Character.prototype.prepareAnimComponent = function () {
                     time: 0.1,
                     priority: 0,
                     conditions: [
-                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
-                        { parameterName: 'idle', predicate: pc.ANIM_EQUAL_TO, value: i - 1 }
+                        { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: 0 },
+                        { parameterName: "idle", predicate: pc.ANIM_EQUAL_TO, value: i - 1 }
                     ]
                 });
             }
@@ -2237,19 +2237,19 @@ Character.prototype.prepareAnimComponent = function () {
                             time: 0.2,
                             priority: 0,
                             conditions: [
-                                { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                                { parameterName: 'speed', predicate: pc.ANIM_GREATER_THAN, value: 0 }
+                                { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                                { parameterName: "speed", predicate: pc.ANIM_GREATER_THAN, value: 0 }
                             ]
                         },
                         {
-                            from: modeName + '_walking',
+                            from: modeName + "_walking",
                             to: modeName + "_" + idles[i],
                             time: 0.1,
                             priority: 0,
                             conditions: [
-                                { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                                { parameterName: 'idle', predicate: pc.ANIM_EQUAL_TO, value: i },
-                                { parameterName: 'speed', predicate: pc.ANIM_LESS_THAN, value: 0.01 }
+                                { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                                { parameterName: "idle", predicate: pc.ANIM_EQUAL_TO, value: i },
+                                { parameterName: "speed", predicate: pc.ANIM_LESS_THAN, value: 0.01 }
                             ]
                         }
 
@@ -2267,10 +2267,10 @@ Character.prototype.prepareAnimComponent = function () {
                         time: 0.2,
                         priority: 0,
                         conditions: [
-                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                            { parameterName: 'speed', predicate: pc.ANIM_GREATER_THAN, value: 0 },
-                            { parameterName: 'speed', predicate: pc.ANIM_LESS_THAN_EQUAL_TO, value: 0.99 },
-                            { parameterName: 'turn180', predicate: pc.ANIM_EQUAL_TO, value: 1 }
+                            { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: "speed", predicate: pc.ANIM_GREATER_THAN, value: 0 },
+                            { parameterName: "speed", predicate: pc.ANIM_LESS_THAN_EQUAL_TO, value: 0.99 },
+                            { parameterName: "turn180", predicate: pc.ANIM_EQUAL_TO, value: 1 }
                         ]
                     },
                     {
@@ -2279,10 +2279,10 @@ Character.prototype.prepareAnimComponent = function () {
                         time: 0.2,
                         priority: 0,
                         conditions: [
-                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                            { parameterName: 'speed', predicate: pc.ANIM_GREATER_THAN, value: 0 },
-                            { parameterName: 'speed', predicate: pc.ANIM_LESS_THAN_EQUAL_TO, value: 0.99 },
-                            { parameterName: 'turn180', predicate: pc.ANIM_EQUAL_TO, value: 0 }
+                            { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: "speed", predicate: pc.ANIM_GREATER_THAN, value: 0 },
+                            { parameterName: "speed", predicate: pc.ANIM_LESS_THAN_EQUAL_TO, value: 0.99 },
+                            { parameterName: "turn180", predicate: pc.ANIM_EQUAL_TO, value: 0 }
                         ]
                     }/*,
                 {
@@ -2291,8 +2291,8 @@ Character.prototype.prepareAnimComponent = function () {
                     time: 0.2,
                     priority: 0,
                     conditions: [
-                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: 0 },
-                        { parameterName: 'turn180', predicate: pc.ANIM_EQUAL_TO, value: 0 }
+                        { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: 0 },
+                        { parameterName: "turn180", predicate: pc.ANIM_EQUAL_TO, value: 0 }
                     ]
                 }*/
 
@@ -2309,23 +2309,23 @@ Character.prototype.prepareAnimComponent = function () {
 
                 this.animPlayerStateGraphData.layers[0].transitions.push(
                     {
-                        from: modeName + '_walking',
-                        to: modeName + '_running',
+                        from: modeName + "_walking",
+                        to: modeName + "_running",
                         time: 0.2,
                         priority: 0,
                         conditions: [
-                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                            { parameterName: 'speed', predicate: pc.ANIM_GREATER_THAN, value: 0.99 }
+                            { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: "speed", predicate: pc.ANIM_GREATER_THAN, value: 0.99 }
                         ]
                     },
                     {
-                        from: modeName + '_running',
-                        to: modeName + '_walking',
+                        from: modeName + "_running",
+                        to: modeName + "_walking",
                         time: 0.2,
                         priority: 0,
                         conditions: [
-                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                            { parameterName: 'speed', predicate: pc.ANIM_LESS_THAN, value: 1 }
+                            { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: "speed", predicate: pc.ANIM_LESS_THAN, value: 1 }
                         ]
                     }
                 );
@@ -2339,23 +2339,23 @@ Character.prototype.prepareAnimComponent = function () {
                     this.animPlayerStateGraphData.layers[0].transitions.push(
                         {
                             from: modeName + "_" + idles[i],
-                            to: modeName + '_running',
+                            to: modeName + "_running",
                             time: 0.2,
                             priority: 0,
                             conditions: [
-                                { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                                { parameterName: 'speed', predicate: pc.ANIM_GREATER_THAN_EQUAL_TO, value: 1 },
+                                { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                                { parameterName: "speed", predicate: pc.ANIM_GREATER_THAN_EQUAL_TO, value: 1 },
                             ]
                         },
                         {
-                            from: modeName + '_running',
+                            from: modeName + "_running",
                             to: modeName + "_" + idles[i],
                             time: 0.1,
                             priority: 0,
                             conditions: [
-                                { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                                { parameterName: 'idle', predicate: pc.ANIM_EQUAL_TO, value: i },
-                                { parameterName: 'speed', predicate: pc.ANIM_LESS_THAN, value: 0.01 }
+                                { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                                { parameterName: "idle", predicate: pc.ANIM_EQUAL_TO, value: i },
+                                { parameterName: "speed", predicate: pc.ANIM_LESS_THAN, value: 0.01 }
                             ]
                         }
 
@@ -2375,8 +2375,8 @@ Character.prototype.prepareAnimComponent = function () {
                     time: 0.2,
                     priority: 0,
                     conditions: [
-                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                        { parameterName: 'impact', predicate: pc.ANIM_EQUAL_TO, value: 1 }
+                        { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                        { parameterName: "impact", predicate: pc.ANIM_EQUAL_TO, value: 1 }
                     ]
                 },
                 {
@@ -2385,8 +2385,8 @@ Character.prototype.prepareAnimComponent = function () {
                     time: 0.2,
                     priority: 0,
                     conditions: [
-                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                        { parameterName: 'impact', predicate: pc.ANIM_EQUAL_TO, value: 0 }
+                        { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                        { parameterName: "impact", predicate: pc.ANIM_EQUAL_TO, value: 0 }
                     ]
                 }
             );
@@ -2402,8 +2402,8 @@ Character.prototype.prepareAnimComponent = function () {
                         time: 0.2,
                         priority: 0,
                         conditions: [
-                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                            { parameterName: 'impact', predicate: pc.ANIM_EQUAL_TO, value: i + 1 }
+                            { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: "impact", predicate: pc.ANIM_EQUAL_TO, value: i + 1 }
                         ]
                     },
                     {
@@ -2412,8 +2412,8 @@ Character.prototype.prepareAnimComponent = function () {
                         time: 0.2,
                         priority: 0,
                         conditions: [
-                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                            { parameterName: 'impact', predicate: pc.ANIM_EQUAL_TO, value: 0 }
+                            { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: "impact", predicate: pc.ANIM_EQUAL_TO, value: 0 }
                         ]
                     }
                 );
@@ -2431,8 +2431,8 @@ Character.prototype.prepareAnimComponent = function () {
                     time: 0.2,
                     priority: 0,
                     conditions: [
-                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                        { parameterName: 'onair', predicate: pc.ANIM_EQUAL_TO, value: 1 }
+                        { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                        { parameterName: "onair", predicate: pc.ANIM_EQUAL_TO, value: 1 }
                     ]
                 },
                 {
@@ -2441,8 +2441,8 @@ Character.prototype.prepareAnimComponent = function () {
                     time: 0.2,
                     priority: 0,
                     conditions: [
-                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                        { parameterName: 'onair', predicate: pc.ANIM_EQUAL_TO, value: 0 }
+                        { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                        { parameterName: "onair", predicate: pc.ANIM_EQUAL_TO, value: 0 }
                     ]
                 }
             );
@@ -2458,8 +2458,8 @@ Character.prototype.prepareAnimComponent = function () {
                     time: 0.2,
                     priority: 0,
                     conditions: [
-                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                        { parameterName: 'landing', predicate: pc.ANIM_EQUAL_TO, value: 1 }
+                        { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                        { parameterName: "landing", predicate: pc.ANIM_EQUAL_TO, value: 1 }
                     ]
                 },
                 {
@@ -2468,8 +2468,8 @@ Character.prototype.prepareAnimComponent = function () {
                     time: 0.2,
                     priority: 0,
                     conditions: [
-                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                        { parameterName: 'landing', predicate: pc.ANIM_EQUAL_TO, value: 0 }
+                        { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                        { parameterName: "landing", predicate: pc.ANIM_EQUAL_TO, value: 0 }
                     ]
                 }
             );
@@ -2489,8 +2489,8 @@ Character.prototype.prepareAnimComponent = function () {
                     time: 0.2,
                     priority: 0,
                     conditions: [
-                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                        { parameterName: 'impact', predicate: pc.ANIM_EQUAL_TO, value: 1 }
+                        { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                        { parameterName: "impact", predicate: pc.ANIM_EQUAL_TO, value: 1 }
                     ]
                 },
                 {
@@ -2499,8 +2499,8 @@ Character.prototype.prepareAnimComponent = function () {
                     time: 0.2,
                     priority: 0,
                     conditions: [
-                        { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                        { parameterName: 'impact', predicate: pc.ANIM_EQUAL_TO, value: 0 }
+                        { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                        { parameterName: "impact", predicate: pc.ANIM_EQUAL_TO, value: 0 }
                     ]
                 }
             );
@@ -2518,8 +2518,8 @@ Character.prototype.prepareAnimComponent = function () {
                         time: 0.2,
                         priority: 0,
                         conditions: [
-                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                            { parameterName: 'attack', predicate: pc.ANIM_EQUAL_TO, value: i + 1 }
+                            { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: "attack", predicate: pc.ANIM_EQUAL_TO, value: i + 1 }
                         ]
                     },
                     {
@@ -2528,8 +2528,8 @@ Character.prototype.prepareAnimComponent = function () {
                         time: 0.2,
                         priority: 0,
                         conditions: [
-                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m },
-                            { parameterName: 'attack', predicate: pc.ANIM_EQUAL_TO, value: 0 }
+                            { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: "attack", predicate: pc.ANIM_EQUAL_TO, value: 0 }
                         ]
                     }
                 );
@@ -2563,7 +2563,7 @@ Character.prototype.prepareAnimComponent = function () {
                         time: 0.2,
                         priority: 0,
                         conditions: [
-                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m + 1 }
+                            { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m + 1 }
                         ]
                     },
                     {
@@ -2572,7 +2572,7 @@ Character.prototype.prepareAnimComponent = function () {
                         time: 0.2,
                         priority: 0,
                         conditions: [
-                            { parameterName: 'mode', predicate: pc.ANIM_EQUAL_TO, value: m }
+                            { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m }
                         ]
                     }
                 );
@@ -2589,7 +2589,7 @@ Character.prototype.prepareAnimComponent = function () {
 
 
     // add an anim component to the entity
-    this.entity.addComponent('anim', {
+    this.entity.addComponent("anim", {
         activate: true,
         rootBone: this.playerAnimationsOptions.hips && this.playerAnimationsOptions.hips
     });
@@ -2608,7 +2608,7 @@ Character.prototype.prepareAnimComponent = function () {
 
             var asset = this.app.assets.get(states[i].assetId);
 
-            if (asset && asset.type === 'animation') {
+            if (asset && asset.type === "animation") {
                 if (asset.resource) {
 
                     locomotionLayer.assignAnimation(state.name, asset.resource);
@@ -2617,16 +2617,16 @@ Character.prototype.prepareAnimComponent = function () {
                         asset.resource.events = new pc.AnimEvents([
                             {
                                 time: asset.resource.duration,
-                                name: 'attack-end-animation'
+                                name: "attack-end-animation"
                             },
                             {
                                 time: asset.resource.duration * 1000 / 4 / 1000,
-                                name: 'attack-start-damage-animation'
+                                name: "attack-start-damage-animation"
                             },
                             {
 
                                 time: (3 * asset.resource.duration * 1000 / 4) / 1000,
-                                name: 'attack-end-damage-animation'
+                                name: "attack-end-damage-animation"
                             }
                         ]);
                     }
@@ -2639,15 +2639,15 @@ Character.prototype.prepareAnimComponent = function () {
                             e.resource.events = new pc.AnimEvents([
                                 {
                                     time: e.resource.duration,
-                                    name: 'attack-end-animation'
+                                    name: "attack-end-animation"
                                 },
                                 {
                                     time: e.resource.duration * 1000 / 4 / 1000,
-                                    name: 'attack-start-damage-animation'
+                                    name: "attack-start-damage-animation"
                                 },
                                 {
                                     time: (3 * asset.resource.duration * 1000 / 4) / 1000,
-                                    name: 'attack-end-damage-animation'
+                                    name: "attack-end-damage-animation"
                                 }
                             ]);
 
@@ -2666,17 +2666,17 @@ Character.prototype.prepareAnimComponent = function () {
 
 
 
-    this.entity.anim.on('attack-end-animation', function (e) {
+    this.entity.anim.on("attack-end-animation", function (e) {
         this.entity.attackSystem.status = CharacterAttackSystemStatusEnum.NONE;
     }, this);
 
-    this.entity.anim.on('attack-start-damage-animation', function (e) {
+    this.entity.anim.on("attack-start-damage-animation", function (e) {
         if (this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
             this.entity.attackSystem.status = CharacterAttackSystemStatusEnum.DAMAGING;
         }
     }, this);
 
-    this.entity.anim.on('attack-end-damage-animation', function (e) {
+    this.entity.anim.on("attack-end-damage-animation", function (e) {
         if (this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
             this.entity.attackSystem.status = CharacterAttackSystemStatusEnum.ENDING;
         }
