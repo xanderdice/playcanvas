@@ -124,7 +124,7 @@ Timer.clearAllTimers = function () {
  * @param {number} dt - The delta time since the last evaluation. This value is added to each timer's elapsed time to track the passage of time.
  * @returns {void} This function does not return any value.
  */
-Timer.evaluateTimers = async function (dt) {
+Timer.evaluateTimers = function (dt) {
     for (let key in this._timers) {
         const timer = this._timers[key];
         timer.__elapsedTime += dt;
@@ -1027,7 +1027,7 @@ GameManager.unbindInputs = function () {
 };
 
 
-GameManager.readKeyboardInput = async function () {
+GameManager.readKeyboardInput = function () {
     const keyboard = GameManager._app.keyboard;
 
     // Movimiento horizontal
@@ -1057,7 +1057,7 @@ GameManager.readKeyboardInput = async function () {
     //GameManager.input.mode = +(keyboard.isPressed(pc.KEY_M));
 };
 
-GameManager.handleEscToggle = async function () {
+GameManager.handleEscToggle = function () {
     const esc = GameManager.input.esc;
 
     // flanco de subida: solo una vez por pulsación
@@ -1215,7 +1215,7 @@ GameManager._onMouseWheel = function (event) {
 
 
 
-GameManager.updateMouseState = async function () {
+GameManager.updateMouseState = function () {
     if (GameManager._app.isMenuMode) {
         GameManager.setMouseState("ui");
         return;
@@ -1368,7 +1368,9 @@ GameManager._clearMouseHoverTarget = function (fireLeave) {
 };
 
 
-GameManager._updateMouseHoverTarget = async function (event) {
+GameManager._updateMouseHoverTarget = function (event) {
+    if (GameManager.mouseState !== "free") return;
+
     if (!GameManager._app || !GameManager.currentCamera) {
         GameManager._clearMouseHoverTarget(true);
         return;
@@ -1468,7 +1470,7 @@ GameManager._updateMouseHoverTarget = async function (event) {
     GameManager._app.fire("game:mousehover", hoverData);
 };
 
-GameManager.updateCameraOrientation = async function () {
+GameManager.updateCameraOrientation = function () {
     if (!GameManager.currentCamera) return;
     if (!GameManager.followCamera || !GameManager.followCamera.target) return;
 
@@ -1498,7 +1500,7 @@ GameManager.updateCameraOrientation = async function () {
 };
 
 
-GameManager.updateCameraPosition = async function (dt) {
+GameManager.updateCameraPosition = function (dt) {
     const speed = GameManager.flyCamera.speed || 20;
     const targetPosition = GameManager.followCamera.target.getPosition();
 
@@ -1600,7 +1602,7 @@ GameManager.sleep = function (ms) {
 /*       U P D A T E                            */
 /********************************************** */
 // update code called every frame
-GameManager.updateGameManager = async function (dt) {
+GameManager.updateGameManager = function (dt) {
     if (GameManager.checkForPlayerAndTargetEntities) {
         GameManager._app.scene.root.find(function (entity) {
             if (entity.name.trim().toLowerCase() === (GameManager.followCamera.targetName || "").trim().toLowerCase()) {
@@ -1634,16 +1636,16 @@ GameManager.updateGameManager = async function (dt) {
 
     GameManager._app.dt = dt;
     GameManager.input.dt = dt;
-    await Timer.evaluateTimers(dt);
+    Timer.evaluateTimers(dt);
 
-    await GameManager.readKeyboardInput();
-    await GameManager.handleEscToggle();
-    await GameManager.updateMouseState();
+    GameManager.readKeyboardInput();
+    GameManager.handleEscToggle();
+    GameManager.updateMouseState();
 
 
     ///MOVE CHARACTERS
     if (GameManager.enableCharacterController && GameManager.characterControllerInterv === "update") {
-        await GameManager.updateCharactersMovement();
+        GameManager.updateCharactersMovement();
     }
     ///MOVE CHARACTERS
 
@@ -1692,27 +1694,21 @@ GameManager.updateGameManager = async function (dt) {
 
     /* CAMERA MOVEMENT */
     if (GameManager.currentCamera) {
-        await GameManager.updateCameraOrientation();
-        await GameManager.updateCameraPosition(dt);
+        GameManager.updateCameraOrientation();
+        GameManager.updateCameraPosition(dt);
     }
 
     GameManager.__gameMouseMoved = false;
 };
 
 
-GameManager.setInterval = async function () {
+GameManager.setInterval = function () {
     if (GameManager.setInterval_busy) {
         this.interval_accumul++;
 
     } else {
         GameManager.setInterval_busy = true;
-        const startTime = performance.now();
-        await GameManager.updateCharactersMovement();
-        const endTime = performance.now();    // Toma el tiempo de finalización
-        const elapsedTime = endTime - startTime;
-        /*if (elapsedTime > 0.2) {
-            Tracer("updateCharactersMovement", elapsedTime);
-        }*/
+        GameManager.updateCharactersMovement();
 
         this.interval_accumul = 1;
         GameManager.setInterval_busy = false;
@@ -1742,7 +1738,7 @@ GameManager.prototype._rebuildPlayerCacheIfNeeded = function (characters) {
 
 
 // Public API: llama cada frame (dt en segundos)
-GameManager.updateCharactersMovement = async function () {
+GameManager.updateCharactersMovement = function () {
     const dt = GameManager.input.dt;
     const characters = GameManager.sceneCharacters;
     if (!characters || characters.length === 0) {
@@ -1778,7 +1774,7 @@ GameManager.updateCharactersMovement = async function () {
         character.input = GameManager.input;
 
         if (script.doMove) {
-            await script.doMove();
+            script.doMove();
             someoneMoved = true;
         }
     }
@@ -1840,7 +1836,7 @@ GameManager.updateCharactersMovement = async function () {
         }
 
         if (script.doMove) {
-            await script.doMove();
+            script.doMove();
             someoneMoved = true;
         }
 

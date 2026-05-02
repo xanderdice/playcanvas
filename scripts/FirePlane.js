@@ -1,5 +1,7 @@
 var FirePlane = pc.createScript('firePlane');
 
+FirePlane.attributes.add('cameraEntity', { type: 'entity', title: 'Cámara' });
+
 FirePlane.attributes.add('intensity', {
     type: 'number',
     default: 1,
@@ -82,6 +84,7 @@ FirePlane.prototype.initialize = function () {
     this.entity.render.receiveShadows = false;
 
     this.time = 0;
+
 
     var vs = [
         'attribute vec3 aPosition;',
@@ -220,4 +223,15 @@ FirePlane.prototype.update = function (dt) {
     if (this.material) {
         this._applyMaterialState();
     }
+
+    var camPos = this.cameraEntity.getPosition();
+    var pos = this.entity.getPosition();
+
+    var dx = camPos.x - pos.x;
+    var dz = camPos.z - pos.z;
+
+    var angleY = -Math.atan2(dx, -dz) * pc.math.RAD_TO_DEG;
+
+    this.entity.setEulerAngles(-90, angleY, 0);
+
 };
