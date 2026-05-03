@@ -981,11 +981,27 @@ Character.prototype.doMove = async function () {
         if (!this.isMoving) moveSpeed = 0;
 
         if (this.isMoving && targetDirection) {
+            /*
             const forwardDirection = targetDirection.forward.clone().scale(input.z);
             const strafeDirection = targetDirection.right.clone().scale(input.x);
             direction = forwardDirection.add(strafeDirection);
 
             if (!this.canmoveonair) direction.y = 0;
+            */
+
+            const camForward = targetDirection.forward.clone();
+            camForward.y = 0;
+            if (camForward.lengthSq() > 0.000001) camForward.normalize();
+
+            const camRight = targetDirection.right.clone();
+            camRight.y = 0;
+            if (camRight.lengthSq() > 0.000001) camRight.normalize();
+
+            const forwardDirection = camForward.scale(input.z);
+            const strafeDirection = camRight.scale(input.x);
+            direction = forwardDirection.add(strafeDirection);
+
+
 
             if (direction.lengthSq() > 0.000001) {
                 direction.normalize();
