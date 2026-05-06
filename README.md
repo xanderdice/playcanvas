@@ -33,6 +33,14 @@ https://imgupscaler.ai/
 
 TUTORIAL: https://www.youtube.com/watch?v=OgpdBFq14uc&list=LL
 
+----------------------------------------------------------------------------------------
+
+### GAUSSIAN SPLAT
+
+GSplat VIDEOS: https://vid2scene.com/
+
+----------------------------------------------------------------------------------------
+
 
 //resolutions
 * 4320p (8K): 7680x4320
