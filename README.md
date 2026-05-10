@@ -38,6 +38,7 @@ TUTORIAL: https://www.youtube.com/watch?v=OgpdBFq14uc&list=LL
 ### GAUSSIAN SPLAT
 
 GSplat VIDEOS: https://vid2scene.com/
+https://github.com/nv-tlabs/lyra/blob/main/Lyra-2/README.md
 
 ----------------------------------------------------------------------------------------
 
