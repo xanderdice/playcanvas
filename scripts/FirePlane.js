@@ -424,14 +424,15 @@ FirePlane.prototype.update = function (dt) {
         this._applyMaterialState();
     }
 
+    var camPos = this.cameraEntity.getPosition();
     if (this.billboardType === "none") {
     } else if (this.billboardType === "lookatcamera") {
 
-        this.entity.lookAt(this.cameraEntity.getPosition());
+        this.entity.lookAt(camPos);
         this.entity.rotateLocal(-90, 0, 0);
 
     } else if (this.billboardType === "cilindrical") {
-        var camPos = this.cameraEntity.getPosition();
+
         var pos = this.entity.getPosition();
 
         var dx = camPos.x - pos.x;
