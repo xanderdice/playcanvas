@@ -594,6 +594,8 @@ Character.prototype.initialize = function () {
 
 
 
+    const linearYfactor = this.canmoveonair ? 0 : 1;
+
     if (!this.entity.rigidbody) {
         var mass = getCharacterMassFromCapsule(this.entity);
 
@@ -604,7 +606,7 @@ Character.prototype.initialize = function () {
             restitution: 0,       // Coeficiente de restitución (rebote)
             linearDamping: 0.0,     // Amortiguación lineal
             angularDamping: 0.0,    // Amortiguación angular
-            linearFactor: new pc.Vec3(1, 1, 1),  // Permitir movimiento en los ejes X y Z, pero no en el eje Y
+            linearFactor: new pc.Vec3(1, linearYfactor, 1),  // Permitir movimiento en los ejes X y Z, pero no en el eje Y
             angularFactor: new pc.Vec3(0, 1, 0)
         });
     }
@@ -805,7 +807,7 @@ Character.prototype.initialize = function () {
 
 
 
-Character.prototype.updateSpeedAnimBlendFromVelocity = async function (dt) {
+Character.prototype.updateSpeedAnimBlendFromVelocity = function (dt) {
 
     const v = this.entity.rigidbody.linearVelocity;
     const horizontalSpeed = Math.sqrt(v.x * v.x + v.z * v.z);
@@ -841,7 +843,8 @@ Character.prototype.stopMovement = function () {
 /*              */
 /* D O  M O V E */
 /*              */
-Character.prototype.doMove = async function () {
+/*
+Character.prototype.doMove = function () {
     if (!this.entity || !this.entity.rigidbody) {
         return;
     }
@@ -1009,7 +1012,7 @@ Character.prototype.doMove = async function () {
             : moveSpeed)
         : 0;
 
-    await this.updateSpeedAnimBlendFromVelocity(dt);
+    this.updateSpeedAnimBlendFromVelocity(dt);
 
     if (this.entity.attackSystem.canAttack &&
         !this.entity.attackSystem.walkAndAttack &&
@@ -1133,12 +1136,333 @@ Character.prototype.doMove = async function () {
 
     this.doMoveCharacter_busy = false;
 };
+*/
+
+
+
+Character.prototype.doMove = function () {
+    if (!this.entity || !this.entity.rigidbody) {
+        return;
+    }
+
+    if (this.doMoveCharacter_busy) return;
+    this.doMoveCharacter_busy = true;
+
+    const input = this.entity.input || {};
+    const dt = Number(input.dt || 0);
+    const useFlight = !!this.canmoveonair;
+
+    this.CHAR_CUR_POSITION = this.entity.getPosition();
+    this.CHAR_CUR_ROTATION = this.entity.getRotation();
+
+    if (this.pointCharacterEntity) {
+        this.pointCharacterEntity.setPosition(this.CHAR_CUR_POSITION);
+    }
+
+    const visibleThisFrame = (this.meshInstancesCharacter && typeof this.meshInstancesCharacter.visibleThisFrame === "boolean")
+        ? this.meshInstancesCharacter.visibleThisFrame
+        : true;
+
+    if (this.entity.anim) {
+        this.entity.anim.enabled = visibleThisFrame;
+    }
+
+    if (visibleThisFrame) {
+        this.doSensors2();
+    }
+
+    if (!visibleThisFrame) {
+        this.doMoveCharacter_busy = false;
+        return;
+    }
+
+    if (this.tracerOptions && this.tracerOptions.traceinput && this.entity.isPlayer) {
+        const t = {};
+
+        for (const k in input) {
+            if (k === "mouseRaycast") {
+                t[k] = input[k]?.entity?.name ?? "";
+                continue;
+            }
+            if (k === "dt") {
+                const p = input[k];
+                t[k] = Number(p).toFixed(4);
+                continue;
+            }
+            if (k === "camera") {
+                t[k] = "";
+                continue;
+            }
+            if (k === "targetPoint") {
+                const p = input[k];
+                if (p) {
+                    t[k] = `x:${Number(p.x).toFixed(2)}-y:${Number(p.y).toFixed(2)}-z:${Number(p.z).toFixed(2)}`;
+                } else {
+                    t[k] = "";
+                }
+                continue;
+            }
+
+            t[k] = input[k];
+        }
+
+        Trace("input", t);
+    }
+
+    let targetDirection = null;
+
+    if (this.entity.isPlayer) {
+        targetDirection = (input.camera && input.camera.entity) ? input.camera.entity : input.camera;
+    } else {
+        targetDirection = input.targetEntity;
+
+        if (targetDirection) {
+            const directionToTarget = targetDirection.getPosition().clone().sub(this.CHAR_CUR_POSITION).normalize();
+
+            input.x = directionToTarget.x;
+            if (input.x < 0.1 && input.x > -0.1) input.x = 0;
+
+            input.z = -directionToTarget.z;
+            if (input.z < 0.1 && input.z > -0.1) input.z = 0;
+        } else {
+            input.z = 0;
+            input.x = 0;
+        }
+    }
+
+    const wantsStrafe = this.entity.isPlayer && this.playerOptions.playerControllerOnKeyRight === "Strafe";
+    const shouldFaceCamera = this.entity.isPlayer && (wantsStrafe || input.cameratype === "FirstPerson");
+
+    if (wantsStrafe) {
+        if (input.x !== 0) input.z = 0;
+        if (input.z !== 0) input.x = 0;
+    }
+
+    const targetPoint = input.targetPoint || (this.entity.input && this.entity.input.targetPoint) || null;
+
+    let direction = new pc.Vec3();
+    let moveSpeed = this.defaultrun
+        ? (input.sprint ? this.speed : this.speed * 2)
+        : (input.sprint ? this.speed * 2 : this.speed);
+
+    let stopMovementNow = false;
+
+    if (targetPoint) {
+        const tp = targetPoint.getPosition ? targetPoint.getPosition() : targetPoint;
+
+        direction.set(
+            tp.x - this.CHAR_CUR_POSITION.x,
+            tp.y - this.CHAR_CUR_POSITION.y,
+            tp.z - this.CHAR_CUR_POSITION.z
+        );
+
+        if (!useFlight) {
+            direction.y = 0;
+        }
+
+        const distance = direction.length();
+        const stopRadius = 0.25;
+        const slowRadius = 1.25;
+
+        if (distance <= stopRadius) {
+            stopMovementNow = true;
+            this.isMoving = false;
+
+            if (this.entity.input && this.entity.input.targetPoint === targetPoint) {
+                this.entity.input.targetPoint = null;
+            }
+        } else {
+            this.isMoving = true;
+
+            direction.normalize();
+
+            if (distance < slowRadius) {
+                moveSpeed *= (distance / slowRadius);
+            }
+        }
+    } else {
+        this.isMoving = input.x !== 0 || input.z !== 0;
+        if (!this.isMoving) moveSpeed = 0;
+
+        if (this.isMoving && targetDirection) {
+            if (useFlight) {
+                const camForward = targetDirection.forward.clone();
+                const camRight = targetDirection.right.clone();
+
+                if (camForward.lengthSq() > 0.000001) camForward.normalize();
+
+                camRight.y = 0;
+                if (camRight.lengthSq() > 0.000001) camRight.normalize();
+
+                direction = camForward.scale(input.z).add(camRight.scale(input.x));
+
+                if (direction.lengthSq() > 0.000001) {
+                    direction.normalize();
+                } else {
+                    this.isMoving = false;
+                }
+            } else {
+                const camForward = targetDirection.forward.clone();
+                camForward.y = 0;
+                if (camForward.lengthSq() > 0.000001) camForward.normalize();
+
+                const camRight = targetDirection.right.clone();
+                camRight.y = 0;
+                if (camRight.lengthSq() > 0.000001) camRight.normalize();
+
+                direction = camForward.scale(input.z).add(camRight.scale(input.x));
+
+                if (direction.lengthSq() > 0.000001) {
+                    direction.normalize();
+                } else {
+                    this.isMoving = false;
+                }
+            }
+        } else {
+            direction.set(0, 0, 0);
+        }
+    }
+
+    this.charSpeed = this.isMoving
+        ? (this.charSpeed < moveSpeed - 0.1
+            ? pc.math.lerp(this.charSpeed, moveSpeed, dt * this.speed * 4)
+            : moveSpeed)
+        : 0;
+
+    this.updateSpeedAnimBlendFromVelocity(dt);
+
+    if (this.entity.attackSystem.canAttack &&
+        !this.entity.attackSystem.walkAndAttack &&
+        this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
+        this.isMoving = false;
+        stopMovementNow = true;
+    }
+
+    this.isMoving = this.isMoving && this.entity.anim.getInteger("turn180") === 0;
+
+    if (this.isMoving && !useFlight && this.entity.isonair) {
+        this.isMoving = false;
+        stopMovementNow = true;
+    }
+
+    if (this.isMoving && direction.lengthSq() > 0.000001) {
+        const desiredVelocity = direction.clone().scale(this.charSpeed);
+
+        if (useFlight) {
+            this.entity.rigidbody.linearVelocity = desiredVelocity;
+        } else {
+            const currentVelocity = this.entity.rigidbody.linearVelocity.clone();
+            currentVelocity.y = 0;
+            desiredVelocity.y = 0;
+
+            const accel = desiredVelocity.sub(currentVelocity);
+            const force = accel.scale(this.entity.rigidbody.mass * 8);
+            force.y = 0;
+
+            this.entity.rigidbody.applyForce(force);
+        }
+    } else if (stopMovementNow || (!this.isMoving && !this.inertia)) {
+        const v = this.entity.rigidbody.linearVelocity.clone();
+        v.x = 0;
+        v.z = 0;
+
+        if (!useFlight) {
+            v.y = 0;
+        }
+
+        this.entity.rigidbody.linearVelocity = v;
+
+        const a = this.entity.rigidbody.angularVelocity.clone();
+        a.x = 0;
+        a.y = 0;
+        a.z = 0;
+        this.entity.rigidbody.angularVelocity = a;
+    }
+
+    let faceDir = null;
+
+    if (this.entity.isPlayer) {
+        if (shouldFaceCamera) {
+            if (targetDirection && targetDirection.forward) {
+                faceDir = targetDirection.forward.clone();
+                faceDir.y = 0;
+                if (faceDir.lengthSq() > 0.000001) {
+                    faceDir.normalize();
+                } else {
+                    faceDir = null;
+                }
+            }
+        } else if (this.isMoving && direction.lengthSq() > 0.000001 && input.cameratype !== "FirstPerson") {
+            faceDir = direction.clone();
+            faceDir.y = 0;
+            if (faceDir.lengthSq() > 0.000001) {
+                faceDir.normalize();
+            } else {
+                faceDir = null;
+            }
+        }
+    } else {
+        if (targetPoint) {
+            faceDir = targetPoint.getPosition ? targetPoint.getPosition().clone() : targetPoint.clone();
+            faceDir.sub(this.CHAR_CUR_POSITION);
+            faceDir.y = 0;
+            if (faceDir.lengthSq() > 0.000001) {
+                faceDir.normalize();
+            } else {
+                faceDir = null;
+            }
+        } else if (input.targetEntity) {
+            faceDir = input.targetEntity.getPosition().clone().sub(this.CHAR_CUR_POSITION);
+            faceDir.y = 0;
+            if (faceDir.lengthSq() > 0.000001) {
+                faceDir.normalize();
+            } else {
+                faceDir = null;
+            }
+        }
+    }
+
+    if (faceDir) {
+        const forward = this.entity.forward.clone();
+        forward.y = 0;
+
+        if (forward.lengthSq() > 0.000001) {
+            forward.normalize();
+
+            let delta = Math.atan2(faceDir.x, faceDir.z) - Math.atan2(forward.x, forward.z);
+            delta = Math.atan2(Math.sin(delta), Math.cos(delta));
+
+            const turnSpeed = 20;
+            const maxTurnSpeed = 14;
+
+            const ang = this.entity.rigidbody.angularVelocity.clone();
+            ang.x = 0;
+            ang.z = 0;
+            ang.y = pc.math.clamp(delta * turnSpeed, -maxTurnSpeed, maxTurnSpeed);
+            this.entity.rigidbody.angularVelocity = ang;
+        }
+    }
+
+    this.doInteraction(input);
+
+    if (this.entity.anim) {
+        this.entity.anim.setInteger("mode", +(input.mode || 0));
+        this.entity.anim.setFloat("speed", this.speedAnimBlend);
+        this.entity.anim.setInteger("onair", +(this.entity.isonair));
+        this.entity.anim.setInteger("impact", input.impact ? Math.floor(Math.random() * 2) + 1 : 0);
+        this.entity.anim.setInteger("death", input.death ? Math.floor(Math.random() * 2) + 1 : 0);
+    }
+
+    this.doAttackSystem(input);
+
+    this.doMoveCharacter_busy = false;
+};
 
 
 /* * * * * * * * * * * * * * * * */
 /* D O  C A R R Y  W E A P O N S */
 /* * * * * * * * * * * * * * * * */
-Character.prototype.doCarryWeapons = async function () {
+Character.prototype.doCarryWeapons = function () {
 
     function setDefRigidBodyValues(r) {
         if (!r) return;
@@ -1422,6 +1746,11 @@ Character.prototype.doSensors2 = function () {
 
     this.entity.isonground = isGround;
     this.entity.isonair = !isGround;
+
+    if (this.canmoveonair) {
+        this.entity.isonair = true;
+        this.entity.isonground = false;
+    }
 
     if (!isGround) {
         const currentVelocity = this.entity.rigidbody.linearVelocity, onairThreshold = 0.3;
@@ -1841,7 +2170,7 @@ Character.prototype.postUpdate = function (dt) {
 
     const currentVelocity = this.entity.rigidbody.linearVelocity;
 
-    this.CHAR_LAST_POSITION = this.CHAR_CUR_POSITION;
+    this.CHAR_LAST_POSITION = this.CHAR_CUR_POSITION.clone();
 }
 
 Character.prototype.rootMotionFix = function () {
