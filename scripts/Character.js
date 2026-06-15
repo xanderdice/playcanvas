@@ -849,8 +849,8 @@ Character.prototype.doMove = async function () {
     if (this.doMoveCharacter_busy) return;
     this.doMoveCharacter_busy = true;
 
-    const input = this.entity.input || {},
-        dt = this.entity.input.dt;
+    const input = this.entity.input || {};
+    const dt = Number(input.dt || 0);
 
     this.CHAR_CUR_POSITION = this.entity.getPosition();
     this.CHAR_CUR_ROTATION = this.entity.getRotation();
@@ -886,15 +886,13 @@ Character.prototype.doMove = async function () {
             }
             if (k === "dt") {
                 const p = input[k];
-                t[k] = p.toFixed(4);
+                t[k] = Number(p).toFixed(4);
                 continue;
             }
-
             if (k === "camera") {
                 t[k] = "";
                 continue;
             }
-
             if (k === "targetPoint") {
                 const p = input[k];
                 if (p) {
@@ -912,6 +910,7 @@ Character.prototype.doMove = async function () {
     }
 
     let targetDirection = null;
+
     if (this.entity.isPlayer) {
         targetDirection = (input.camera && input.camera.entity) ? input.camera.entity : input.camera;
     } else {
@@ -931,16 +930,17 @@ Character.prototype.doMove = async function () {
         }
     }
 
-    if (this.playerOptions.playerControllerOnKeyRight === "Strafe") {
+    const wantsStrafe = this.entity.isPlayer && this.playerOptions.playerControllerOnKeyRight === "Strafe";
+    const shouldFaceCamera = this.entity.isPlayer && (wantsStrafe || input.cameratype === "FirstPerson");
+
+    if (wantsStrafe) {
         if (input.x !== 0) input.z = 0;
         if (input.z !== 0) input.x = 0;
     }
 
-    //const hasTargetPoint = !!(input.targetPoint || (this.entity.input && this.entity.input.targetPoint));
     const targetPoint = input.targetPoint || (this.entity.input && this.entity.input.targetPoint) || null;
 
     let direction = new pc.Vec3();
-    //let moveSpeed = (input.sprint ? this.speed * 2 : this.speed);
     let moveSpeed = this.defaultrun
         ? (input.sprint ? this.speed : this.speed * 2)
         : (input.sprint ? this.speed * 2 : this.speed);
@@ -981,14 +981,6 @@ Character.prototype.doMove = async function () {
         if (!this.isMoving) moveSpeed = 0;
 
         if (this.isMoving && targetDirection) {
-            /*
-            const forwardDirection = targetDirection.forward.clone().scale(input.z);
-            const strafeDirection = targetDirection.right.clone().scale(input.x);
-            direction = forwardDirection.add(strafeDirection);
-
-            if (!this.canmoveonair) direction.y = 0;
-            */
-
             const camForward = targetDirection.forward.clone();
             camForward.y = 0;
             if (camForward.lengthSq() > 0.000001) camForward.normalize();
@@ -1000,8 +992,6 @@ Character.prototype.doMove = async function () {
             const forwardDirection = camForward.scale(input.z);
             const strafeDirection = camRight.scale(input.x);
             direction = forwardDirection.add(strafeDirection);
-
-
 
             if (direction.lengthSq() > 0.000001) {
                 direction.normalize();
@@ -1019,10 +1009,7 @@ Character.prototype.doMove = async function () {
             : moveSpeed)
         : 0;
 
-
-    //Calcula la animacion de movimiento que ira:
     await this.updateSpeedAnimBlendFromVelocity(dt);
-
 
     if (this.entity.attackSystem.canAttack &&
         !this.entity.attackSystem.walkAndAttack &&
@@ -1038,8 +1025,6 @@ Character.prototype.doMove = async function () {
         stopMovementNow = true;
     }
 
-
-
     if (this.isMoving && direction.lengthSq() > 0.000001) {
         const desiredVelocity = direction.clone().scale(this.charSpeed);
         const currentVelocity = this.entity.rigidbody.linearVelocity.clone();
@@ -1052,29 +1037,6 @@ Character.prototype.doMove = async function () {
         force.y = 0;
 
         this.entity.rigidbody.applyForce(force);
-
-        // Solo en tercera persona / lógica actual por dirección
-        if (input.cameratype !== "FirstPerson") {
-            const forward = this.entity.forward.clone();
-            forward.y = 0;
-
-            if (forward.lengthSq() > 0.000001) {
-                forward.normalize();
-
-                let delta = Math.atan2(direction.x, direction.z) - Math.atan2(forward.x, forward.z);
-                delta = Math.atan2(Math.sin(delta), Math.cos(delta));
-
-                const turnSpeed = 20;
-                const maxTurnSpeed = 14;
-
-                const ang = this.entity.rigidbody.angularVelocity.clone();
-                ang.x = 0;
-                ang.z = 0;
-                ang.y = pc.math.clamp(delta * turnSpeed, -maxTurnSpeed, maxTurnSpeed);
-
-                this.entity.rigidbody.angularVelocity = ang;
-            }
-        }
     } else if (stopMovementNow || (!this.isMoving && !this.inertia)) {
         const v = this.entity.rigidbody.linearVelocity.clone();
         v.x = 0;
@@ -1091,18 +1053,71 @@ Character.prototype.doMove = async function () {
         this.entity.rigidbody.angularVelocity = a;
     }
 
+    // ROTACIÓN
+    let faceDir = null;
 
-    if (input.cameratype === "FirstPerson" && !stopMovementNow && !this.isMoving) {
-        const camWorldTransform = input.camera.entity.getWorldTransform();
-        const forward = new pc.Vec3();
-        camWorldTransform.transformVector(pc.Vec3.FORWARD, forward);
-        // CALCULAR YAW EN GRADOS
-        const yawDegrees = (Math.atan2(forward.x, forward.z) * pc.math.RAD_TO_DEG) + 180;
-        // TELEPORT CON 6 PARÁMETROS (x, y, z, pitch, yaw, roll en GRADOS)
-        this.entity.rigidbody.teleport(this.CHAR_CUR_POSITION.x, this.CHAR_CUR_POSITION.y, this.CHAR_CUR_POSITION.z, 0, yawDegrees, 0);
+    if (this.entity.isPlayer) {
+        if (shouldFaceCamera) {
+            if (targetDirection && targetDirection.forward) {
+                faceDir = targetDirection.forward.clone();
+                faceDir.y = 0;
+                if (faceDir.lengthSq() > 0.000001) {
+                    faceDir.normalize();
+                } else {
+                    faceDir = null;
+                }
+            }
+        } else if (this.isMoving && direction.lengthSq() > 0.000001 && input.cameratype !== "FirstPerson") {
+            faceDir = direction.clone();
+            faceDir.y = 0;
+            if (faceDir.lengthSq() > 0.000001) {
+                faceDir.normalize();
+            } else {
+                faceDir = null;
+            }
+        }
+    } else {
+        // IA: mirar hacia el mismo objetivo al que se está moviendo
+        if (targetPoint) {
+            faceDir = targetPoint.getPosition ? targetPoint.getPosition().clone() : targetPoint.clone();
+            faceDir.sub(this.CHAR_CUR_POSITION);
+            faceDir.y = 0;
+            if (faceDir.lengthSq() > 0.000001) {
+                faceDir.normalize();
+            } else {
+                faceDir = null;
+            }
+        } else if (input.targetEntity) {
+            faceDir = input.targetEntity.getPosition().clone().sub(this.CHAR_CUR_POSITION);
+            faceDir.y = 0;
+            if (faceDir.lengthSq() > 0.000001) {
+                faceDir.normalize();
+            } else {
+                faceDir = null;
+            }
+        }
     }
 
+    if (faceDir) {
+        const forward = this.entity.forward.clone();
+        forward.y = 0;
 
+        if (forward.lengthSq() > 0.000001) {
+            forward.normalize();
+
+            let delta = Math.atan2(faceDir.x, faceDir.z) - Math.atan2(forward.x, forward.z);
+            delta = Math.atan2(Math.sin(delta), Math.cos(delta));
+
+            const turnSpeed = 20;
+            const maxTurnSpeed = 14;
+
+            const ang = this.entity.rigidbody.angularVelocity.clone();
+            ang.x = 0;
+            ang.z = 0;
+            ang.y = pc.math.clamp(delta * turnSpeed, -maxTurnSpeed, maxTurnSpeed);
+            this.entity.rigidbody.angularVelocity = ang;
+        }
+    }
 
     this.doInteraction(input);
 
@@ -1116,11 +1131,8 @@ Character.prototype.doMove = async function () {
 
     this.doAttackSystem(input);
 
-
     this.doMoveCharacter_busy = false;
 };
-
-
 
 
 /* * * * * * * * * * * * * * * * */
