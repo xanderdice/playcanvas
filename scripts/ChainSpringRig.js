@@ -358,7 +358,7 @@ ChainSpringRig.prototype._sampleAnimatedPose = function () {
 };
 
 ChainSpringRig.prototype._stepSimulation = function (dt) {
-    var rootMove = this._rootNowWorld.clone().sub(this._rootPrevWorld);
+    var rootMove = this._tmpB.copy(this._rootNowWorld).sub(this._rootPrevWorld);
     this._rootPrevWorld.copy(this._rootNowWorld);
 
     this._simPos[0].copy(this._targetPos[0]);
@@ -442,7 +442,8 @@ ChainSpringRig.prototype._satisfyDistance = function (a, b, restLen, stiffness) 
 
 ChainSpringRig.prototype._pushOutsideBody = function (pos) {
     var root = this.entity.parent || this.entity;
-    var center = root.getPosition().clone().add(this.bodyOffset);
+    /* _tmpV solo se usa en _writeBack (posterior a la simulación): no hay aliasing aquí */
+    var center = this._tmpV.copy(root.getPosition()).add(this.bodyOffset);
 
     var halfSegment = Math.max(0, (this.bodyHeight * 0.5) - this.bodyRadius);
     var minR = this.bodyRadius + this.bodyPadding;

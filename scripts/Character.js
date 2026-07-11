@@ -429,6 +429,8 @@ Character.prototype.initialize = function () {
 
 
     this.jumping_availability = true;
+    this.jumpKeyHeld = false;   /* flanco de subida de Espacio (input.jump es isPressed) */
+    this._jumping = false;      /* en el aire por un salto propio (hasta aterrizar) */
 
 
     this.animPlayerStateGraphData = null;
@@ -539,10 +541,12 @@ Character.prototype.initialize = function () {
             radius: this.characterRadius,
             height: this.characterHeight
         });
-        this.entity.collision.on("collisionstart", this.characterCollisionStart, this);
-        this.entity.collision.on("collisionend", this.characterCollisionEnd, this);
-        this.entity.other = null;
     }
+    /* SIEMPRE registrar los eventos (aunque la collision venga creada desde el editor):
+       la detección de suelo por contactos depende de ellos */
+    this.entity.collision.on("collisionstart", this.characterCollisionStart, this);
+    this.entity.collision.on("collisionend", this.characterCollisionEnd, this);
+    this.entity.other = null;
 
     /* IS ON AIR  &  IS ON GROUND */
     this.entity.isonair = false;
@@ -583,8 +587,39 @@ Character.prototype.initialize = function () {
 
 
 
-    this.sensorOptions.processstep = 0;
-    this.sensorOptions.groundProcessstep = 0;
+    /* SUELO POR CONTACTOS: doSensors2() no lanza raycasts; el estado se alimenta
+       de los eventos collisionstart/collisionend de la cápsula. */
+    this._groundContacts = 0;   // cuántas superficies "suelo" nos sostienen
+    this._groundBy = {};        // guid de entidad -> true si nos está sosteniendo
+    this._coyoteTime = 0;       // gracia anti-parpadeo de manifolds de Bullet
+
+    /* contacto de PARED más reciente (lo consume CharacterIA): dirección
+       horizontal de escape + timestamp en ms */
+    this.entity.wallAway = new pc.Vec3();
+    this.entity.wallTimeMs = -1e9;
+
+    /* Tope del casquete inferior de la cápsula, relativo al origen de la entidad:
+       solo contactos por debajo de esta cota cuentan como suelo. Se leen las
+       dimensiones reales del componente collision (puede venir del editor con
+       valores distintos a characterHeight/Radius). +0.02 de tolerancia por el
+       margen de contactos de Bullet. Precalculado: cero coste por contacto. */
+    var _col = this.entity.collision;
+    var _colH = (_col && _col.type === "capsule") ? _col.height : this.characterHeight;
+    var _colR = (_col && _col.type === "capsule") ? _col.radius : this.characterRadius;
+    /* getWorldScale() no existe en engine 2.x: derivar de la matriz mundial,
+       con fallback a la escala local */
+    var _scaleY = 1;
+    if (this.entity.getWorldTransform) {
+        var _wt = this.entity.getWorldTransform();
+        if (_wt && _wt.getScale) _scaleY = Math.abs(_wt.getScale().y) || 1;
+    } else if (this.entity.getLocalScale) {
+        _scaleY = Math.abs(this.entity.getLocalScale().y) || 1;
+    }
+    this._capsuleBaseOffset = (-(_colH * 0.5) + _colR) * _scaleY + 0.02;
+
+    /* SALTO: el apex del salto es la MITAD del height real (escalado) de la
+       cápsula. Precalculado aquí; la velocidad se deriva con v = sqrt(2*g*h). */
+    this._jumpApexHeight = (_colH * _scaleY) * 0.5;
 
     this.mantleHeight = 0.9;
 
@@ -610,6 +645,20 @@ Character.prototype.initialize = function () {
             angularFactor: new pc.Vec3(0, 1, 0)
         });
     }
+
+    /* VUELO: aplicar SIEMPRE el linearFactor según canmoveonair (el rigidbody
+       puede venir creado desde el editor y quedaría con gravedad activa),
+       y soportar el cambio del atributo en runtime */
+    this.entity.rigidbody.linearFactor = new pc.Vec3(1, linearYfactor, 1);
+    this.on("attr:canmoveonair", function (value) {
+        const rb = this.entity.rigidbody;
+        if (!rb) return;
+        rb.linearFactor = new pc.Vec3(1, value ? 0 : 1, 1);
+        /* al entrar/salir de vuelo, cortar la velocidad vertical acumulada */
+        const v = this._vLinStop.copy(rb.linearVelocity);
+        v.y = 0;
+        rb.linearVelocity = v;
+    }, this);
 
     var ccd;
     if (this.ccd.enabled) {
@@ -641,10 +690,28 @@ Character.prototype.initialize = function () {
     }, this);
 
 
+    /* OPTIMIZACION (GC): vectores/quats reutilizables para evitar "new pc.Vec3()" / ".clone()"
+       en el hot-path (doMove, doSensors2, rootMotionFix). Cada uno tiene una única responsabilidad
+       dentro de una misma llamada para evitar aliasing entre ellos. */
     this.vec = new pc.Vec3;
     this.vec2 = new pc.Vec3;
     this.vec3 = new pc.Vec3;
     this.quat = new pc.Quat;
+
+    this._vDirection = new pc.Vec3();      // dirección de movimiento deseada
+    this._vCamForward = new pc.Vec3();     // forward de cámara/objetivo (temporal)
+    this._vCamRight = new pc.Vec3();       // right de cámara/objetivo (temporal)
+    this._vDesired = new pc.Vec3();        // velocidad deseada
+    this._vCurrent = new pc.Vec3();        // velocidad lineal actual (lectura)
+    this._vAccel = new pc.Vec3();          // aceleración / fuerza a aplicar
+    this._vLinStop = new pc.Vec3();        // velocidad lineal al detenerse
+    this._vAngStop = new pc.Vec3();        // velocidad angular al detenerse
+    this._vAngTurn = new pc.Vec3();        // velocidad angular al girar
+    this._vFaceDir = new pc.Vec3();        // dirección a la que mirar
+    this._vForward = new pc.Vec3();        // forward actual de la entidad (temporal)
+    this._vHipsPos = new pc.Vec3();        // posición local de hips (rootMotionFix)
+    this._qHipsRot = new pc.Quat();        // rotación local de hips (rootMotionFix)
+    this._vJump = new pc.Vec3();           // velocidad lineal al saltar
 
     this.entity.mode = CharacterLocomotionModeEnum.UNARMED;
 
@@ -696,10 +763,12 @@ Character.prototype.initialize = function () {
 
         var scale = null;
 
-        // Preferimos escala mundial; si no existe, caemos a local.
-        if (entity.getWorldScale) {
-            scale = entity.getWorldScale();
-        } else if (entity.getLocalScale) {
+        // Preferimos escala mundial (de la matriz; getWorldScale no existe en 2.x)
+        if (entity.getWorldTransform) {
+            var wt = entity.getWorldTransform();
+            if (wt && wt.getScale) scale = wt.getScale();
+        }
+        if (!scale && entity.getLocalScale) {
             scale = entity.getLocalScale();
         }
 
@@ -840,305 +909,6 @@ Character.prototype.stopMovement = function () {
 }
 
 
-/*              */
-/* D O  M O V E */
-/*              */
-/*
-Character.prototype.doMove = function () {
-    if (!this.entity || !this.entity.rigidbody) {
-        return;
-    }
-
-    if (this.doMoveCharacter_busy) return;
-    this.doMoveCharacter_busy = true;
-
-    const input = this.entity.input || {};
-    const dt = Number(input.dt || 0);
-
-    this.CHAR_CUR_POSITION = this.entity.getPosition();
-    this.CHAR_CUR_ROTATION = this.entity.getRotation();
-
-    if (this.pointCharacterEntity) {
-        this.pointCharacterEntity.setPosition(this.CHAR_CUR_POSITION);
-    }
-
-    const visibleThisFrame = (this.meshInstancesCharacter && typeof this.meshInstancesCharacter.visibleThisFrame === "boolean")
-        ? this.meshInstancesCharacter.visibleThisFrame
-        : true;
-
-    if (this.entity.anim) {
-        this.entity.anim.enabled = visibleThisFrame;
-    }
-
-    if (visibleThisFrame) {
-        this.doSensors2();
-    }
-
-    if (!visibleThisFrame) {
-        this.doMoveCharacter_busy = false;
-        return;
-    }
-
-    if (this.tracerOptions && this.tracerOptions.traceinput && this.entity.isPlayer) {
-        const t = {};
-
-        for (const k in input) {
-            if (k === "mouseRaycast") {
-                t[k] = input[k]?.entity?.name ?? "";
-                continue;
-            }
-            if (k === "dt") {
-                const p = input[k];
-                t[k] = Number(p).toFixed(4);
-                continue;
-            }
-            if (k === "camera") {
-                t[k] = "";
-                continue;
-            }
-            if (k === "targetPoint") {
-                const p = input[k];
-                if (p) {
-                    t[k] = `x:${Number(p.x).toFixed(2)}-y:${Number(p.y).toFixed(2)}-z:${Number(p.z).toFixed(2)}`;
-                } else {
-                    t[k] = "";
-                }
-                continue;
-            }
-
-            t[k] = input[k];
-        }
-
-        Trace("input", t);
-    }
-
-    let targetDirection = null;
-
-    if (this.entity.isPlayer) {
-        targetDirection = (input.camera && input.camera.entity) ? input.camera.entity : input.camera;
-    } else {
-        targetDirection = input.targetEntity;
-
-        if (targetDirection) {
-            const directionToTarget = targetDirection.getPosition().clone().sub(this.CHAR_CUR_POSITION).normalize();
-
-            input.x = directionToTarget.x;
-            if (input.x < 0.1 && input.x > -0.1) input.x = 0;
-
-            input.z = -directionToTarget.z;
-            if (input.z < 0.1 && input.z > -0.1) input.z = 0;
-        } else {
-            input.z = 0;
-            input.x = 0;
-        }
-    }
-
-    const wantsStrafe = this.entity.isPlayer && this.playerOptions.playerControllerOnKeyRight === "Strafe";
-    const shouldFaceCamera = this.entity.isPlayer && (wantsStrafe || input.cameratype === "FirstPerson");
-
-    if (wantsStrafe) {
-        if (input.x !== 0) input.z = 0;
-        if (input.z !== 0) input.x = 0;
-    }
-
-    const targetPoint = input.targetPoint || (this.entity.input && this.entity.input.targetPoint) || null;
-
-    let direction = new pc.Vec3();
-    let moveSpeed = this.defaultrun
-        ? (input.sprint ? this.speed : this.speed * 2)
-        : (input.sprint ? this.speed * 2 : this.speed);
-
-    let stopMovementNow = false;
-
-    if (targetPoint) {
-        const tp = targetPoint.getPosition ? targetPoint.getPosition() : targetPoint;
-
-        const dx = tp.x - this.CHAR_CUR_POSITION.x;
-        const dy = (tp.y || 0) - this.CHAR_CUR_POSITION.y;
-        const dz = tp.z - this.CHAR_CUR_POSITION.z;
-
-        direction.set(dx, dy, dz);
-        direction.y = 0;
-
-        const distance = direction.length();
-        const stopRadius = 0.25;
-        const slowRadius = 1.25;
-
-        if (distance <= stopRadius) {
-            stopMovementNow = true;
-            this.isMoving = false;
-
-            if (this.entity.input && this.entity.input.targetPoint === targetPoint) {
-                this.entity.input.targetPoint = null;
-            }
-        } else {
-            this.isMoving = true;
-            direction.normalize();
-
-            if (distance < slowRadius) {
-                moveSpeed *= (distance / slowRadius);
-            }
-        }
-    } else {
-        this.isMoving = input.x !== 0 || input.z !== 0;
-        if (!this.isMoving) moveSpeed = 0;
-
-        if (this.isMoving && targetDirection) {
-            const camForward = targetDirection.forward.clone();
-            camForward.y = 0;
-            if (camForward.lengthSq() > 0.000001) camForward.normalize();
-
-            const camRight = targetDirection.right.clone();
-            camRight.y = 0;
-            if (camRight.lengthSq() > 0.000001) camRight.normalize();
-
-            const forwardDirection = camForward.scale(input.z);
-            const strafeDirection = camRight.scale(input.x);
-            direction = forwardDirection.add(strafeDirection);
-
-            if (direction.lengthSq() > 0.000001) {
-                direction.normalize();
-            } else {
-                this.isMoving = false;
-            }
-        } else {
-            direction.set(0, 0, 0);
-        }
-    }
-
-    this.charSpeed = this.isMoving
-        ? (this.charSpeed < moveSpeed - 0.1
-            ? pc.math.lerp(this.charSpeed, moveSpeed, dt * this.speed * 4)
-            : moveSpeed)
-        : 0;
-
-    this.updateSpeedAnimBlendFromVelocity(dt);
-
-    if (this.entity.attackSystem.canAttack &&
-        !this.entity.attackSystem.walkAndAttack &&
-        this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
-        this.isMoving = false;
-        stopMovementNow = true;
-    }
-
-    this.isMoving = this.isMoving && this.entity.anim.getInteger("turn180") === 0;
-
-    if (this.isMoving && !this.canmoveonair && this.entity.isonair) {
-        this.isMoving = false;
-        stopMovementNow = true;
-    }
-
-    if (this.isMoving && direction.lengthSq() > 0.000001) {
-        const desiredVelocity = direction.clone().scale(this.charSpeed);
-        const currentVelocity = this.entity.rigidbody.linearVelocity.clone();
-
-        currentVelocity.y = 0;
-        desiredVelocity.y = 0;
-
-        const accel = desiredVelocity.sub(currentVelocity);
-        const force = accel.scale(this.entity.rigidbody.mass * 8);
-        force.y = 0;
-
-        this.entity.rigidbody.applyForce(force);
-    } else if (stopMovementNow || (!this.isMoving && !this.inertia)) {
-        const v = this.entity.rigidbody.linearVelocity.clone();
-        v.x = 0;
-        v.z = 0;
-        if (this.canmoveonair && !this.entity.isonair) {
-            v.y = 0;
-        }
-        this.entity.rigidbody.linearVelocity = v;
-
-        const a = this.entity.rigidbody.angularVelocity.clone();
-        a.x = 0;
-        a.y = 0;
-        a.z = 0;
-        this.entity.rigidbody.angularVelocity = a;
-    }
-
-    // ROTACIÓN
-    let faceDir = null;
-
-    if (this.entity.isPlayer) {
-        if (shouldFaceCamera) {
-            if (targetDirection && targetDirection.forward) {
-                faceDir = targetDirection.forward.clone();
-                faceDir.y = 0;
-                if (faceDir.lengthSq() > 0.000001) {
-                    faceDir.normalize();
-                } else {
-                    faceDir = null;
-                }
-            }
-        } else if (this.isMoving && direction.lengthSq() > 0.000001 && input.cameratype !== "FirstPerson") {
-            faceDir = direction.clone();
-            faceDir.y = 0;
-            if (faceDir.lengthSq() > 0.000001) {
-                faceDir.normalize();
-            } else {
-                faceDir = null;
-            }
-        }
-    } else {
-        // IA: mirar hacia el mismo objetivo al que se está moviendo
-        if (targetPoint) {
-            faceDir = targetPoint.getPosition ? targetPoint.getPosition().clone() : targetPoint.clone();
-            faceDir.sub(this.CHAR_CUR_POSITION);
-            faceDir.y = 0;
-            if (faceDir.lengthSq() > 0.000001) {
-                faceDir.normalize();
-            } else {
-                faceDir = null;
-            }
-        } else if (input.targetEntity) {
-            faceDir = input.targetEntity.getPosition().clone().sub(this.CHAR_CUR_POSITION);
-            faceDir.y = 0;
-            if (faceDir.lengthSq() > 0.000001) {
-                faceDir.normalize();
-            } else {
-                faceDir = null;
-            }
-        }
-    }
-
-    if (faceDir) {
-        const forward = this.entity.forward.clone();
-        forward.y = 0;
-
-        if (forward.lengthSq() > 0.000001) {
-            forward.normalize();
-
-            let delta = Math.atan2(faceDir.x, faceDir.z) - Math.atan2(forward.x, forward.z);
-            delta = Math.atan2(Math.sin(delta), Math.cos(delta));
-
-            const turnSpeed = 20;
-            const maxTurnSpeed = 14;
-
-            const ang = this.entity.rigidbody.angularVelocity.clone();
-            ang.x = 0;
-            ang.z = 0;
-            ang.y = pc.math.clamp(delta * turnSpeed, -maxTurnSpeed, maxTurnSpeed);
-            this.entity.rigidbody.angularVelocity = ang;
-        }
-    }
-
-    this.doInteraction(input);
-
-    if (this.entity.anim) {
-        this.entity.anim.setInteger("mode", +(input.mode || 0));
-        this.entity.anim.setFloat("speed", this.speedAnimBlend);
-        this.entity.anim.setInteger("onair", +(this.entity.isonair));
-        this.entity.anim.setInteger("impact", input.impact ? Math.floor(Math.random() * 2) + 1 : 0);
-        this.entity.anim.setInteger("death", input.death ? Math.floor(Math.random() * 2) + 1 : 0);
-    }
-
-    this.doAttackSystem(input);
-
-    this.doMoveCharacter_busy = false;
-};
-*/
-
-
 
 Character.prototype.doMove = function () {
     if (!this.entity || !this.entity.rigidbody) {
@@ -1217,7 +987,8 @@ Character.prototype.doMove = function () {
         targetDirection = input.targetEntity;
 
         if (targetDirection) {
-            const directionToTarget = targetDirection.getPosition().clone().sub(this.CHAR_CUR_POSITION).normalize();
+            /* OPTIMIZACION (GC): this.vec en vez de .clone() para el vector temporal */
+            const directionToTarget = this.vec.copy(targetDirection.getPosition()).sub(this.CHAR_CUR_POSITION).normalize();
 
             input.x = directionToTarget.x;
             if (input.x < 0.1 && input.x > -0.1) input.x = 0;
@@ -1240,7 +1011,10 @@ Character.prototype.doMove = function () {
 
     const targetPoint = input.targetPoint || (this.entity.input && this.entity.input.targetPoint) || null;
 
-    let direction = new pc.Vec3();
+    /* OPTIMIZACION (GC): direction es ahora un vector reutilizable, no "new pc.Vec3()" cada frame */
+    const direction = this._vDirection;
+    direction.set(0, 0, 0);
+
     let moveSpeed = this.defaultrun
         ? (input.sprint ? this.speed : this.speed * 2)
         : (input.sprint ? this.speed * 2 : this.speed);
@@ -1285,16 +1059,25 @@ Character.prototype.doMove = function () {
         if (!this.isMoving) moveSpeed = 0;
 
         if (this.isMoving && targetDirection) {
-            if (useFlight) {
-                const camForward = targetDirection.forward.clone();
-                const camRight = targetDirection.right.clone();
+            /* OPTIMIZACION (GC): camForward/camRight reutilizables; direction se COPIA al final
+               en vez de quedar como alias del propio camForward (igual resultado numérico). */
+            const camForward = this._vCamForward.copy(targetDirection.forward);
+            const camRight = this._vCamRight.copy(targetDirection.right);
 
+            if (useFlight) {
+                /* la Y del forward NO se aplana: en FirstPerson vuela hacia
+                   donde mira la cámara (pitch incluido) */
                 if (camForward.lengthSq() > 0.000001) camForward.normalize();
 
                 camRight.y = 0;
                 if (camRight.lengthSq() > 0.000001) camRight.normalize();
 
-                direction = camForward.scale(input.z).add(camRight.scale(input.x));
+                camForward.scale(input.z);
+                camRight.scale(input.x);
+                direction.copy(camForward).add(camRight);
+
+                /* VUELO: Espacio (input.jump) NO hace nada en este modo; el
+                   ascenso/descenso viene solo del pitch de la cámara */
 
                 if (direction.lengthSq() > 0.000001) {
                     direction.normalize();
@@ -1302,15 +1085,15 @@ Character.prototype.doMove = function () {
                     this.isMoving = false;
                 }
             } else {
-                const camForward = targetDirection.forward.clone();
                 camForward.y = 0;
                 if (camForward.lengthSq() > 0.000001) camForward.normalize();
 
-                const camRight = targetDirection.right.clone();
                 camRight.y = 0;
                 if (camRight.lengthSq() > 0.000001) camRight.normalize();
 
-                direction = camForward.scale(input.z).add(camRight.scale(input.x));
+                camForward.scale(input.z);
+                camRight.scale(input.x);
+                direction.copy(camForward).add(camRight);
 
                 if (direction.lengthSq() > 0.000001) {
                     direction.normalize();
@@ -1346,84 +1129,146 @@ Character.prototype.doMove = function () {
     }
 
     if (this.isMoving && direction.lengthSq() > 0.000001) {
-        const desiredVelocity = direction.clone().scale(this.charSpeed);
+        /* OPTIMIZACION (GC): vectores reutilizables en vez de .clone() */
+        const desiredVelocity = this._vDesired.copy(direction).scale(this.charSpeed);
 
         if (useFlight) {
-            this.entity.rigidbody.linearVelocity = desiredVelocity;
+            /* VUELO: aceleración suave hacia la velocidad deseada
+               (el setter de linearVelocity copia el vector: seguro reutilizarlo) */
+            const current = this._vCurrent.copy(this.entity.rigidbody.linearVelocity);
+            current.lerp(current, desiredVelocity, Math.min(1, dt * 8));
+            this.entity.rigidbody.linearVelocity = current;
         } else {
-            const currentVelocity = this.entity.rigidbody.linearVelocity.clone();
+            const currentVelocity = this._vCurrent.copy(this.entity.rigidbody.linearVelocity);
             currentVelocity.y = 0;
             desiredVelocity.y = 0;
 
-            const accel = desiredVelocity.sub(currentVelocity);
+            const accel = this._vAccel.copy(desiredVelocity).sub(currentVelocity);
             const force = accel.scale(this.entity.rigidbody.mass * 8);
             force.y = 0;
 
             this.entity.rigidbody.applyForce(force);
         }
+    } else if (useFlight) {
+        /* VUELO sin input: frenado suave hasta quedar en hover (sin esto, al no
+           haber gravedad ni damping, la velocidad persistiría para siempre) */
+        const v = this._vLinStop.copy(this.entity.rigidbody.linearVelocity);
+        const damp = 1 - Math.min(1, dt * (this.inertia ? 4 : 20));
+        v.x *= damp;
+        v.y *= damp;
+        v.z *= damp;
+        this.entity.rigidbody.linearVelocity = v;
     } else if (stopMovementNow || (!this.isMoving && !this.inertia)) {
-        const v = this.entity.rigidbody.linearVelocity.clone();
-        v.x = 0;
-        v.z = 0;
+        const v = this._vLinStop.copy(this.entity.rigidbody.linearVelocity);
 
-        if (!useFlight) {
+        /* SALTO: durante el arco del salto se conserva el momento horizontal
+           (sin esto, saltar corriendo frenaría en seco al pasar a isonair) */
+        if (!this._jumping) {
+            v.x = 0;
+            v.z = 0;
+        }
+
+        /* la velocidad vertical solo se anula con contacto de suelo REAL:
+           en el aire debe gobernar la gravedad. Usar el flag isonair aquí
+           realimenta el lazo (el fallback por velocidad oscila en -0.3 m/s
+           y la caída queda frenada frame a frame). Durante el salto tampoco
+           se toca: el coyoteTime residual del despegue la anularía. */
+        if ((this._groundContacts > 0 || this._coyoteTime > 0) && !this._jumping) {
             v.y = 0;
         }
 
         this.entity.rigidbody.linearVelocity = v;
 
-        const a = this.entity.rigidbody.angularVelocity.clone();
+        const a = this._vAngStop.copy(this.entity.rigidbody.angularVelocity);
         a.x = 0;
         a.y = 0;
         a.z = 0;
         this.entity.rigidbody.angularVelocity = a;
     }
 
-    let faceDir = null;
+    /* * * * * * * * * */
+    /* S A L T O       */
+    /* * * * * * * * * */
+    /* Solo en modo suelo (canmoveonair = false): Espacio (input.jump) aplica
+       velocidad vertical calculada para que el apex del salto sea la mitad
+       del height de la cápsula. input.jump es isPressed (true mientras se
+       mantiene), por eso el flanco de subida con jumpKeyHeld. */
+    if (!useFlight) {
+        const jumpPressed = !!input.jump;
+        const groundedForJump = (this._groundContacts > 0 || this._coyoteTime > 0) && !this._jumping;
+
+        /* re-armar el salto al volver a tener suelo */
+        if (groundedForJump) {
+            this.jumping_availability = true;
+        }
+
+        if (jumpPressed && !this.jumpKeyHeld && groundedForJump && this.jumping_availability) {
+            /* v = sqrt(2*g*h) con h = _jumpApexHeight (mitad del height de la cápsula) */
+            const g = Math.abs(this.app.systems.rigidbody.gravity.y) || Math.abs(this.gravity) || 9.8;
+            const vy = Math.sqrt(2 * g * this._jumpApexHeight);
+
+            const v = this._vJump.copy(this.entity.rigidbody.linearVelocity);
+            v.y = vy;
+            this.entity.rigidbody.linearVelocity = v;
+
+            this._jumping = true;
+            this.jumping_availability = false;
+            this._coyoteTime = 0;
+
+            if (this.sensorOptions.sensorJumpDebug) {
+                console.log("[character] JUMP  vy =", vy.toFixed(2), "m/s | apex =", this._jumpApexHeight.toFixed(2), "m");
+            }
+        }
+
+        this.jumpKeyHeld = jumpPressed;
+    } else {
+        this.jumpKeyHeld = !!input.jump;
+    }
+
+    /* OPTIMIZACION (GC): faceDir es un vector reutilizable; hasFaceDir sustituye al antiguo
+       patrón "faceDir = null" para indicar "no hay dirección a la que mirar". */
+    let hasFaceDir = false;
+    const faceDir = this._vFaceDir;
 
     if (this.entity.isPlayer) {
         if (shouldFaceCamera) {
             if (targetDirection && targetDirection.forward) {
-                faceDir = targetDirection.forward.clone();
+                faceDir.copy(targetDirection.forward);
                 faceDir.y = 0;
                 if (faceDir.lengthSq() > 0.000001) {
                     faceDir.normalize();
-                } else {
-                    faceDir = null;
+                    hasFaceDir = true;
                 }
             }
         } else if (this.isMoving && direction.lengthSq() > 0.000001 && input.cameratype !== "FirstPerson") {
-            faceDir = direction.clone();
+            faceDir.copy(direction);
             faceDir.y = 0;
             if (faceDir.lengthSq() > 0.000001) {
                 faceDir.normalize();
-            } else {
-                faceDir = null;
+                hasFaceDir = true;
             }
         }
     } else {
         if (targetPoint) {
-            faceDir = targetPoint.getPosition ? targetPoint.getPosition().clone() : targetPoint.clone();
-            faceDir.sub(this.CHAR_CUR_POSITION);
+            const tpPos = targetPoint.getPosition ? targetPoint.getPosition() : targetPoint;
+            faceDir.copy(tpPos).sub(this.CHAR_CUR_POSITION);
             faceDir.y = 0;
             if (faceDir.lengthSq() > 0.000001) {
                 faceDir.normalize();
-            } else {
-                faceDir = null;
+                hasFaceDir = true;
             }
         } else if (input.targetEntity) {
-            faceDir = input.targetEntity.getPosition().clone().sub(this.CHAR_CUR_POSITION);
+            faceDir.copy(input.targetEntity.getPosition()).sub(this.CHAR_CUR_POSITION);
             faceDir.y = 0;
             if (faceDir.lengthSq() > 0.000001) {
                 faceDir.normalize();
-            } else {
-                faceDir = null;
+                hasFaceDir = true;
             }
         }
     }
 
-    if (faceDir) {
-        const forward = this.entity.forward.clone();
+    if (hasFaceDir) {
+        const forward = this._vForward.copy(this.entity.forward);
         forward.y = 0;
 
         if (forward.lengthSq() > 0.000001) {
@@ -1435,7 +1280,7 @@ Character.prototype.doMove = function () {
             const turnSpeed = 20;
             const maxTurnSpeed = 14;
 
-            const ang = this.entity.rigidbody.angularVelocity.clone();
+            const ang = this._vAngTurn.copy(this.entity.rigidbody.angularVelocity);
             ang.x = 0;
             ang.z = 0;
             ang.y = pc.math.clamp(delta * turnSpeed, -maxTurnSpeed, maxTurnSpeed);
@@ -1694,415 +1539,95 @@ const CharacterLocomotionEnum = Object.freeze({
 /*******************************/
 Character.prototype.characterCollisionStart = function (event) {
     this.entity.other = event.other;
+
+    var contacts = event.contacts;
+    if (!contacts) return;
+    var selfPos = this.entity.getPosition();
+    /* cota máxima en Y para que un contacto cuente como "base de la cápsula" */
+    var baseMaxY = selfPos.y + this._capsuleBaseOffset;
+    var groundFound = false;
+    for (var i = 0; i < contacts.length; i++) {
+        var c = contacts[i];
+        var ny = c.normal.y;
+        if (this.sensorOptions.sensorDebug) {
+            console.log("[character] contact normal.y =", ny.toFixed(2), "| point.y - baseMaxY =", (c.point.y - baseMaxY).toFixed(2), "(<= 0 es base)");
+        }
+        /* suelo = normal casi vertical (cualquier signo: la convención varió entre
+           versiones del engine) Y contacto dentro del casquete inferior de la
+           cápsula. Bordes/salientes a la altura de la pierna quedan excluidos. */
+        if (!groundFound && (ny > 0.5 || ny < -0.5) && c.point.y <= baseMaxY) {
+            if (!this._groundBy[event.other._guid]) {
+                this._groundBy[event.other._guid] = true;
+                this._groundContacts++;
+            }
+            groundFound = true;
+        } else if (ny < 0.5 && ny > -0.5 && !event.other.isCharacter) {
+            /* PARED (no otro personaje): dirección horizontal de escape para la IA,
+               desde el punto de contacto hacia la entidad — independiente de la
+               convención de signo de la normal */
+            var ax = selfPos.x - c.pointOther.x;
+            var az = selfPos.z - c.pointOther.z;
+            var d2 = ax * ax + az * az;
+            if (d2 > 0.000001) {
+                var inv = 1 / Math.sqrt(d2);
+                this.entity.wallAway.set(ax * inv, 0, az * inv);
+                this.entity.wallTimeMs = performance.now();
+            }
+        }
+    }
 }
 
 
 Character.prototype.characterCollisionEnd = function (other) {
     if (this.entity.other === other) this.entity.other = null;
+
+    if (this._groundBy[other._guid]) {
+        this._groundBy[other._guid] = false;
+        if (this._groundContacts > 0) this._groundContacts--;
+    }
 }
 
 Character.prototype.doSensors2 = function () {
-    var length = 0, isGround = null;
+    /* Suelo por contactos de la cápsula, sin raycasts (ver characterCollisionStart/End).
+       coyoteTime = 100 ms de gracia para cubrir el parpadeo de manifolds de Bullet. */
+    var dt = this.entity.input.dt || 0;
 
-    if (this.entity.isonair) {
-        length = -((this.characterHeight / 2) + 0.2);
-
-        const position = this.entity.getPosition();
-        const rayDirection = position.clone().add(new pc.Vec3(0, length, 0));
-
-        // Realizar el raycast
-        var result = this.app.systems.rigidbody.raycastFirst(position, rayDirection, { lowResolution: true });
-        if (this.sensorOptions.sensorDebug) {
-            this.app.drawLine(position, rayDirection, result ? pc.Color.RED : pc.Color.GREEN, 5);
-        }
-        isGround = !!result;
-
-
-    } else {
-        length = -this.characterRadius;
-        // Obtener la posición del pie del jugador (ajusta esto según la altura real del pie)
-        const leftFootPosition = this.bones.leftFoot ? this.bones.leftFoot.getPosition() : this.entity.getPosition(); // Posición actual de la entidad
-        const leftFootRayDirection = leftFootPosition.clone().add(new pc.Vec3(0, length, 0)); // Un metro hacia abajo desde la posición actual
-
-        // Realizar el raycast
-        var resultLeft = this.app.systems.rigidbody.raycastFirst(leftFootPosition, leftFootRayDirection, { lowResolution: true });
-        if (this.sensorOptions.sensorDebug) {
-            this.app.drawLine(leftFootPosition, leftFootRayDirection, resultLeft ? pc.Color.RED : pc.Color.GREEN, 5);
-        }
-
-        // Obtener la posición del pie del jugador (ajusta esto según la altura real del pie)
-        const rightFootPosition = this.bones.rightFoot ? this.bones.rightFoot.getPosition() : leftFootPosition; // Posición actual de la entidad
-        const rightFootRayDirection = rightFootPosition.clone().add(new pc.Vec3(0, length, 0)); // Un metro hacia abajo desde la posición actual
-
-        // Realizar el raycast
-        var resultRight = this.app.systems.rigidbody.raycastFirst(rightFootPosition, rightFootRayDirection, { lowResolution: true });
-        if (this.sensorOptions.sensorDebug) {
-            this.app.drawLine(rightFootPosition, rightFootRayDirection, resultRight ? pc.Color.RED : pc.Color.GREEN, 5);
-        }
-        isGround = !!(resultLeft || resultRight);
+    if (this._groundContacts > 0) {
+        this._coyoteTime = 0.1;
+    } else if (this._coyoteTime > 0) {
+        this._coyoteTime -= dt;
     }
 
+    var grounded = this._groundContacts > 0 || this._coyoteTime > 0;
 
-
-    this.entity.isonground = isGround;
-    this.entity.isonair = !isGround;
-
-    if (this.canmoveonair) {
-        this.entity.isonair = true;
-        this.entity.isonground = false;
+    /* caída franca: anula la gracia (cubre collisionend perdidos) */
+    if (grounded && this.entity.rigidbody.linearVelocity.y < -1.5) {
+        grounded = false;
+        this._coyoteTime = 0;
     }
 
-    if (!isGround) {
-        const currentVelocity = this.entity.rigidbody.linearVelocity, onairThreshold = 0.3;
-        const isFalling = (currentVelocity.y <= -onairThreshold);
-        if (isFalling) {
-            this.entity.isonground = false;
-            this.entity.isonair = true;
+    /* fallback, mismo criterio que la versión original con raycasts: sin evidencia
+       de contacto solo se está en el aire si se está cayendo (vy <= -0.3) */
+    if (!grounded) {
+        grounded = this.entity.rigidbody.linearVelocity.y > -0.3;
+    }
+
+    /* SALTO: durante el ascenso el fallback por velocidad daría grounded=true
+       (vy > 0); mientras dure el salto se está en el aire. Aterrizaje = volver
+       a tener contacto de suelo sin velocidad ascendente. */
+    if (this._jumping) {
+        if (this._groundContacts > 0 && this.entity.rigidbody.linearVelocity.y <= 0.01) {
+            this._jumping = false;
         } else {
-            this.entity.isonground = true;
-            this.entity.isonair = false;
+            grounded = false;
         }
     }
+
+    if (this.canmoveonair) grounded = false;
+
+    this.entity.isonground = grounded;
+    this.entity.isonair = !grounded;
 }
-
-
-Character.prototype.doSensors = function () {
-    return;
-    if (this.entity.isonair) {
-        this.stopMovement();
-    }
-
-
-
-
-
-    //var onairThreshold = 2.5;
-    //this.entity.isonair = !(currentVelocity.y >= -onairThreshold && currentVelocity.y <= onairThreshold);
-
-
-
-
-
-
-
-
-    // Calcular la nueva posición a un metro en la dirección del jugador
-    const forwardVector = new pc.Vec3(0, 0, -1); // Asumiendo que la dirección "forward" está en el eje Z
-    const rotatedForward = this.CHAR_CUR_ROTATION.transformVector(forwardVector);
-    const newSensorPosition = this.CHAR_CUR_POSITION.clone().add(rotatedForward.scale(1)); // 1 metro de distancia
-
-
-
-
-    const raycastJumplength = this.characterHeight / 2 + this.characterHeight; // 2 mts.
-
-    const originAir = this.CHAR_CUR_POSITION.clone(); // Posición actual de la entidad
-    const destinationAir = originAir.clone().add(new pc.Vec3(0, -raycastJumplength, 0)); // Un metro hacia abajo desde la posición actual
-    const raycastAir1 = this.app.systems.rigidbody.raycastFirst(originAir, destinationAir, { lowResolution: true });
-    var distanceToImpact1 = 0;
-    var distanceToImpact2 = 0;
-    var distanceToImpact3 = 0;
-    const groundTolerance = this.characterRadius;
-    if (raycastAir1) {
-        const hitFraction = raycastAir1.hitFraction;
-        const rayLength = originAir.distance(destinationAir);
-        distanceToImpact1 = (rayLength * hitFraction) - this.characterHeight / 2;
-    } else {
-        distanceToImpact1 = null;
-    }
-    if (this.sensorOptions.sensorJumpDebug) {
-        this.app.drawLine(originAir, destinationAir, (distanceToImpact1 ?? 1) > 0 ? pc.Color.RED : pc.Color.GREEN, 5);
-    }
-    this.entity.sensorGroundDistanceCenter = distanceToImpact1;
-
-
-
-    if (this.sensorOptions.groundProcessstep === 1) {
-        const forwardVectorAir = this.entity.forward.clone();
-        forwardVectorAir.y = 0; // Establecer la componente Y a 0 para evitar movimientos verticales
-        forwardVectorAir.normalize().scale((this.characterRadius / 4) * 3); // 50 cm hacia adelante
-        originAir.add(forwardVectorAir);
-        destinationAir.add(forwardVectorAir);
-        const raycastAir2 = this.app.systems.rigidbody.raycastFirst(originAir, destinationAir, { lowResolution: true });
-        if (raycastAir2) {
-            const hitFraction = raycastAir2.hitFraction;
-            const rayLength = originAir.distance(destinationAir);
-            distanceToImpact2 = (rayLength * hitFraction) - this.characterHeight / 2;
-        } else {
-            distanceToImpact2 = null;
-        }
-        if (this.sensorOptions.sensorJumpDebug) {
-            this.app.drawLine(originAir, destinationAir, (distanceToImpact2 ?? 1) > groundTolerance ? pc.Color.RED : pc.Color.GREEN, 5);
-        }
-        this.entity.sensorGroundDistanceForward = distanceToImpact2;
-    }
-
-    if (this.sensorOptions.groundProcessstep === 2) {
-        const forwardVectorAir = this.entity.forward.clone().scale(-1);
-        forwardVectorAir.y = 0; // Establecer la componente Y a 0 para evitar movimientos verticales
-        forwardVectorAir.normalize().scale((this.characterRadius / 4) * 3); // 50 cm hacia adelante
-        originAir.add(forwardVectorAir);
-        destinationAir.add(forwardVectorAir);
-        const raycastAir3 = this.app.systems.rigidbody.raycastFirst(originAir, destinationAir, { lowResolution: true });
-        if (raycastAir3) {
-            const hitFraction = raycastAir3.hitFraction;
-            const rayLength = originAir.distance(destinationAir);
-            distanceToImpact3 = (rayLength * hitFraction) - this.characterHeight / 2;
-        } else {
-            distanceToImpact3 = null;
-        }
-        if (this.sensorOptions.sensorJumpDebug) {
-            this.app.drawLine(originAir, destinationAir, (distanceToImpact3 ?? 1) > groundTolerance ? pc.Color.RED : pc.Color.GREEN, 5);
-        }
-        this.entity.sensorGroundDistanceBackward = distanceToImpact3;
-    }
-
-    this.sensorOptions.groundProcessstep++;
-    if (this.sensorOptions.groundProcessstep > 2) {
-        this.sensorOptions.groundProcessstep = 0;
-    }
-
-
-
-    var footEntity = this.entity.findByName("mixamorig:LeftToeBase");
-
-    if (footEntity) {
-        var position = footEntity.getPosition();
-        var rotation = footEntity.getRotation();
-
-
-        // Calcular la dirección del rayo en el eje Y local de la entidad
-        // La dirección en el eje Y local es (0, 1, 0), pero transformada por la rotación de la entidad
-        var direction = new pc.Vec3(0, 0, -1);
-        direction = rotation.transformVector(direction);
-
-
-
-        // La longitud del rayo en este caso es de un metro
-        var length = 1;
-        var endPoint = new pc.Vec3().copy(position).add(direction.scale(length));
-
-        // Lanzar el raycast desde la posición hasta el punto final
-        var result = this.app.systems.rigidbody.raycastFirst(position, endPoint, { lowResolution: true });
-        this.app.drawLine(position, endPoint, pc.Color.RED, 5);
-
-    }
-
-
-    this.entity.isonair = (this.entity.sensorGroundDistanceCenter ?? 1) > 0 &&
-        (this.entity.sensorGroundDistanceForward ?? 1) > groundTolerance &&
-        (this.entity.sensorGroundDistanceBackward ?? 1) > groundTolerance;
-
-
-    //TEETER:
-    if (this.entity.isonair) {
-        this.entity.isteeter = false;
-    } else {
-        const isteeter = (this.entity.sensorGroundDistanceForward ?? 1) > groundTolerance &&
-            this.entity.sensorGroundDistanceCenter <= groundTolerance &&
-            (this.entity.sensorGroundDistanceBackward ?? 1) <= groundTolerance;
-        if (isteeter) {
-            Timer.addTimer(0.1, function () {
-                this.entity.isteeter = (this.entity.sensorGroundDistanceForward ?? 1) > groundTolerance &&
-                    this.entity.sensorGroundDistanceCenter <= groundTolerance &&
-                    (this.entity.sensorGroundDistanceBackward ?? 1) <= groundTolerance;
-            }, this, true);
-        }
-    }
-
-    //LANDING
-    if (this.entity.isonair) {
-        if (this.entity.sensorGroundDistanceCenter <= this.characterHeight / 4) {
-            this.entity.islanding = true;
-            this.entity.islanding_timerid = Timer.addTimer(1, function () {
-                this.entity.islanding = false;
-            }, this, true);
-        }
-    }
-
-
-
-
-    //&& distanceToImpact2 > this.sensorOptions.groundtolerance && distanceToImpact3 > this.sensorOptions.groundtolerance;
-
-
-
-    if (this.sensorOptions.sensorJumpDebug) {
-        Trace("GDistanceForward", (0 + this.entity.sensorGroundDistanceForward).toFixed(2));
-        Trace("GDistanceCenter", (0 + this.entity.sensorGroundDistanceCenter).toFixed(2));
-        Trace("GDistanceBackward", (0 + this.entity.sensorGroundDistanceBackward).toFixed(2));
-        Trace("entity.isonair", this.entity.isonair);
-    }
-
-
-
-
-
-
-
-
-
-    if (this.sensorOptions.processstep === 0) {
-        /*if (this.sensorOptions.all_detectableEntities_length === 0) {*/
-        this.sensorOptions.all_detectableEntities = this.app.scene.root.findByTag("is-detectable");
-        /*this.sensorOptions.all_detectableEntities = this.sensorOptions.all_detectableEntities.filter(function (ent) {
-            return ent._guid !== this.entity._guid;
-        }.bind(this));*/
-        this.sensorOptions.all_detectableEntities_length = this.sensorOptions.all_detectableEntities.length;
-        /*}*/
-
-        this.sensorOptions.raiseDetectedEvent = false;
-        var d = 0,
-            detectableEntity = null;
-        const oldLength = this.detectedEntities.length;
-        for (; d < this.sensorOptions.all_detectableEntities_length; d++) {
-            detectableEntity = this.sensorOptions.all_detectableEntities[d];
-            /*TODO HACER QIE NO SE DETECTE ASI MISMA*/
-
-            if (!detectableEntity.tags.has("is-taken") && detectableEntity._guid !== this.entity._guid) {
-                const distance = this.CHAR_CUR_POSITION.distance(detectableEntity.getPosition());
-                if (distance <= 5 + this.characterRadius) {
-                    /*DETECTED*/
-                    if (!this.detectedEntities.find(entity => entity._guid === detectableEntity._guid)) {
-                        this.detectedEntities.push(detectableEntity);
-                    }
-                } else {
-                    /*////////REMOVE*/
-                    this.detectedEntities = this.detectedEntities.filter(entity => entity._guid !== detectableEntity._guid);
-                }
-            } else {
-                this.detectedEntities = this.detectedEntities.filter(entity => entity._guid !== detectableEntity._guid);
-            }
-        }
-
-        this.sensorOptions.raiseDetectedEvent = (oldLength !== this.detectedEntities.length);
-    }
-
-
-    if (this.sensorOptions.processstep === 1) {
-
-        var d = 0,
-            detectedEntity = null;
-
-
-        const detectedEntities_length = this.detectedEntities.length;
-        for (; d < detectedEntities_length; d++) {
-            detectedEntity = this.detectedEntities[d];
-
-            if (detectedEntity.tags.has("is-interactable")) {
-                const distance = this.CHAR_CUR_POSITION.distance(detectedEntity.getPosition()),
-                    origin = this.CHAR_CUR_POSITION,
-                    destination = detectedEntity.getPosition(),
-                    raycast = this.app.systems.rigidbody.raycastFirst(origin, destination, { lowResolution: true });
-                if (raycast) {
-                    const hitFraction = raycast.hitFraction;
-                    distanceToImpact = (distance * hitFraction) - this.characterRadius;
-
-                    const oldValue = detectedEntity.canInteract;
-                    detectedEntity.canInteract = (distanceToImpact <= this.characterRadius);
-
-                    if (!this.sensorOptions.raiseDetectedEvent && detectedEntity.canInteract !== oldValue) {
-                        this.sensorOptions.raiseDetectedEvent = true;
-                    }
-                }
-                if (this.sensorOptions.sensorJumpDebug) {
-                    this.app.drawLine(origin, destination, (detectedEntity.canInteract ? pc.Color.GREEN : pc.Color.RED), 5);
-                }
-            }
-        }
-    }
-
-
-
-    if (this.sensorOptions.processstep === 2) {
-        if (this.sensorOptions.raiseDetectedEvent) {
-            this.entity.fire("character:detector", this.detectedEntities);
-        } else {
-            this.sensorOptions.processstep++;
-        }
-    }
-
-
-
-
-    if (this.sensorOptions.processstep === 3) {
-        this.CHAR_CUR_ROTATION.transformVector(forwardVector, forwardVector);
-        var origin = this.CHAR_CUR_POSITION.clone().add(new pc.Vec3(0, -0.5, 0)); // Medio metro hacia arriba
-        var destination = origin.clone().add(forwardVector.scale(1)); // Un metro hacia adelante desde el origen
-
-        // BOTON RAYCAST:
-        const raycast = this.app.systems.rigidbody.raycastFirst(origin, destination, { lowResolution: true });
-        if (raycast) {
-            const hitFraction = raycast.hitFraction;
-            const rayLength = origin.distance(destination);
-            distanceToImpact = (rayLength * hitFraction) - 0.35;
-        } else {
-            distanceToImpact = null;
-        }
-        if (this.sensorOptions.sensorJumpDebug) {
-            this.app.drawLine(origin, destination, (raycast ? pc.Color.GREEN : pc.Color.RED), 5);
-        }
-
-    }
-
-
-    if (this.sensorOptions.processstep === 4) {
-        const raycast = this.app.systems.rigidbody.raycastFirst(this.CHAR_CUR_POSITION, newSensorPosition, { lowResolution: true });
-        if (raycast) {
-            const hitFraction = raycast.hitFraction;
-            const rayLength = this.CHAR_CUR_POSITION.distance(newSensorPosition);
-            distanceToImpact = (rayLength * hitFraction) - 0.35;
-        } else {
-            distanceToImpact = null;
-        }
-        if (this.sensorOptions.sensorJumpDebug) {
-            this.app.drawLine(this.CHAR_CUR_POSITION, newSensorPosition, (raycast ? pc.Color.GREEN : pc.Color.RED), 5);
-        }
-    }
-
-    if (this.sensorOptions.processstep === 5) {
-        this.CHAR_CUR_ROTATION.transformVector(forwardVector, forwardVector);
-        var origin = this.CHAR_CUR_POSITION.clone().add(new pc.Vec3(0, 0.5, 0)); // Medio metro hacia arriba
-        var destination = origin.clone().add(forwardVector.scale(1)); // Un metro hacia adelante desde el origen
-
-        const raycast = this.app.systems.rigidbody.raycastFirst(origin, destination, { lowResolution: true });
-        if (raycast) {
-            const hitFraction = raycast.hitFraction;
-            const rayLength = origin.distance(destination);
-            distanceToImpact = (rayLength * hitFraction) - 0.35;
-        } else {
-            distanceToImpact = null;
-        }
-        if (this.sensorOptions.sensorJumpDebug) {
-            this.app.drawLine(origin, destination, (raycast ? pc.Color.GREEN : pc.Color.RED), 5);
-        }
-
-    }
-
-
-    if (this.sensorOptions.processstep === 6) {
-        this.CHAR_CUR_ROTATION.transformVector(forwardVector, forwardVector);
-        const origin = this.CHAR_CUR_POSITION.clone().add(new pc.Vec3(0, 1, 0)); // Medio metro hacia arriba
-        const destination = origin.clone().add(forwardVector.scale(1)); // Un metro hacia adelante desde el origen
-
-        if (this.sensorOptions.sensorJumpDebug) {
-            this.app.drawLine(origin, destination, pc.Color.RED, 5);
-        }
-    }
-
-
-
-
-    this.sensorOptions.processstep++;
-    if (this.sensorOptions.processstep > 6) {
-        this.sensorOptions.processstep = 0;
-    }
-
-
-
-
-}
-
 
 
 Character.prototype.sensorTrace = function () {
@@ -2168,7 +1693,7 @@ Character.prototype.postUpdate = function (dt) {
     this.doSensorCollisions();
     this.doCarryWeapons();
 
-    const currentVelocity = this.entity.rigidbody.linearVelocity;
+
 
     this.CHAR_LAST_POSITION = this.CHAR_CUR_POSITION.clone();
 }
@@ -2181,18 +1706,14 @@ Character.prototype.rootMotionFix = function () {
     if (this.motionrootmode === "in_place_z_axis") {
         if (this.bones.hips) {
             var vecpos = this.bones.hips.getLocalPosition();
+            this._vHipsPos.set(vecpos.x, vecpos.y, this.playerAnimationsOptions.startPosition.z ?? 0);
+            this.bones.hips.setLocalPosition(this._vHipsPos);
 
-            vecpos = new pc.Vec3(vecpos.x, vecpos.y, this.playerAnimationsOptions.startPosition.z ?? 0);
-
-            this.bones.hips.setLocalPosition(vecpos);
-
-
-            isTurning180 = this.entity.anim.getInteger("turn180") !== 0;
+            const isTurning180 = this.entity.anim.getInteger("turn180") !== 0;
             if (isTurning180) {
                 var vecrot = this.bones.hips.getLocalRotation();
-                vecrot = new pc.Quat(vecrot.x, 0, vecrot.z, vecrot.w);
-
-                this.bones.hips.setLocalRotation(vecrot);
+                this._qHipsRot.set(vecrot.x, 0, vecrot.z, vecrot.w);
+                this.bones.hips.setLocalRotation(this._qHipsRot);
             }
 
         }
@@ -3037,10 +2558,8 @@ Character.prototype.prepareAnimComponent = function () {
         if (this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
             this.entity.attackSystem.status = CharacterAttackSystemStatusEnum.ENDING;
         }
-    }, this);
+    }, this); 
 
 
 };
 /************************************************************************ */
-
-

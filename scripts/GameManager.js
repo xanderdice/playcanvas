@@ -41,7 +41,7 @@ https://o-l-l-i.github.io/lut-maker/
  * @namespace Timer
  */
 var Timer = {};
-Timer._timers = [];
+Timer._timers = new Map();
 Timer._timercounter = 0;
 
 /**
@@ -57,29 +57,29 @@ Timer._timercounter = 0;
  */
 Timer.addTimer = function (time, callback, scope, once) {
     const timerId = "t_" + this._timercounter;
-    Timer._timers[timerId] = {
+    Timer._timers.set(timerId, {
         time: time,
         callback: callback,
         scope: scope,
         once: once,
         __elapsedTime: 0
-    };
+    });
     Timer._timercounter++;
     return timerId;
 }
 
 Timer.addTimerManually = function (time) {
     const timerId = "t_" + this._timercounter;
-    Timer._timers[timerId] = {
+    Timer._timers.set(timerId, {
         time: time || 0,
         __elapsedTime: 0
-    };
+    });
     Timer._timercounter++;
     return timerId;
 }
 
 Timer.checkElapsed = function (timerId) {
-    const timer = this._timers[timerId];
+    const timer = this._timers.get(timerId);
     if (timer.time && timer.__elapsedTime >= timer.time) {
         timer.__elapsedTime = 0;
         return true;
@@ -97,7 +97,7 @@ Timer.checkElapsed = function (timerId) {
  * @returns {null} Always returns `null` to indicate that the operation is complete.
  */
 Timer.destroyTimer = function (timerId) {
-    delete this._timers[timerId];
+    this._timers.delete(timerId);
     return null;
 }
 
@@ -109,10 +109,7 @@ Timer.destroyTimer = function (timerId) {
  * @returns {void} This function does not return any value.
  */
 Timer.clearAllTimers = function () {
-    for (let key in this._timers) {
-        this.destroyTimer(key);
-    }
-    this._timers = [];
+    this._timers.clear();
     Timer._timercounter = 0;
 }
 
@@ -125,8 +122,7 @@ Timer.clearAllTimers = function () {
  * @returns {void} This function does not return any value.
  */
 Timer.evaluateTimers = function (dt) {
-    for (let key in this._timers) {
-        const timer = this._timers[key];
+    for (const [key, timer] of this._timers) {
         timer.__elapsedTime += dt;
         if (timer.time && timer.__elapsedTime >= timer.time) {
             timer.callback.call(timer.scope);
