@@ -20,6 +20,7 @@ Character.attributes.add("isPlayer", { type: "boolean", default: false });
 Character.attributes.add("defaultrun", { type: "boolean", default: true });
 Character.attributes.add("inertia", { type: "boolean", default: true });
 Character.attributes.add("canmoveonair", { type: "boolean", default: false });
+Character.attributes.add("templateEntity", { type: "entity", title: "Template", description: "Entidad hija (render + armature) que rota para encarar la dirección de movimiento. Si se deja vacío se autodetecta desde el render." });
 Character.attributes.add("playerOptions",
     {
         title: "Player options",
@@ -252,13 +253,19 @@ Character.attributes.add("attackSystem",
     });
 
 
+/* ONAIR = modo de locomoción "en el aire" (salto). Va en el ÍNDICE 1, contiguo
+   a UNARMED, para que el armado de transiciones entre modos contiguos genere
+   directamente unarmed<->onair. El VALOR del modo debe coincidir con su índice
+   en animation_modes (el grafo filtra con value: m). torch/armed_2w se corren a
+   2/3 pero son inertes en runtime (input.mode nunca se setea; ver GameManager). */
 const CharacterLocomotionModeEnum = Object.freeze({
     UNARMED: 0,
-    TORCH: 1,
-    ARMED_2W: 2
+    ONAIR: 1,
+    TORCH: 2,
+    ARMED_2W: 3
 });
 
-Character.animation_modes = ["unarmed", "torch", "armed_2w"];
+Character.animation_modes = ["unarmed", "onair", "torch", "armed_2w"];
 Character.animation_idles = ["idle", "idle_searching", "idle_examine", "idle_resting", "idle_hit"];
 Character.animation_attack = ["attack1"];
 
@@ -401,17 +408,10 @@ Character.prototype.initialize = function () {
 
 
 
-    this.doMoveCharacter_busy = false;
+    this._doMoveBusy = false;
 
 
-    this.CHAR_CUR_POSITION = this.entity.getPosition();
-    this.CHAR_CUR_ROTATION = this.entity.getRotation();
-    this.CHAR_LAST_POSITION = this.CHAR_CUR_POSITION.clone();
-    this.currenRotation = 0;
-
-    this.detectedEntities = [];
-    this.sensorOptions.all_detectableEntities = []
-    this.sensorOptions.all_detectableEntities_length = 0;
+    this._curPosition = this.entity.getPosition();
 
 
 
@@ -420,28 +420,20 @@ Character.prototype.initialize = function () {
     this.entity.renderCharacterComponent = this.renderCharacterComponent;
     if (this.renderCharacterComponent) {
         this.renderCharacterComponent.entity.tags.add("uranus-instancing-exclude");
-        this.meshInstancesCharacter = ((this.renderCharacterComponent.meshInstances || [])[0] || { visibleThisFrame: false });
+        this._characterMeshInstance = ((this.renderCharacterComponent.meshInstances || [])[0] || { visibleThisFrame: false });
     } else {
-        this.meshInstancesCharacter = { visibleThisFrame: true };
+        this._characterMeshInstance = { visibleThisFrame: true };
     }
 
 
 
 
-    this.jumping_availability = true;
-    this.jumpKeyHeld = false;   /* flanco de subida de Espacio (input.jump es isPressed) */
+    this._jumpAvailable = true;
+    this._jumpKeyHeld = false;   /* flanco de subida de Espacio (input.jump es isPressed) */
     this._jumping = false;      /* en el aire por un salto propio (hasta aterrizar) */
 
 
-    this.animPlayerStateGraphData = null;
-
-
-
-    this.animatorTargetReached = true;
-    this.animatorCurrentAnimId = 0;
-
-
-
+    this._animStateGraphData = null;
 
 
     this.entity.attackSystem = {
@@ -453,37 +445,6 @@ Character.prototype.initialize = function () {
         canDoAttack: true,
         __elapsedTime: 0,
     };
-
-
-    //this.pointEntity = new pc.Entity()
-    /*
-    this.pointEntity.addComponent("render", {
-        type: "sphere",
-        radius: 0.05
-    });
-    */
-    /*
-        this.pointEntity.addComponent("collision", {
-            type: "sphere",
-            radius: 0.1
-        });
-    
-        this.pointEntity.collision.on("triggerenter", function () {
-            this.stopMovement();
-        }, this);
-        this.app.scene.root.addChild(this.pointEntity);
-        this.pointEntity.setPosition(this.entity.getPosition());
-        */
-
-
-    /* COLLITIONS BONES */
-    this.entity.collisionBones = {
-        leftFootCollision: new pc.Entity(this.entity.name + "_leftFootCollision"),
-        rightFootCollision: new pc.Entity(this.entity.name + "_rightFootCollision"),
-        leftFoot: this.entity.findByName("mixamorig:LeftFoot"),
-        rightFoot: this.entity.findByName("mixamorig:RightFoot"),
-    };
-
 
 
     if (!this.bones.hips && this.bones.autodetectFromMixamoArmature) {
@@ -505,34 +466,15 @@ Character.prototype.initialize = function () {
     if (this.bones.hips) {
         this.playerAnimationsOptions.startPosition = this.bones.hips.getLocalPosition().clone();
     }
-    this.motionrootmode = this.playerAnimationsOptions.motionrootmode;
+    this._motionRootMode = this.playerAnimationsOptions.motionrootmode;
     if (this.renderCharacterComponent) {
         this.renderCharacterComponent.rootBone = this.bones.hips;
     }
 
 
-    /*
-        this.entity.collisionBones.leftFoot.collision.on("collisionstart", function (entity) {
-            if (!entity.isPlayer) {
-                
-                alert("leftFoot - collisionstart");
-            }
-        }, this);
-    */
-
-
-
-
     this.characterHeight = getTotalHeight(this.entity) || 2;
     this.characterRadius = 0.5;
 
-    /*
-        if (!this.entity.collision) {
-            this.entity.addComponent("collision", {
-                type: "compound"
-            });
-        }
-    */
     if (!this.entity.collision) {
         this.entity.tags.add("uranus-instancing-exclude");
         this.entity.tags.add("is-capsule-collision");
@@ -587,7 +529,7 @@ Character.prototype.initialize = function () {
 
 
 
-    /* SUELO POR CONTACTOS: doSensors2() no lanza raycasts; el estado se alimenta
+    /* SUELO POR CONTACTOS: _updateGroundedState() no lanza raycasts; el estado se alimenta
        de los eventos collisionstart/collisionend de la cápsula. */
     this._groundContacts = 0;   // cuántas superficies "suelo" nos sostienen
     this._groundBy = {};        // guid de entidad -> true si nos está sosteniendo
@@ -603,25 +545,24 @@ Character.prototype.initialize = function () {
        dimensiones reales del componente collision (puede venir del editor con
        valores distintos a characterHeight/Radius). +0.02 de tolerancia por el
        margen de contactos de Bullet. Precalculado: cero coste por contacto. */
-    var _col = this.entity.collision;
-    var _colH = (_col && _col.type === "capsule") ? _col.height : this.characterHeight;
-    var _colR = (_col && _col.type === "capsule") ? _col.radius : this.characterRadius;
+    var col = this.entity.collision;
+    var colHeight = (col && col.type === "capsule") ? col.height : this.characterHeight;
+    var colRadius = (col && col.type === "capsule") ? col.radius : this.characterRadius;
     /* getWorldScale() no existe en engine 2.x: derivar de la matriz mundial,
        con fallback a la escala local */
-    var _scaleY = 1;
+    var scaleY = 1;
     if (this.entity.getWorldTransform) {
-        var _wt = this.entity.getWorldTransform();
-        if (_wt && _wt.getScale) _scaleY = Math.abs(_wt.getScale().y) || 1;
+        var wt = this.entity.getWorldTransform();
+        if (wt && wt.getScale) scaleY = Math.abs(wt.getScale().y) || 1;
     } else if (this.entity.getLocalScale) {
-        _scaleY = Math.abs(this.entity.getLocalScale().y) || 1;
+        scaleY = Math.abs(this.entity.getLocalScale().y) || 1;
     }
-    this._capsuleBaseOffset = (-(_colH * 0.5) + _colR) * _scaleY + 0.02;
+    this._capsuleBaseOffset = (-(colHeight * 0.5) + colRadius) * scaleY + 0.02;
 
     /* SALTO: el apex del salto es la MITAD del height real (escalado) de la
        cápsula. Precalculado aquí; la velocidad se deriva con v = sqrt(2*g*h). */
-    this._jumpApexHeight = (_colH * _scaleY) * 0.5;
+    this._jumpApexHeight = (colHeight * scaleY) * 0.5;
 
-    this.mantleHeight = 0.9;
 
 
 
@@ -672,32 +613,10 @@ Character.prototype.initialize = function () {
 
 
 
-    this.entity.on("character:detector", function (detectedEntities) {
-
-        if (this.tracerOptions.tracedetector) {
-            var detEnt = [];
-            detEnt.push("" + detectedEntities.length);
-            for (var i = 0; i < detectedEntities.length; i++) {
-                detEnt.push(detectedEntities[i].name);
-            }
-            Trace("detectedEntities", detEnt);
-        }
-        for (var i = 0; i < detectedEntities.length; i++) {
-
-        }
-
-        //Trace("character:detector", detectedEntities);
-    }, this);
-
-
     /* OPTIMIZACION (GC): vectores/quats reutilizables para evitar "new pc.Vec3()" / ".clone()"
-       en el hot-path (doMove, doSensors2, rootMotionFix). Cada uno tiene una única responsabilidad
+       en el hot-path (doMove, _updateGroundedState, rootMotionFix). Cada uno tiene una única responsabilidad
        dentro de una misma llamada para evitar aliasing entre ellos. */
-    this.vec = new pc.Vec3;
-    this.vec2 = new pc.Vec3;
-    this.vec3 = new pc.Vec3;
-    this.quat = new pc.Quat;
-
+    this._vTmp = new pc.Vec3();            // temporal de uso puntual (una sola responsabilidad por llamada)
     this._vDirection = new pc.Vec3();      // dirección de movimiento deseada
     this._vCamForward = new pc.Vec3();     // forward de cámara/objetivo (temporal)
     this._vCamRight = new pc.Vec3();       // right de cámara/objetivo (temporal)
@@ -713,31 +632,54 @@ Character.prototype.initialize = function () {
     this._qHipsRot = new pc.Quat();        // rotación local de hips (rootMotionFix)
     this._vJump = new pc.Vec3();           // velocidad lineal al saltar
 
+    /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+     *  GIRO DEL TEMPLATE (hijo con render/armature), NO de la cápsula.
+     *  Se toma la rotación y escala ACTUALES del template como baseline/punto de
+     *  partida (da igual si viene rotado en X/Y o con escala 0.01). El giro se
+     *  reproduce sobre el template EXACTAMENTE como el sistema anterior rotaba la
+     *  cápsula (template.worldRot = Ry(yaw) · baseline), así el jugador no nota el
+     *  cambio. La cápsula queda bloqueada en rotación (angularFactor 0).
+     * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+    this._qYaw = new pc.Quat();            // rotación de yaw (world Y) a aplicar
+    this._qTemplateTarget = new pc.Quat(); // rotación world objetivo del template
+    this._templateEntity = this._resolveTemplateEntity();
+
+    if (this._templateEntity) {
+        this._templateWorldBase = this._templateEntity.getRotation().clone();
+        this._templateBaseScale = this._templateEntity.getLocalScale().clone();
+        this._templateYaw = 0;
+
+        /* Referencia = orientación horizontal INICIAL de la cápsula. Reproducimos
+           sobre el template el mismo yaw absoluto que la cápsula habría aplicado,
+           por lo que el resultado es idéntico al sistema anterior (que rotaba la
+           cápsula y el template la seguía como hijo). La cápsula está siempre
+           vertical => su forward es horizontal => sin caso degenerado. */
+        var capsuleForward = this.entity.forward.clone();
+        capsuleForward.y = 0;
+        this._templateRefYaw = (capsuleForward.lengthSq() < 0.000001) ? 0 : Math.atan2(capsuleForward.x, capsuleForward.z);
+
+        /* La cápsula NO rota: bloquear todos los ejes angulares. */
+        this.entity.rigidbody.angularFactor = new pc.Vec3(0, 0, 0);
+
+        /* dejar el template en su baseline (yaw 0) de forma consistente */
+        this._applyTemplateRotation();
+    } else {
+        /* Sin template (render en la propia cápsula): comportamiento anterior,
+           la cápsula rota en Y. */
+        this.entity.rigidbody.angularFactor = new pc.Vec3(0, 1, 0);
+    }
+
     this.entity.mode = CharacterLocomotionModeEnum.UNARMED;
 
 
 
-    this.on("destroy", function () {
-        this.entity.collision.off("collisionstart", this.characterCollisionStart);
-        this.entity.collision.off("collisionend", this.characterCollisionEnd);
-    }, this);
+    this.on("destroy", this._onDestroy, this);
 
-    this.entity.on("destroy", function () {
-        //this.entity.collision.off();
-    }, this);
-
-
-    /*TRACE ATRIBUTE SCRIPT EVENT*/
-    this.prevtracerOptions = JSON.parse(JSON.stringify(this.tracerOptions));
+    /* refleja en runtime los cambios del atributo tracerOptions */
     this.on("attr:tracerOptions", function (nuevoValor) {
-        if (nuevoValor.enabled !== this.prevtracerOptions.enabled) {
-
+        if (this.entity.capsule_collision) {
+            this.entity.capsule_collision.render.enabled = nuevoValor.enabled ? nuevoValor.traceplayercapsule : false;
         }
-
-        this.entity.capsule_collision.render.enabled = nuevoValor.enabled ? nuevoValor.traceplayercapsule : false;
-
-
-        this.prevtracerOptions = JSON.parse(JSON.stringify(this.tracerOptions));
     }, this);
 
 
@@ -892,10 +834,10 @@ Character.prototype.updateSpeedAnimBlendFromVelocity = function (dt) {
 
     // Suavizado corto para evitar jitter entre idle/walk
     const lerpT = pc.math.clamp(dt * 12, 0, 1);
-    this.speedAnimBlend = pc.math.lerp(this.speedAnimBlend || 0, targetBlend, lerpT);
+    this._speedAnimBlend = pc.math.lerp(this._speedAnimBlend || 0, targetBlend, lerpT);
 
-    if (this.speedAnimBlend < 0.05) {
-        this.speedAnimBlend = 0;
+    if (this._speedAnimBlend < 0.05) {
+        this._speedAnimBlend = 0;
     }
 };
 
@@ -909,28 +851,63 @@ Character.prototype.stopMovement = function () {
 }
 
 
+/* Resuelve el "template": el hijo DIRECTO de la cápsula que contiene el render/
+   armature. Prioriza el atributo asignado; si no, sube desde el render hasta el
+   hijo directo de this.entity; último recurso: primer hijo. Devuelve null si el
+   render está en la propia cápsula (no hay template separado). */
+Character.prototype._resolveTemplateEntity = function () {
+    if (this.templateEntity) return this.templateEntity;
+
+    var n = this.renderCharacterComponent ? this.renderCharacterComponent.entity : null;
+    /* render en la PROPIA cápsula: no hay template separado -> null, para que
+       el llamador use la rotación por física (comportamiento original). Caer a
+       children[0] aquí rotaría un hijo arbitrario (p.ej. debug capsule). */
+    if (n === this.entity) return null;
+    while (n && n.parent && n.parent !== this.entity) {
+        n = n.parent;
+    }
+    if (n && n.parent === this.entity) return n;
+
+    return (this.entity.children && this.entity.children[0]) || null;
+};
+
+/* Aplica al template la rotación de encare: world = Ry(_templateYaw) · baseline.
+   El yaw es alrededor del eje Y del MUNDO, compuesto SOBRE la rotación de reposo,
+   por lo que preserva pitch/roll iniciales. Reasienta la escala base (normaliza)
+   por si setRotation introdujera deriva al recomponer la local con la del padre. */
+Character.prototype._applyTemplateRotation = function () {
+    var t = this._templateEntity;
+    if (!t) return;
+
+    this._qYaw.setFromAxisAngle(pc.Vec3.UP, this._templateYaw * pc.math.RAD_TO_DEG);
+    this._qTemplateTarget.mul2(this._qYaw, this._templateWorldBase);
+    t.setRotation(this._qTemplateTarget);
+
+    t.setLocalScale(this._templateBaseScale);
+};
+
+
 
 Character.prototype.doMove = function () {
     if (!this.entity || !this.entity.rigidbody) {
         return;
     }
 
-    if (this.doMoveCharacter_busy) return;
-    this.doMoveCharacter_busy = true;
+    if (this._doMoveBusy) return;
+    this._doMoveBusy = true;
 
     const input = this.entity.input || {};
     const dt = Number(input.dt || 0);
     const useFlight = !!this.canmoveonair;
 
-    this.CHAR_CUR_POSITION = this.entity.getPosition();
-    this.CHAR_CUR_ROTATION = this.entity.getRotation();
+    this._curPosition = this.entity.getPosition();
 
     if (this.pointCharacterEntity) {
-        this.pointCharacterEntity.setPosition(this.CHAR_CUR_POSITION);
+        this.pointCharacterEntity.setPosition(this._curPosition);
     }
 
-    const visibleThisFrame = (this.meshInstancesCharacter && typeof this.meshInstancesCharacter.visibleThisFrame === "boolean")
-        ? this.meshInstancesCharacter.visibleThisFrame
+    const visibleThisFrame = (this._characterMeshInstance && typeof this._characterMeshInstance.visibleThisFrame === "boolean")
+        ? this._characterMeshInstance.visibleThisFrame
         : true;
 
     if (this.entity.anim) {
@@ -938,11 +915,11 @@ Character.prototype.doMove = function () {
     }
 
     if (visibleThisFrame) {
-        this.doSensors2();
+        this._updateGroundedState();
     }
 
     if (!visibleThisFrame) {
-        this.doMoveCharacter_busy = false;
+        this._doMoveBusy = false;
         return;
     }
 
@@ -987,8 +964,8 @@ Character.prototype.doMove = function () {
         targetDirection = input.targetEntity;
 
         if (targetDirection) {
-            /* OPTIMIZACION (GC): this.vec en vez de .clone() para el vector temporal */
-            const directionToTarget = this.vec.copy(targetDirection.getPosition()).sub(this.CHAR_CUR_POSITION).normalize();
+            /* OPTIMIZACION (GC): this._vTmp en vez de .clone() para el vector temporal */
+            const directionToTarget = this._vTmp.copy(targetDirection.getPosition()).sub(this._curPosition).normalize();
 
             input.x = directionToTarget.x;
             if (input.x < 0.1 && input.x > -0.1) input.x = 0;
@@ -1025,9 +1002,9 @@ Character.prototype.doMove = function () {
         const tp = targetPoint.getPosition ? targetPoint.getPosition() : targetPoint;
 
         direction.set(
-            tp.x - this.CHAR_CUR_POSITION.x,
-            tp.y - this.CHAR_CUR_POSITION.y,
-            tp.z - this.CHAR_CUR_POSITION.z
+            tp.x - this._curPosition.x,
+            tp.y - this._curPosition.y,
+            tp.z - this._curPosition.z
         );
 
         if (!useFlight) {
@@ -1040,13 +1017,13 @@ Character.prototype.doMove = function () {
 
         if (distance <= stopRadius) {
             stopMovementNow = true;
-            this.isMoving = false;
+            this._isMoving = false;
 
             if (this.entity.input && this.entity.input.targetPoint === targetPoint) {
                 this.entity.input.targetPoint = null;
             }
         } else {
-            this.isMoving = true;
+            this._isMoving = true;
 
             direction.normalize();
 
@@ -1055,10 +1032,10 @@ Character.prototype.doMove = function () {
             }
         }
     } else {
-        this.isMoving = input.x !== 0 || input.z !== 0;
-        if (!this.isMoving) moveSpeed = 0;
+        this._isMoving = input.x !== 0 || input.z !== 0;
+        if (!this._isMoving) moveSpeed = 0;
 
-        if (this.isMoving && targetDirection) {
+        if (this._isMoving && targetDirection) {
             /* OPTIMIZACION (GC): camForward/camRight reutilizables; direction se COPIA al final
                en vez de quedar como alias del propio camForward (igual resultado numérico). */
             const camForward = this._vCamForward.copy(targetDirection.forward);
@@ -1082,7 +1059,7 @@ Character.prototype.doMove = function () {
                 if (direction.lengthSq() > 0.000001) {
                     direction.normalize();
                 } else {
-                    this.isMoving = false;
+                    this._isMoving = false;
                 }
             } else {
                 camForward.y = 0;
@@ -1098,7 +1075,7 @@ Character.prototype.doMove = function () {
                 if (direction.lengthSq() > 0.000001) {
                     direction.normalize();
                 } else {
-                    this.isMoving = false;
+                    this._isMoving = false;
                 }
             }
         } else {
@@ -1106,9 +1083,9 @@ Character.prototype.doMove = function () {
         }
     }
 
-    this.charSpeed = this.isMoving
-        ? (this.charSpeed < moveSpeed - 0.1
-            ? pc.math.lerp(this.charSpeed, moveSpeed, dt * this.speed * 4)
+    this._charSpeed = this._isMoving
+        ? (this._charSpeed < moveSpeed - 0.1
+            ? pc.math.lerp(this._charSpeed, moveSpeed, dt * this.speed * 4)
             : moveSpeed)
         : 0;
 
@@ -1117,20 +1094,20 @@ Character.prototype.doMove = function () {
     if (this.entity.attackSystem.canAttack &&
         !this.entity.attackSystem.walkAndAttack &&
         this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
-        this.isMoving = false;
+        this._isMoving = false;
         stopMovementNow = true;
     }
 
-    this.isMoving = this.isMoving && this.entity.anim.getInteger("turn180") === 0;
+    this._isMoving = this._isMoving && this.entity.anim.getInteger("turn180") === 0;
 
-    if (this.isMoving && !useFlight && this.entity.isonair) {
-        this.isMoving = false;
+    if (this._isMoving && !useFlight && this.entity.isonair) {
+        this._isMoving = false;
         stopMovementNow = true;
     }
 
-    if (this.isMoving && direction.lengthSq() > 0.000001) {
+    if (this._isMoving && direction.lengthSq() > 0.000001) {
         /* OPTIMIZACION (GC): vectores reutilizables en vez de .clone() */
-        const desiredVelocity = this._vDesired.copy(direction).scale(this.charSpeed);
+        const desiredVelocity = this._vDesired.copy(direction).scale(this._charSpeed);
 
         if (useFlight) {
             /* VUELO: aceleración suave hacia la velocidad deseada
@@ -1158,7 +1135,7 @@ Character.prototype.doMove = function () {
         v.y *= damp;
         v.z *= damp;
         this.entity.rigidbody.linearVelocity = v;
-    } else if (stopMovementNow || (!this.isMoving && !this.inertia)) {
+    } else if (stopMovementNow || (!this._isMoving && !this.inertia)) {
         const v = this._vLinStop.copy(this.entity.rigidbody.linearVelocity);
 
         /* SALTO: durante el arco del salto se conserva el momento horizontal
@@ -1199,10 +1176,10 @@ Character.prototype.doMove = function () {
 
         /* re-armar el salto al volver a tener suelo */
         if (groundedForJump) {
-            this.jumping_availability = true;
+            this._jumpAvailable = true;
         }
 
-        if (jumpPressed && !this.jumpKeyHeld && groundedForJump && this.jumping_availability) {
+        if (jumpPressed && !this._jumpKeyHeld && groundedForJump && this._jumpAvailable) {
             /* v = sqrt(2*g*h) con h = _jumpApexHeight (mitad del height de la cápsula) */
             const g = Math.abs(this.app.systems.rigidbody.gravity.y) || Math.abs(this.gravity) || 9.8;
             const vy = Math.sqrt(2 * g * this._jumpApexHeight);
@@ -1212,7 +1189,7 @@ Character.prototype.doMove = function () {
             this.entity.rigidbody.linearVelocity = v;
 
             this._jumping = true;
-            this.jumping_availability = false;
+            this._jumpAvailable = false;
             this._coyoteTime = 0;
 
             if (this.sensorOptions.sensorJumpDebug) {
@@ -1220,9 +1197,9 @@ Character.prototype.doMove = function () {
             }
         }
 
-        this.jumpKeyHeld = jumpPressed;
+        this._jumpKeyHeld = jumpPressed;
     } else {
-        this.jumpKeyHeld = !!input.jump;
+        this._jumpKeyHeld = !!input.jump;
     }
 
     /* OPTIMIZACION (GC): faceDir es un vector reutilizable; hasFaceDir sustituye al antiguo
@@ -1240,7 +1217,7 @@ Character.prototype.doMove = function () {
                     hasFaceDir = true;
                 }
             }
-        } else if (this.isMoving && direction.lengthSq() > 0.000001 && input.cameratype !== "FirstPerson") {
+        } else if (this._isMoving && direction.lengthSq() > 0.000001 && input.cameratype !== "FirstPerson") {
             faceDir.copy(direction);
             faceDir.y = 0;
             if (faceDir.lengthSq() > 0.000001) {
@@ -1251,14 +1228,14 @@ Character.prototype.doMove = function () {
     } else {
         if (targetPoint) {
             const tpPos = targetPoint.getPosition ? targetPoint.getPosition() : targetPoint;
-            faceDir.copy(tpPos).sub(this.CHAR_CUR_POSITION);
+            faceDir.copy(tpPos).sub(this._curPosition);
             faceDir.y = 0;
             if (faceDir.lengthSq() > 0.000001) {
                 faceDir.normalize();
                 hasFaceDir = true;
             }
         } else if (input.targetEntity) {
-            faceDir.copy(input.targetEntity.getPosition()).sub(this.CHAR_CUR_POSITION);
+            faceDir.copy(input.targetEntity.getPosition()).sub(this._curPosition);
             faceDir.y = 0;
             if (faceDir.lengthSq() > 0.000001) {
                 faceDir.normalize();
@@ -1267,7 +1244,25 @@ Character.prototype.doMove = function () {
         }
     }
 
-    if (hasFaceDir) {
+    if (this._templateEntity) {
+        /* GIRO VISUAL sobre el TEMPLATE (no la cápsula). Se integra un yaw
+           relativo al baseline con el MISMO "feel" que la versión por física
+           (turnSpeed/maxTurnSpeed iguales) para que el jugador no note el cambio.
+           _templateYaw converge a φ = ánguloFaceDir − ánguloForwardInicialCápsula,
+           reproduciendo la rotación que antes recibía la cápsula. */
+        if (hasFaceDir) {
+            const turnSpeed = 20;
+            const maxTurnSpeed = 14;
+
+            let delta = (Math.atan2(faceDir.x, faceDir.z) - this._templateRefYaw) - this._templateYaw;
+            delta = Math.atan2(Math.sin(delta), Math.cos(delta)); // camino más corto
+
+            const rate = pc.math.clamp(delta * turnSpeed, -maxTurnSpeed, maxTurnSpeed);
+            this._templateYaw += rate * dt;
+        }
+        this._applyTemplateRotation();
+    } else if (hasFaceDir) {
+        /* Fallback sin template: rotación por física sobre la cápsula (original). */
         const forward = this._vForward.copy(this.entity.forward);
         forward.y = 0;
 
@@ -1288,11 +1283,18 @@ Character.prototype.doMove = function () {
         }
     }
 
-    this.doInteraction(input);
-
     if (this.entity.anim) {
-        this.entity.anim.setInteger("mode", +(input.mode || 0));
-        this.entity.anim.setFloat("speed", this.speedAnimBlend);
+        /* MODO EN EL AIRE: durante un SALTO deliberado (no caídas por bordes) y
+           NO en vuelo se fuerza el modo ONAIR para reproducir la pose de aire en
+           vez de caminar/correr. El vuelo (canmoveonair) mantiene su modo de arma
+           y usa su propio estado onair (mecanismo distinto). Al aterrizar
+           (_jumping=false) vuelve al modo de arma y el grafo retorna a idle/walk/run. */
+        var animMode = +(input.mode || 0);
+        if (this._jumping && !this.canmoveonair) {
+            animMode = CharacterLocomotionModeEnum.ONAIR;
+        }
+        this.entity.anim.setInteger("mode", animMode);
+        this.entity.anim.setFloat("speed", this._speedAnimBlend);
         this.entity.anim.setInteger("onair", +(this.entity.isonair));
         this.entity.anim.setInteger("impact", input.impact ? Math.floor(Math.random() * 2) + 1 : 0);
         this.entity.anim.setInteger("death", input.death ? Math.floor(Math.random() * 2) + 1 : 0);
@@ -1300,7 +1302,7 @@ Character.prototype.doMove = function () {
 
     this.doAttackSystem(input);
 
-    this.doMoveCharacter_busy = false;
+    this._doMoveBusy = false;
 };
 
 
@@ -1394,6 +1396,60 @@ Character.prototype.doCarryWeapons = function () {
     }
 }
 
+/* LIMPIEZA. Cubre los dos casos: destruir la cápsula (entidad) o quitar solo el
+   script. Todo lo que este script crea/engancha debe soltarse aquí para no dejar
+   entidades huérfanas ni callbacks colgando que referencien un script muerto. */
+Character.prototype._onDestroy = function () {
+    var entity = this.entity;
+
+    /* contactos de la cápsula (por si la entidad sobrevive al script) */
+    if (entity && entity.collision) {
+        entity.collision.off("collisionstart", this.characterCollisionStart, this);
+        entity.collision.off("collisionend", this.characterCollisionEnd, this);
+    }
+
+    /* eventos de animación propios de este script (nombres exclusivos), que
+       referencian `this`: si la entidad sobrevive, quedarían colgando */
+    if (entity && entity.anim) {
+        entity.anim.off("attack-end-animation");
+        entity.anim.off("attack-start-damage-animation");
+        entity.anim.off("attack-end-damage-animation");
+    }
+
+    /* armas: la entidad del arma es EXTERNA (no hija). No la destruimos, solo
+       desenganchamos nuestros triggers y el tag is-taken. */
+    this._detachWeapon(this.carryWeapons.leftHandWeaponEntity || this.carryWeapons.leftHandWeaponEntityOld,
+        this.onCollisionStartLeftWeapon, this.onCollisionEndLeftWeapon);
+    this._detachWeapon(this.carryWeapons.rightHandWeaponEntity || this.carryWeapons.rightHandWeaponEntityOld,
+        this.onCollisionStartRightWeapon, this.onCollisionEndRightWeapon);
+
+    /* entidad auxiliar colgada de scene.root (NO es hija de la cápsula): hay que
+       destruirla a mano o queda huérfana en la escena */
+    if (this.pointCharacterEntity) {
+        this.pointCharacterEntity.destroy();
+        this.pointCharacterEntity = null;
+    }
+
+    /* cápsula de debug (hija de la entidad): si solo se quita el script, limpiarla;
+       si se destruye la entidad, ya cae con ella */
+    if (entity && entity.capsule_collision) {
+        entity.capsule_collision.destroy();
+        entity.capsule_collision = null;
+    }
+};
+
+/* Suelta los triggers y el tag is-taken que este script enganchó en un arma.
+   La entidad del arma es externa: no se destruye, solo se desengancha. */
+Character.prototype._detachWeapon = function (weaponEntity, onEnter, onLeave) {
+    if (!weaponEntity || !weaponEntity.findComponent) return;
+    var col = weaponEntity.findComponent("collision");
+    if (col) {
+        col.entity.tags.remove("is-taken");
+        col.off("triggerenter", onEnter, this);
+        col.off("triggerleave", onLeave, this);
+    }
+};
+
 Character.prototype.onCollisionStartRightWeapon = function (other) {
     this.onCollisionStartWeapon(other, "right");
 }
@@ -1416,22 +1472,6 @@ Character.prototype.onCollisionStartWeapon = function (other, hand) {
     }
 }
 
-Character.prototype.doSensorCollisions = function () {
-    return;
-
-    if (this.entity.collisionBones.leftFootCollision) {
-        this.entity.collisionBones.leftFootCollision.setPosition(this.entity.collisionBones.leftFoot.getPosition());
-        this.entity.collisionBones.leftFootCollision.setRotation(this.entity.collisionBones.leftFoot.getRotation());
-    }
-
-    if (this.entity.collisionBones.rightFootCollision) {
-        this.entity.collisionBones.rightFootCollision.setPosition(this.entity.collisionBones.rightFoot.getPosition());
-        this.entity.collisionBones.rightFootCollision.setRotation(this.entity.collisionBones.rightFoot.getRotation());
-    }
-}
-
-
-
 /* * * * * * * * * * * * * * * * */
 /* D O  A T T A C K  S Y S T E M */
 /* * * * * * * * * * * * * * * * */
@@ -1453,7 +1493,10 @@ Character.prototype.doAttackSystem = function (input) {
                 this.entity.attackSystem.status = CharacterAttackSystemStatusEnum.ATTACKING;
 
                 Timer.addTimer(0.1, function () {
-                    this.entity.attackSystem.canDoAttack = true;
+                    /* el timer puede disparar tras destruir el personaje: guard */
+                    if (this.entity && this.entity.attackSystem) {
+                        this.entity.attackSystem.canDoAttack = true;
+                    }
                 }, this, true);
 
             }
@@ -1482,14 +1525,9 @@ Character.prototype.doAttackSystem = function (input) {
     }
 
     /* shows animation */
-    //if (this.entity.attackSystem.attackActionOld !== attackAction) {
     this.entity.anim.setInteger("attack", this.entity.attackSystem.attackAction);
-    //}
-
-
 
     this.entity.attackSystem.attackInputOld = this.entity.attackSystem.attackInput;
-    this.entity.attackSystem.attackActionOld = this.entity.attackSystem.attackAction;
 
 
     if (this.tracerOptions.traceattack && this.entity.isPlayer) {
@@ -1508,17 +1546,6 @@ Character.prototype.doAttackSystem = function (input) {
 
 
 
-const CharacterLocomotionEnum = Object.freeze({
-    IDLE: 0,
-    FORWARD: 1,
-    BACKWARD: 2,
-    RIGHT: 3,
-    LEFT: 4,
-    FORWARDRIGHT: 5,
-    FORWARDLEFT: 6,
-    BACKWARDRIGHT: 7,
-    BACKWARDLEFT: 8
-});
 
 
 
@@ -1587,7 +1614,7 @@ Character.prototype.characterCollisionEnd = function (other) {
     }
 }
 
-Character.prototype.doSensors2 = function () {
+Character.prototype._updateGroundedState = function () {
     /* Suelo por contactos de la cápsula, sin raycasts (ver characterCollisionStart/End).
        coyoteTime = 100 ms de gracia para cubrir el parpadeo de manifolds de Bullet. */
     var dt = this.entity.input.dt || 0;
@@ -1630,52 +1657,6 @@ Character.prototype.doSensors2 = function () {
 }
 
 
-Character.prototype.sensorTrace = function () {
-    if (!this.sensorOptions.sensorDebug) return;
-    Trace("sensorRight ", (this.entity.sensorRightEntity ?? {}).name ?? "");
-    Trace("sensorLeft  ", (this.entity.sensorLeftEntity ?? {}).name ?? "");
-    Trace("sensorTop   ", (this.entity.sensorTopEntity ?? {}).name ?? "");
-    Trace("sensorBottom", (this.entity.sensorBottomEntity ?? {}).name ?? "");
-    Trace("sensorFront ", (this.entity.sensorFrontEntity ?? {}).name ?? "");
-    Trace("sensorBack  ", (this.entity.sensorBackEntity ?? {}).name ?? "");
-}
-
-
-Character.prototype.sensorToeBaseCollisionStartEvent = function (entity) {
-    //if (!entity.isPlayer) {
-    alert("sensorToeBaseCollisionStartEvent = " + entity.name);
-    //}
-}
-
-
-/*-----------------------------------------------------------------------------------------*/
-
-/*******************************/
-/*                             */
-/*   I N T E R A C T I O N     */
-/*                             */
-/*******************************/
-Character.prototype.doInteraction = function (input) {
-
-    if (input.interact) {
-        var i = 0, detectedEntity = null;
-        const detectedEntities_length = this.detectedEntities.length;
-        for (; i < detectedEntities_length; i++) {
-            detectedEntity = this.detectedEntities[i];
-
-            //detectedEntity
-
-        }
-    }
-
-
-}
-
-
-
-
-
-
 /*-----------------------------------------------------------------------------------------*/
 /*-----------------------------------------------------------------------------------------*/
 /*******************************/
@@ -1684,18 +1665,9 @@ Character.prototype.doInteraction = function (input) {
 /*                             */
 /*******************************/
 /*-----------------------------------------------------------------------------------------*/
-Character.prototype.update = function (dt) {
-
-}
-
 Character.prototype.postUpdate = function (dt) {
     this.rootMotionFix();
-    this.doSensorCollisions();
     this.doCarryWeapons();
-
-
-
-    this.CHAR_LAST_POSITION = this.CHAR_CUR_POSITION.clone();
 }
 
 Character.prototype.rootMotionFix = function () {
@@ -1703,7 +1675,7 @@ Character.prototype.rootMotionFix = function () {
 
 
     /*root motion FIX*/
-    if (this.motionrootmode === "in_place_z_axis") {
+    if (this._motionRootMode === "in_place_z_axis") {
         if (this.bones.hips) {
             var vecpos = this.bones.hips.getLocalPosition();
             this._vHipsPos.set(vecpos.x, vecpos.y, this.playerAnimationsOptions.startPosition.z ?? 0);
@@ -1718,17 +1690,14 @@ Character.prototype.rootMotionFix = function () {
 
         }
     }
-    if (this.motionrootmode === "in_place_all_axis") {
+    if (this._motionRootMode === "in_place_all_axis") {
         this.bones.hips?.setLocalPosition(this.playerAnimationsOptions.startPosition);
     }
 
-    if (this.animatorAnimMotionRootMode) {
-        this.motionrootmode = this.animatorAnimMotionRootMode;
-    } else {
-        if (this.motionrootmode !== this.playerAnimationsOptions.motionrootmode) {
-            this.bones.hips?.setLocalPosition(this.playerAnimationsOptions.startPosition);
-            this.motionrootmode = this.playerAnimationsOptions.motionrootmode;
-        }
+    /* si el atributo motionrootmode cambia en runtime, resincronizar */
+    if (this._motionRootMode !== this.playerAnimationsOptions.motionrootmode) {
+        this.bones.hips?.setLocalPosition(this.playerAnimationsOptions.startPosition);
+        this._motionRootMode = this.playerAnimationsOptions.motionrootmode;
     }
 }
 
@@ -1741,243 +1710,7 @@ Character.prototype.rootMotionFix = function () {
 /*-----------------------------------------------------------------------------------------*/
 Character.prototype.prepareAnimComponent = function () {
 
-    const animPlayerStateGraphDataX = {
-        layers: [
-            {
-                name: "unarmed",
-                states: [
-                    {
-                        name: "START"
-                    },
-                    {
-                        name: "ANY"
-                    },
-                    {
-                        name: "idle"
-                    },
-                    {
-                        name: "walking"
-                    },
-                    {
-                        name: "running"
-                    },
-                    {
-                        name: "sprinting"
-                    },
-                    {
-                        name: "attack",
-                        loop: false
-                    },
-                    {
-                        name: "attack2",
-                        loop: false
-                    },
-                    {
-                        name: "jump",
-                        loop: false
-                    },
-                    {
-                        name: "climb",
-                        loop: false
-                    },
-                    {
-                        name: "teeter"
-                    },
-                    {
-                        name: "landing",
-                        loop: false
-                    },
-                    {
-                        name: "leftturn90",
-                        loop: false
-                    },
-                    {
-                        name: "rightturn90",
-                        loop: false
-                    }
-                ],
-                transitions: [
-                    {
-                        from: "START",
-                        to: "idle",
-                        time: 0.0,
-                        priority: 0
-                    }, {
-                        from: "idle",
-                        to: "walking",
-                        time: 0.2,
-                        priority: 0,
-                        conditions: [{
-                            parameterName: "speed",
-                            predicate: pc.ANIM_GREATER_THAN,
-                            value: 0
-                        }]
-                    }, {
-                        from: "walking",
-                        to: "idle",
-                        time: 0.0,
-                        priority: 0,
-                        conditions: [{
-                            parameterName: "speed",
-                            predicate: pc.ANIM_LESS_THAN,
-                            value: 0.01
-                        }]
-                    },
-                    {
-                        from: "walking",
-                        to: "running",
-                        time: 0.2,
-                        priority: 0,
-                        conditions: [{
-                            parameterName: "speed",
-                            predicate: pc.ANIM_GREATER_THAN,
-                            value: 0.99
-                        }]
-                    },
-                    {
-                        from: "running",
-                        to: "walking",
-                        time: 0.1,
-                        priority: 0,
-                        conditions: [{
-                            parameterName: "speed",
-                            predicate: pc.ANIM_LESS_THAN,
-                            value: 1
-                        }]
-                    },
-                    {
-                        from: "idle",
-                        to: "running",
-                        time: 0.2,
-                        priority: 0,
-                        conditions: [{
-                            parameterName: "speed",
-                            predicate: pc.ANIM_GREATER_THAN_EQUAL_TO,
-                            value: 1
-                        }
-                        ]
-                    },
-
-                    {
-                        from: "ANY",
-                        to: "attack",
-                        time: 0.1,
-                        priority: 0,
-                        conditions: [{
-                            parameterName: "attack",
-                            predicate: pc.ANIM_EQUAL_TO,
-                            value: 1
-                        }]
-                    },
-
-                    {
-                        from: "attack",
-                        to: "idle",
-                        time: 0.0,
-                        priority: 0,
-                        conditions: [
-                            {
-                                parameterName: "attack",
-                                predicate: pc.ANIM_EQUAL_TO,
-                                value: 0
-                            },
-                            {
-                                parameterName: "speed",
-                                predicate: pc.ANIM_LESS_THAN,
-                                value: 0.01
-                            }]
-                    },
-
-                    {
-                        from: "attack",
-                        to: "walking",
-                        time: 0.2,
-                        priority: 0,
-                        conditions: [
-                            {
-                                parameterName: "attack",
-                                predicate: pc.ANIM_EQUAL_TO,
-                                value: 0
-                            },
-                            {
-                                parameterName: "speed",
-                                predicate: pc.ANIM_GREATER_THAN,
-                                value: 0.01
-                            }
-                        ]
-                    },
-
-
-                    {
-                        from: "attack",
-                        to: "running",
-                        time: 0.2,
-                        priority: 0,
-                        conditions: [
-                            {
-                                parameterName: "attack",
-                                predicate: pc.ANIM_EQUAL_TO,
-                                value: 0
-                            },
-                            {
-                                parameterName: "speed",
-                                predicate: pc.ANIM_GREATER_THAN,
-                                value: 0.99
-                            }
-                        ]
-                    }
-
-
-
-
-                ]
-            }
-        ],
-        parameters: {
-            speed: {
-                name: "speed",
-                type: pc.ANIM_PARAMETER_FLOAT,
-                value: 0
-            },
-            attack: {
-                name: "attack",
-                type: pc.ANIM_PARAMETER_INTEGER,
-                value: 0
-            },
-            Jump: {
-                name: "Jump",
-                type: pc.ANIM_PARAMETER_BOOLEAN,
-                value: false
-            },
-            Grounded: {
-                name: "Grounded",
-                type: pc.ANIM_PARAMETER_BOOLEAN,
-                value: false
-            },
-            Fly: {
-                name: "Fly",
-                type: pc.ANIM_PARAMETER_BOOLEAN,
-                value: false
-            },
-            FreeFall: {
-                name: "FreeFall",
-                type: pc.ANIM_PARAMETER_BOOLEAN,
-                value: false
-            },
-            Swim: {
-                name: "Swim",
-                type: pc.ANIM_PARAMETER_BOOLEAN,
-                value: false
-            }
-
-
-
-        }
-    };
-
-
-
-    this.animPlayerStateGraphData = {
+    this._animStateGraphData = {
         layers: [
             {
                 name: "baseLayer",
@@ -2046,7 +1779,7 @@ Character.prototype.prepareAnimComponent = function () {
             if (animAttr[stateName]) {
                 animAttr[stateName].preload = true;
                 const stateLoop = !statesNoLoops.some(s => stateName.includes(s));
-                this.animPlayerStateGraphData.layers[0].states.push({ name: stateName, loop: stateLoop, assetId: animAttr[stateName].id });
+                this._animStateGraphData.layers[0].states.push({ name: stateName, loop: stateLoop, assetId: animAttr[stateName].id });
             }
         }
     }
@@ -2067,7 +1800,7 @@ Character.prototype.prepareAnimComponent = function () {
         var idles = Character.animation_idles;
         for (var i = 0; i < idles.length; i++) {
             if (this["animations_" + modeName][modeName + "_" + idles[i]]) {
-                this.animPlayerStateGraphData.layers[0].transitions.push({
+                this._animStateGraphData.layers[0].transitions.push({
                     from: "START",
                     to: modeName + "_" + idles[i],
                     time: 0.1,
@@ -2082,11 +1815,11 @@ Character.prototype.prepareAnimComponent = function () {
 
 
         for (var i = 0; i < idles.length; i++) {
-            const isStateAnim = this.animPlayerStateGraphData.layers[0].states.find(function (s) {
+            const isStateAnim = this._animStateGraphData.layers[0].states.find(function (s) {
                 return s.name === modeName + "_" + idles[i];
             });
             if (i !== 0 && isStateAnim) {
-                this.animPlayerStateGraphData.layers[0].transitions.push({
+                this._animStateGraphData.layers[0].transitions.push({
                     from: modeName + "_" + idles[i],
                     to: modeName + "_" + idles[i - 1],
                     time: 0.1,
@@ -2104,11 +1837,11 @@ Character.prototype.prepareAnimComponent = function () {
         if (this["animations_" + modeName][modeName + "_walking"]) {
 
             for (var i = 0; i < idles.length; i++) {
-                const isStateAnim = this.animPlayerStateGraphData.layers[0].states.find(function (s) {
+                const isStateAnim = this._animStateGraphData.layers[0].states.find(function (s) {
                     return s.name === modeName + "_" + idles[i];
                 });
                 if (isStateAnim) {
-                    this.animPlayerStateGraphData.layers[0].transitions.push(
+                    this._animStateGraphData.layers[0].transitions.push(
                         {
                             from: modeName + "_" + idles[i],
                             to: modeName + "_walking",
@@ -2138,7 +1871,7 @@ Character.prototype.prepareAnimComponent = function () {
 
             if (this["animations_" + modeName][modeName + "_walking_turn_180"]) {
 
-                this.animPlayerStateGraphData.layers[0].transitions.push(
+                this._animStateGraphData.layers[0].transitions.push(
                     {
                         from: "ANY",
                         to: modeName + "_walking_turn_180",
@@ -2185,7 +1918,7 @@ Character.prototype.prepareAnimComponent = function () {
         if (this["animations_" + modeName][modeName + "_running"]) {
             if (this["animations_" + modeName][modeName + "_walking"]) {
 
-                this.animPlayerStateGraphData.layers[0].transitions.push(
+                this._animStateGraphData.layers[0].transitions.push(
                     {
                         from: modeName + "_walking",
                         to: modeName + "_running",
@@ -2210,11 +1943,11 @@ Character.prototype.prepareAnimComponent = function () {
             }
 
             for (var i = 0; i < idles.length; i++) {
-                const isStateAnim = this.animPlayerStateGraphData.layers[0].states.find(function (s) {
+                const isStateAnim = this._animStateGraphData.layers[0].states.find(function (s) {
                     return s.name === modeName + "_" + idles[i];
                 });
                 if (isStateAnim) {
-                    this.animPlayerStateGraphData.layers[0].transitions.push(
+                    this._animStateGraphData.layers[0].transitions.push(
                         {
                             from: modeName + "_" + idles[i],
                             to: modeName + "_running",
@@ -2246,7 +1979,7 @@ Character.prototype.prepareAnimComponent = function () {
         /*IMPACT*/
         if (this["animations_" + modeName][modeName + "_impact_block"]) {
 
-            this.animPlayerStateGraphData.layers[0].transitions.push(
+            this._animStateGraphData.layers[0].transitions.push(
                 {
                     from: "ANY",
                     to: modeName + "_impact_block",
@@ -2273,7 +2006,7 @@ Character.prototype.prepareAnimComponent = function () {
         for (var i = 1; i < 3; i++) {
             if (this["animations_" + modeName][modeName + "_impact" + i]) {
 
-                this.animPlayerStateGraphData.layers[0].transitions.push(
+                this._animStateGraphData.layers[0].transitions.push(
                     {
                         from: "ANY",
                         to: modeName + "_impact" + i,
@@ -2302,7 +2035,7 @@ Character.prototype.prepareAnimComponent = function () {
         /*ONAIR*/
         if (this["animations_" + modeName][modeName + "_onair"]) {
 
-            this.animPlayerStateGraphData.layers[0].transitions.push(
+            this._animStateGraphData.layers[0].transitions.push(
                 {
                     from: "ANY",
                     to: modeName + "_onair",
@@ -2329,7 +2062,7 @@ Character.prototype.prepareAnimComponent = function () {
 
         if (this["animations_" + modeName][modeName + "_landing"]) {
 
-            this.animPlayerStateGraphData.layers[0].transitions.push(
+            this._animStateGraphData.layers[0].transitions.push(
                 {
                     from: "ANY",
                     to: modeName + "_landing",
@@ -2360,7 +2093,7 @@ Character.prototype.prepareAnimComponent = function () {
         /*IMPACT*/
         if (this["animations_" + modeName][modeName + "_impact_block"]) {
 
-            this.animPlayerStateGraphData.layers[0].transitions.push(
+            this._animStateGraphData.layers[0].transitions.push(
                 {
                     from: "ANY",
                     to: modeName + "_impact_block",
@@ -2389,7 +2122,7 @@ Character.prototype.prepareAnimComponent = function () {
 
         for (var i = 0; i < Character.animation_attack.length; i++) {
             if (this["animations_" + modeName][modeName + "_" + Character.animation_attack[i]]) {
-                this.animPlayerStateGraphData.layers[0].transitions.push(
+                this._animStateGraphData.layers[0].transitions.push(
                     {
                         from: "ANY",
                         to: modeName + "_" + Character.animation_attack[i],
@@ -2427,6 +2160,14 @@ Character.prototype.prepareAnimComponent = function () {
     for (; m < animation_modes_length; m++) {
         const modeName = Character.animation_modes[m];
         const afterModeName = Character.animation_modes[m + 1];
+        /* el último modo no tiene sucesor: sin este guard, animations_undefined
+           lanza TypeError si ese modo tiene algún clip asignado */
+        if (!afterModeName) continue;
+        /* el modo ONAIR maneja sus propias entradas/retornos (ver bloque
+           AIR MODE); no participa del encadenado por pares para no duplicar
+           un onair_idle<->_idle sin condición de speed que competiría con el
+           retorno a walk/run */
+        if (m === CharacterLocomotionModeEnum.ONAIR || (m + 1) === CharacterLocomotionModeEnum.ONAIR) continue;
 
         const animAttr = this["animations_" + modeName], keys = Object.keys(animAttr), keys_length = keys.length;
         var i = 0;
@@ -2434,7 +2175,7 @@ Character.prototype.prepareAnimComponent = function () {
             const stateName = (keys[i] || "").replace(modeName + "_", "");
             if (this["animations_" + modeName][modeName + "_" + stateName] && this["animations_" + afterModeName][afterModeName + "_" + stateName]) {
 
-                this.animPlayerStateGraphData.layers[0].transitions.push(
+                this._animStateGraphData.layers[0].transitions.push(
                     {
                         from: modeName + "_" + stateName,
                         to: afterModeName + "_" + stateName,
@@ -2466,17 +2207,93 @@ Character.prototype.prepareAnimComponent = function () {
 
 
 
+    /***************************************************** */
+    /* AIR MODE (ONAIR) TRANSITIONS                        */
+    /***************************************************** */
+    /* El modo ONAIR (salto/caída) usa como pose de aire el estado <onair>_idle.
+       Se ENTRA desde CUALQUIER estado en cuanto mode==ONAIR (independiente de la
+       velocidad, así saltar corriendo corta walk/run al instante), y se RETORNA
+       al modo de arma al aterrizar (mode vuelve a su valor) hacia idle/walk/run
+       según speed, para no meter un frame de idle si se aterriza en movimiento.
+       Requiere tener asignado el clip "onair_idle". */
+    const airModeName = Character.animation_modes[CharacterLocomotionModeEnum.ONAIR];
+    const airIdleState = airModeName + "_idle";
+    const graphStates = this._animStateGraphData.layers[0].states;
+    const hasGraphState = function (n) {
+        return graphStates.some(function (s) { return s.name === n; });
+    };
+
+    if (hasGraphState(airIdleState)) {
+        /* ENTRADA: cualquier estado -> pose de aire cuando mode==ONAIR */
+        this._animStateGraphData.layers[0].transitions.push({
+            from: "ANY",
+            to: airIdleState,
+            time: 0.12,
+            priority: 0,
+            conditions: [
+                { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: CharacterLocomotionModeEnum.ONAIR }
+            ]
+        });
+
+        /* RETORNO: al salir del modo ONAIR (aterrizaje) hacia el modo de arma.
+           Rangos de speed mutuamente excluyentes: idle < 0.01, walking [0.01,0.99],
+           running > 0.99. */
+        for (var wm = 0; wm < animation_modes_length; wm++) {
+            if (wm === CharacterLocomotionModeEnum.ONAIR) continue;
+            const wModeName = Character.animation_modes[wm];
+
+            if (hasGraphState(wModeName + "_idle")) {
+                this._animStateGraphData.layers[0].transitions.push({
+                    from: airIdleState,
+                    to: wModeName + "_idle",
+                    time: 0.15,
+                    priority: 0,
+                    conditions: [
+                        { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: wm },
+                        { parameterName: "speed", predicate: pc.ANIM_LESS_THAN, value: 0.01 }
+                    ]
+                });
+            }
+            if (hasGraphState(wModeName + "_walking")) {
+                this._animStateGraphData.layers[0].transitions.push({
+                    from: airIdleState,
+                    to: wModeName + "_walking",
+                    time: 0.15,
+                    priority: 0,
+                    conditions: [
+                        { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: wm },
+                        { parameterName: "speed", predicate: pc.ANIM_GREATER_THAN_EQUAL_TO, value: 0.01 },
+                        { parameterName: "speed", predicate: pc.ANIM_LESS_THAN_EQUAL_TO, value: 0.99 }
+                    ]
+                });
+            }
+            if (hasGraphState(wModeName + "_running")) {
+                this._animStateGraphData.layers[0].transitions.push({
+                    from: airIdleState,
+                    to: wModeName + "_running",
+                    time: 0.15,
+                    priority: 0,
+                    conditions: [
+                        { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: wm },
+                        { parameterName: "speed", predicate: pc.ANIM_GREATER_THAN, value: 0.99 }
+                    ]
+                });
+            }
+        }
+    }
+
+
     // add an anim component to the entity
     this.entity.addComponent("anim", {
         activate: true,
         rootBone: this.playerAnimationsOptions.hips && this.playerAnimationsOptions.hips
     });
 
-    this.entity.anim.loadStateGraph(this.animPlayerStateGraphData);
+    this.entity.anim.loadStateGraph(this._animStateGraphData);
 
 
     const locomotionLayer = this.entity.anim.baseLayer,
-        states = this.animPlayerStateGraphData.layers[0].states,
+        states = this._animStateGraphData.layers[0].states,
         states_length = states.length;
     var i = 0;
     for (; i < states_length; i++) {
