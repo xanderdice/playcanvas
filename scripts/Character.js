@@ -471,8 +471,18 @@ Character.prototype.initialize = function () {
         this.renderCharacterComponent.rootBone = this.bones.hips;
     }
 
+    /* TEMPLATE (hijo con render/armature): se resuelve aquí porque el height se
+       deriva de SU AABB, y el giro de más abajo reutiliza esta misma referencia. */
+    this._templateEntity = this._resolveTemplateEntity();
 
-    this.characterHeight = getTotalHeight(this.entity) || 2;
+    /* HEIGHT: extensión en Y del AABB (world) del subárbol del TEMPLATE, que es el
+       modelo visible. Se basa en el template para no inflar la altura con hijos
+       ajenos de la cápsula (cápsula de debug, props sujetos, etc.). Cae a toda la
+       jerarquía si el template no diera meshes, y a 2 m como último recurso. */
+    this.characterHeight =
+        (this._templateEntity && getTotalHeight(this._templateEntity)) ||
+        getTotalHeight(this.entity) ||
+        2;
     this.characterRadius = 0.5;
 
     if (!this.entity.collision) {
@@ -642,12 +652,13 @@ Character.prototype.initialize = function () {
      * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
     this._qYaw = new pc.Quat();            // rotación de yaw (world Y) a aplicar
     this._qTemplateTarget = new pc.Quat(); // rotación world objetivo del template
-    this._templateEntity = this._resolveTemplateEntity();
+    /* this._templateEntity ya se resolvió arriba (para el height) */
 
     if (this._templateEntity) {
         this._templateWorldBase = this._templateEntity.getRotation().clone();
         this._templateBaseScale = this._templateEntity.getLocalScale().clone();
         this._templateYaw = 0;
+        this._templateYawApplied = 0;   // último yaw efectivamente escrito (dedupe)
 
         /* Referencia = orientación horizontal INICIAL de la cápsula. Reproducimos
            sobre el template el mismo yaw absoluto que la cápsula habría aplicado,
@@ -762,8 +773,10 @@ Character.prototype.initialize = function () {
 
         return mass;
     }
-    // Calcula la altura total (eje Y) de una entidad y todos sus hijos
+    // Altura (extensión en Y) del AABB world combinado de una entidad y sus hijos.
+    // Devuelve 0 si el subárbol no tiene meshes (el llamador decide el fallback).
     function getTotalHeight(entity) {
+        if (!entity) return 0;
         // 1. Crear un bounding box vacío
         const combinedAABB = new pc.BoundingBox();
         let first = true;
@@ -795,11 +808,8 @@ Character.prototype.initialize = function () {
 
         collectMeshInstances(entity);
 
-        // 3. Extraer altura (extensión total en Y)
-        if (first) {
-            console.warn("No se encontraron meshInstances en la jerarquía");
-            return 0;
-        }
+        // 3. Extraer altura (extensión total en Y); 0 si no hubo meshes
+        if (first) return 0;
         const height = combinedAABB.halfExtents.y * 2 <= 0.1 ? 0 : combinedAABB.halfExtents.y * 2;
         return height;
     }
@@ -1260,7 +1270,14 @@ Character.prototype.doMove = function () {
             const rate = pc.math.clamp(delta * turnSpeed, -maxTurnSpeed, maxTurnSpeed);
             this._templateYaw += rate * dt;
         }
-        this._applyTemplateRotation();
+        /* PERF (multitudes): re-escribir la rotación solo si el yaw cambió de forma
+           perceptible desde la última vez. En idle o ya encarado no se toca el
+           transform (evita setRotation/setLocalScale y el re-sync de la jerarquía
+           por frame en miles de instancias). */
+        if (Math.abs(this._templateYaw - this._templateYawApplied) > 1e-5) {
+            this._applyTemplateRotation();
+            this._templateYawApplied = this._templateYaw;
+        }
     } else if (hasFaceDir) {
         /* Fallback sin template: rotación por física sobre la cápsula (original). */
         const forward = this._vForward.copy(this.entity.forward);
@@ -1328,7 +1345,7 @@ Character.prototype.doCarryWeapons = function () {
 
 
 
-            if ((this.carryWeapons.leftHandWeaponEntity._guid || "0") !== (this.carryWeapons.leftHandWeaponEntityOld || {})._guid) {
+            if ((this.carryWeapons.leftHandWeaponEntity._guid || "0") !== this.carryWeapons.leftHandWeaponEntityOld?._guid) {
                 this.entity.attackSystem.leftHandWeaponRigidBody = this.carryWeapons.leftHandWeaponEntity.findComponent("rigidbody");
                 setDefRigidBodyValues(this.entity.attackSystem.leftHandWeaponRigidBody);
                 var col = this.carryWeapons.leftHandWeaponEntity.findComponent("collision");
@@ -1360,7 +1377,7 @@ Character.prototype.doCarryWeapons = function () {
             this.carryWeapons.rightHandWeaponEntity.setPosition(this.bones.rightHand.getPosition());
             this.carryWeapons.rightHandWeaponEntity.setRotation(this.bones.rightHand.getRotation());
 
-            if ((this.carryWeapons.rightHandWeaponEntity._guid || "0") !== (this.carryWeapons.rightHandWeaponEntityOld || {})._guid) {
+            if ((this.carryWeapons.rightHandWeaponEntity._guid || "0") !== this.carryWeapons.rightHandWeaponEntityOld?._guid) {
 
                 var r = this.carryWeapons.rightHandWeaponEntity.findComponent("render");
                 if (r) {
