@@ -253,6 +253,23 @@ Character.attributes.add("attackSystem",
     });
 
 
+Character.attributes.add("health",
+    {
+        title: "health",
+        type: "json",
+        schema: [
+            {
+                name: "max",
+                type: "number",
+                default: 100,
+                min: 1,
+                title: "max",
+                description: "Vida maxima del personaje. Al llegar a 0 se dispara la animacion de muerte."
+            }
+        ]
+    });
+
+
 /* ONAIR = modo de locomoción "en el aire" (salto). Va en el ÍNDICE 1, contiguo
    a UNARMED, para que el armado de transiciones entre modos contiguos genere
    directamente unarmed<->onair. El VALOR del modo debe coincidir con su índice
@@ -444,7 +461,19 @@ Character.prototype.initialize = function () {
         attackInputOld: false,
         canDoAttack: true,
         __elapsedTime: 0,
+        leftHandWeaponScript: null,
+        rightHandWeaponScript: null,
     };
+
+    /* VIDA / DAÑO: el personaje es "damagable". El arma (weapon.js) le hace daño
+       disparando el evento "damage" sobre esta entidad; _onReceiveDamage lo aplica. */
+    this.entity.tags.add("is-damageable");
+    this.entity.health = {
+        max: this.health.max,
+        current: this.health.max,
+        alive: true
+    };
+    this.entity.on("damage", this._onReceiveDamage, this);
 
 
     if (!this.bones.hips && this.bones.autodetectFromMixamoArmature) {
@@ -491,7 +520,9 @@ Character.prototype.initialize = function () {
         this.entity.addComponent("collision", {
             type: "capsule",
             radius: this.characterRadius,
-            height: this.characterHeight
+            height: this.characterHeight,
+            sides: 4,
+            heightSegments: 1
         });
     }
     /* SIEMPRE registrar los eventos (aunque la collision venga creada desde el editor):
@@ -514,7 +545,9 @@ Character.prototype.initialize = function () {
 
         const capsuleMesh = pc.Mesh.fromGeometry(this.app.graphicsDevice, new pc.CapsuleGeometry({
             radius: this.characterRadius,
-            height: this.characterHeight
+            height: this.characterHeight,
+            sides: 4,
+            heightSegments: 1
         }));
 
         const meshInstance = new pc.MeshInstance(capsuleMesh, transparentMaterial);
@@ -593,7 +626,7 @@ Character.prototype.initialize = function () {
             linearDamping: 0.0,     // Amortiguación lineal
             angularDamping: 0.0,    // Amortiguación angular
             linearFactor: new pc.Vec3(1, linearYfactor, 1),  // Permitir movimiento en los ejes X y Z, pero no en el eje Y
-            angularFactor: new pc.Vec3(0, 1, 0)
+            angularFactor: new pc.Vec3(0, 0, 0)
         });
     }
 
@@ -1315,6 +1348,11 @@ Character.prototype.doMove = function () {
         this.entity.anim.setInteger("onair", +(this.entity.isonair));
         this.entity.anim.setInteger("impact", input.impact ? Math.floor(Math.random() * 2) + 1 : 0);
         this.entity.anim.setInteger("death", input.death ? Math.floor(Math.random() * 2) + 1 : 0);
+
+        /* one-shot: consumir el pulso para que impact/death disparen una sola
+           transicion (ANY -> impact/death) y no se re-lancen cada frame. */
+        if (input.impact) input.impact = false;
+        if (input.death) input.death = false;
     }
 
     this.doAttackSystem(input);
@@ -1348,24 +1386,14 @@ Character.prototype.doCarryWeapons = function () {
             if ((this.carryWeapons.leftHandWeaponEntity._guid || "0") !== this.carryWeapons.leftHandWeaponEntityOld?._guid) {
                 this.entity.attackSystem.leftHandWeaponRigidBody = this.carryWeapons.leftHandWeaponEntity.findComponent("rigidbody");
                 setDefRigidBodyValues(this.entity.attackSystem.leftHandWeaponRigidBody);
-                var col = this.carryWeapons.leftHandWeaponEntity.findComponent("collision");
-                if (col) {
-                    col.entity.tags.add("is-taken");
-                    col.on("triggerenter", this.onCollisionStartLeftWeapon, this);
-                    col.on("triggerleave", this.onCollisionEndLeftWeapon, this);
-                }
+                this._equipWeaponScript(this.carryWeapons.leftHandWeaponEntity, "left");
             }
 
         } else {
             if (this.carryWeapons.leftHandWeaponEntityOld) {
                 /*QUITAR COLISIONES*/
                 this.entity.attackSystem.leftHandWeaponRigidBody = null;
-                var col = this.carryWeapons.leftHandWeaponEntityOld.findComponent("collision");
-                if (col) {
-                    col.entity.tags.remove("is-taken");
-                    col.off("triggerenter", this.onCollisionStartLeftWeapon);
-                    col.off("triggerleave", this.onCollisionEndLeftWeapon);
-                }
+                this._unequipWeaponScript(this.carryWeapons.leftHandWeaponEntityOld, "left");
             }
         }
 
@@ -1390,34 +1418,92 @@ Character.prototype.doCarryWeapons = function () {
 
                 this.entity.attackSystem.rightHandWeaponRigidBody = this.carryWeapons.rightHandWeaponEntity.findComponent("rigidbody");
                 setDefRigidBodyValues(this.entity.attackSystem.rightHandWeaponRigidBody);
-                var col = this.carryWeapons.rightHandWeaponEntity.findComponent("collision");
-                if (col) {
-                    col.entity.tags.add("is-taken");
-                    col.on("triggerenter", this.onCollisionStartRightWeapon, this);
-                    col.on("triggerleave", this.onCollisionEndRightWeapon, this);
-                }
+                this._equipWeaponScript(this.carryWeapons.rightHandWeaponEntity, "right");
             }
         } else {
             if (this.carryWeapons.rightHandWeaponEntityOld) {
                 /*QUITAR COLISIONES*/
                 this.entity.attackSystem.rightHandWeaponRigidBody = null;
-                var col = this.carryWeapons.rightHandWeaponEntityOld.findComponent("collision");
-                if (col) {
-                    col.entity.tags.remove("is-taken");
-                    col.off("triggerenter", this.onCollisionStartRightWeapon);
-                    col.off("triggerleave", this.onCollisionEndRightWeapon);
-                }
+                this._unequipWeaponScript(this.carryWeapons.rightHandWeaponEntityOld, "right");
             }
         }
         this.carryWeapons.rightHandWeaponEntityOld = this.carryWeapons.rightHandWeaponEntity;
     }
 }
 
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ *  INTEGRACION CON weapon.js
+ *  El arma (script "weapon") gestiona SU PROPIA collision y detecta golpes.
+ *  Character solo: (a) le dice quien es su portador (para que no lo dañe) y
+ *  (b) abre/cierra la ventana de daño segun la animacion de ataque.
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+/* Cablea el arma recien equipada: cachea su script y le fija el portador. */
+Character.prototype._equipWeaponScript = function (weaponEntity, hand) {
+    if (!weaponEntity) return;
+    weaponEntity.tags.add("is-taken");
+
+    var ws = (weaponEntity.script && weaponEntity.script.weapon) || null;
+    this.entity.attackSystem[hand + "HandWeaponScript"] = ws;
+
+    if (ws) {
+        ws.setOwner(this.entity);            // el arma no daña a quien la empuña
+    } else {
+        console.warn('[character] La entidad de arma no tiene el script "weapon"; no habra daño real.');
+    }
+};
+
+/* Suelta el arma: corta su ventana de daño y limpia el portador/cache. */
+Character.prototype._unequipWeaponScript = function (weaponEntity, hand) {
+    this.entity.attackSystem[hand + "HandWeaponScript"] = null;
+    if (!weaponEntity) return;
+
+    weaponEntity.tags.remove("is-taken");
+    var ws = (weaponEntity.script && weaponEntity.script.weapon) || null;
+    if (ws) {
+        ws.endDamage();
+        ws.setOwner(null);
+    }
+};
+
+/* Abre (on=true) o cierra (on=false) la ventana de daño de las armas equipadas.
+   Lo llaman los eventos de animacion del ataque (ver prepareAnimComponent). */
+Character.prototype._setWeaponsDamaging = function (on) {
+    var as = this.entity.attackSystem;
+    var l = as.leftHandWeaponScript;
+    var r = as.rightHandWeaponScript;
+    if (l) { if (on) l.startDamage(); else l.endDamage(); }
+    if (r) { if (on) r.startDamage(); else r.endDamage(); }
+};
+
+/* Recibe el evento "damage" que dispara weapon.js sobre esta entidad. */
+Character.prototype._onReceiveDamage = function (amount, attacker, weaponEntity) {
+    this.applyDamage(amount, attacker);
+};
+
+/* Aplica daño a la vida y dispara la reaccion (impact / death). */
+Character.prototype.applyDamage = function (amount, attacker) {
+    var h = this.entity.health;
+    if (!h || !h.alive) return;
+
+    h.current = Math.max(0, h.current - (amount || 0));
+
+    if (h.current <= 0) {
+        h.alive = false;
+        this.entity.input.death = true;    // one-shot: se consume en doMove
+    } else {
+        this.entity.input.impact = true;   // one-shot: se consume en doMove
+    }
+};
+
 /* LIMPIEZA. Cubre los dos casos: destruir la cápsula (entidad) o quitar solo el
    script. Todo lo que este script crea/engancha debe soltarse aquí para no dejar
    entidades huérfanas ni callbacks colgando que referencien un script muerto. */
 Character.prototype._onDestroy = function () {
     var entity = this.entity;
+
+    /* listener del evento de daño (weapon.js) */
+    if (entity) entity.off("damage", this._onReceiveDamage, this);
 
     /* contactos de la cápsula (por si la entidad sobrevive al script) */
     if (entity && entity.collision) {
@@ -2380,19 +2466,22 @@ Character.prototype.prepareAnimComponent = function () {
 
     this.entity.anim.on("attack-end-animation", function (e) {
         this.entity.attackSystem.status = CharacterAttackSystemStatusEnum.NONE;
+        this._setWeaponsDamaging(false);   // seguridad: cerrar ventana al terminar
     }, this);
 
     this.entity.anim.on("attack-start-damage-animation", function (e) {
         if (this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
             this.entity.attackSystem.status = CharacterAttackSystemStatusEnum.DAMAGING;
+            this._setWeaponsDamaging(true);   // ABRE ventana de daño del arma
         }
     }, this);
 
     this.entity.anim.on("attack-end-damage-animation", function (e) {
         if (this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
             this.entity.attackSystem.status = CharacterAttackSystemStatusEnum.ENDING;
+            this._setWeaponsDamaging(false);  // CIERRA ventana de daño del arma
         }
-    }, this); 
+    }, this);
 
 
 };
