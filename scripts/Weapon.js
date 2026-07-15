@@ -92,8 +92,9 @@ Weapon.prototype.initialize = function () {
         /* fallback si el arma tuviera rigidbody (firma distinta: result.other) */
         col.on('collisionstart', this._onCollisionStart, this);
         col.on('collisionend', this._onCollisionEnd, this);
+        this.entity.tags.add("ignore-camera-collision");
     } else {
-        console.warn('[weapon] Sin componente collision; el arma no detectara golpes.');
+
     }
 
     this.on('destroy', this._onDestroy, this);
@@ -135,10 +136,6 @@ Weapon.prototype._ensureCollision = function () {
         linearOffset: offset
     });
 
-    if (this.debug) {
-        console.log('[weapon] collision creada he=', halfExtents.toString(),
-            'offset=', offset.toString(), this._fitPending ? '(fit pendiente)' : '');
-    }
 };
 
 /* Recalcula halfExtents/linearOffset desde el AABB actual. Publico: util si el
@@ -231,13 +228,13 @@ Weapon.prototype.startDamage = function () {
     }
 
     this.fire('startdamage');
-    if (this.debug) console.log('[weapon] startDamage');
+
 };
 
 Weapon.prototype.endDamage = function () {
     this._damaging = false;
     this.fire('enddamage');
-    if (this.debug) console.log('[weapon] endDamage');
+
 };
 
 Weapon.prototype.isDamaging = function () {
@@ -300,8 +297,6 @@ Weapon.prototype._dealDamage = function (other) {
 
     /* 3) evento en el arma por si algo externo quiere reaccionar al golpe */
     this.fire('hit', other, this.damage, this._owner);
-
-    if (this.debug) console.log('[weapon] hit ->', other.name, '+' + this.damage, '(total', other.damageTaken + ')');
 };
 
 
@@ -315,10 +310,10 @@ Weapon.prototype.update = function (dt) {
     this._fitAttempts++;
     if (this.refitCollision()) {
         this._fitPending = false;
-        if (this.debug) console.log('[weapon] collision ajustada al AABB (diferido).');
+
     } else if (this._fitAttempts > 180) {
         this._fitPending = false;  // rendirse tras ~3s a 60fps
-        console.warn('[weapon] no se pudo ajustar la collision al AABB (¿modelo sin cargar?).');
+
     }
 };
 

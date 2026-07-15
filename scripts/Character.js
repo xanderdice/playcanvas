@@ -159,8 +159,11 @@ Character.attributes.add("playerAnimationsOptions",
         type: "json",
         schema: [
             {
-                name: "motionrootmode",
-                title: "Motion root mode",
+                name: "global",
+                title: "Motion Root (global)",
+                description: "Modo de motion root GLOBAL. Si se pone en 'none', cada animacion " +
+                    "usa su propio selector (Motion Root <mode>); con cualquier otro valor, ese " +
+                    "valor manda sobre TODAS las animaciones (comportamiento actual).",
                 type: "string", enum: [
                     { "in_place_all_axis": "in_place_all_axis" },
                     { "in_place_z_axis": "in_place_z_axis" },
@@ -355,6 +358,44 @@ for (var a_s = 0; a_s < Character.animation_modes.length; a_s++) {
                 schema: statesSchema
             }
         );
+
+        /* MOTION ROOT POR-ANIMACIÓN: un selector por cada animación (mismo nombre
+           que en animations_<mode>). SOLO se usan estos valores cuando el global
+           (playerAnimationsOptions.global) está en "none"; con cualquier otro valor
+           global, todas las animaciones usan el global y esto se ignora.
+             - none     : no hace NADA (la animación se reproduce tal cual está)
+             - teleport : no toca la animación, pero la cápsula del rigidbody
+                          ACOMPAÑA al render/template (atributo templateEntity)
+             - x/y/z y combinaciones (zx, zy, yx, zxy): extrae el desplazamiento
+               de hips en ESOS ejes (locales del rig) y lo aplica a la cápsula;
+               en los ejes extraídos, hips queda fijado (el mesh no se mueve dos
+               veces); los ejes NO seleccionados se reproducen tal cual. */
+        var motionSchema = [];
+        for (var ms = 0; ms < statesSchema.length; ms++) {
+            motionSchema.push({
+                name: statesSchema[ms].name,
+                type: "string",
+                enum: [
+                    { "none": "none" },
+                    { "teleport": "teleport" },
+                    { "x": "x" },
+                    { "y": "y" },
+                    { "z": "z" },
+                    { "zx": "zx" },
+                    { "zy": "zy" },
+                    { "yx": "yx" },
+                    { "zxy": "zxy" }
+                ],
+                default: "none"
+            });
+        }
+        Character.attributes.add("animMotion_" + modeName,
+            {
+                title: "Motion Root " + modeName,
+                type: "json",
+                schema: motionSchema
+            }
+        );
     }
 
 }
@@ -495,7 +536,7 @@ Character.prototype.initialize = function () {
     if (this.bones.hips) {
         this.playerAnimationsOptions.startPosition = this.bones.hips.getLocalPosition().clone();
     }
-    this._motionRootMode = this.playerAnimationsOptions.motionrootmode;
+    this._motionRootMode = this.playerAnimationsOptions.global;
     if (this.renderCharacterComponent) {
         this.renderCharacterComponent.rootBone = this.bones.hips;
     }
@@ -675,6 +716,18 @@ Character.prototype.initialize = function () {
     this._qHipsRot = new pc.Quat();        // rotación local de hips (rootMotionFix)
     this._vJump = new pc.Vec3();           // velocidad lineal al saltar
 
+    /* ROOT MOTION (por-animación): extracción del desplazamiento de hips para
+       trasladar la cápsula. Estado persistente entre frames. */
+    this._vRootPrev = new pc.Vec3();       // pose local de hips del frame anterior
+    this._vRootDelta = new pc.Vec3();      // delta local de hips este frame (crudo, para el guard)
+    this._vRootSel = new pc.Vec3();        // delta local FILTRADO por ejes seleccionados
+    this._vRootWorld = new pc.Vec3();      // delta convertido a mundo
+    this._vRootPos = new pc.Vec3();        // posición destino de la cápsula
+    this._vTplPos = new pc.Vec3();         // compensación del template (modo teleport)
+    this._teleportShifted = false;         // el template tiene compensación acumulada
+    this._rootMotionState = null;          // último estado de anim muestreado
+    this._rootMotionPrimed = false;        // ya hay un frame previo válido
+
     /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
      *  GIRO DEL TEMPLATE (hijo con render/armature), NO de la cápsula.
      *  Se toma la rotación y escala ACTUALES del template como baseline/punto de
@@ -690,6 +743,9 @@ Character.prototype.initialize = function () {
     if (this._templateEntity) {
         this._templateWorldBase = this._templateEntity.getRotation().clone();
         this._templateBaseScale = this._templateEntity.getLocalScale().clone();
+        /* posición local de reposo del template: el modo teleport la desplaza para
+           compensar el movimiento de la cápsula y debe poder restaurarla */
+        this._templateBaseLocalPos = this._templateEntity.getLocalPosition().clone();
         this._templateYaw = 0;
         this._templateYawApplied = 0;   // último yaw efectivamente escrito (dedupe)
 
@@ -1774,34 +1830,231 @@ Character.prototype.postUpdate = function (dt) {
 }
 
 Character.prototype.rootMotionFix = function () {
+    var hips = this.bones.hips;
+    if (!hips) return;
 
+    /* estado de anim que se está reproduciendo AHORA (p.ej. "unarmed_attack1") */
+    var stateName = (this.entity.anim && this.entity.anim.baseLayer)
+        ? this.entity.anim.baseLayer.activeState
+        : null;
 
+    /* modo de motion root de ESA animación (o el global si no está en "none") */
+    var mode = this._resolveMotionMode(stateName);
 
-    /*root motion FIX*/
-    if (this._motionRootMode === "in_place_z_axis") {
-        if (this.bones.hips) {
-            var vecpos = this.bones.hips.getLocalPosition();
-            this._vHipsPos.set(vecpos.x, vecpos.y, this.playerAnimationsOptions.startPosition.z ?? 0);
-            this.bones.hips.setLocalPosition(this._vHipsPos);
+    /* cambio de estado -> reiniciar el muestreo de root motion (evita saltos) y
+       restaurar la compensación del template si el estado anterior era teleport */
+    if (stateName !== this._rootMotionState) {
+        this._rootMotionState = stateName;
+        this._rootMotionPrimed = false;
+        this._restoreTemplateOffset();
+    }
 
-            const isTurning180 = this.entity.anim.getInteger("turn180") !== 0;
-            if (isTurning180) {
-                var vecrot = this.bones.hips.getLocalRotation();
-                this._qHipsRot.set(vecrot.x, 0, vecrot.z, vecrot.w);
-                this.bones.hips.setLocalRotation(this._qHipsRot);
-            }
+    var sp = this.playerAnimationsOptions.startPosition;
 
+    /* ---- legacy del GLOBAL (in_place_*): comportamiento original intacto ---- */
+    if (mode === "in_place_all") {
+        if (sp) hips.setLocalPosition(sp);
+        this._rootMotionPrimed = false;
+        return;
+    }
+
+    if (mode === "in_place_z") {
+        var vecpos = hips.getLocalPosition();
+        this._vHipsPos.set(vecpos.x, vecpos.y, (sp && sp.z) ?? 0);
+        hips.setLocalPosition(this._vHipsPos);
+
+        const isTurning180 = this.entity.anim.getInteger("turn180") !== 0;
+        if (isTurning180) {
+            var vecrot = hips.getLocalRotation();
+            this._qHipsRot.set(vecrot.x, 0, vecrot.z, vecrot.w);
+            hips.setLocalRotation(this._qHipsRot);
+        }
+        this._rootMotionPrimed = false;
+        return;
+    }
+
+    /* ---- modos nuevos ---- */
+    if (mode === "teleport") {
+        this._applyTeleportFollow(hips);
+        return;
+    }
+
+    if (mode !== "none") {
+        /* combinaciones de ejes: x, y, z, zx, zy, yx, zxy */
+        this._applyRootMotion(hips, mode);
+        return;
+    }
+
+    /* mode === "none": NO se hace nada (ni hips, ni cápsula, ni template) */
+    this._rootMotionPrimed = false;
+    this._restoreTemplateOffset();
+}
+
+/* Traduce el valor GLOBAL (playerAnimationsOptions.global) al vocabulario interno
+   de rootMotionFix. El global se mantiene con su enum original. */
+Character.prototype._globalToPerAnim = function (globalMode) {
+    switch (globalMode) {
+        case "in_place_all_axis": return "in_place_all";
+        case "in_place_z_axis": return "in_place_z";
+        case "teleport": return "teleport";
+        case "none": return "none";
+        default: return "in_place_z";
+    }
+};
+
+/* Resuelve el modo de motion root para el estado de anim en curso.
+   Regla: si el GLOBAL está en "none", cada animación usa su propio selector
+   (animMotion_<mode>[stateName]); con cualquier otro valor global, ese valor
+   manda sobre TODAS las animaciones (lo que se venía haciendo). */
+Character.prototype._resolveMotionMode = function (stateName) {
+    var globalMode = this.playerAnimationsOptions.global;
+
+    /* global != "none": el global manda sobre todas las animaciones */
+    if (globalMode !== "none") {
+        return this._globalToPerAnim(globalMode);
+    }
+
+    /* global == "none": tomar el selector de ESTA animación */
+    var mode = null;
+    if (stateName) {
+        for (var i = 0; i < Character.animation_modes.length; i++) {
+            var tbl = this["animMotion_" + Character.animation_modes[i]];
+            if (tbl && tbl[stateName]) { mode = tbl[stateName]; break; }
         }
     }
-    if (this._motionRootMode === "in_place_all_axis") {
-        this.bones.hips?.setLocalPosition(this.playerAnimationsOptions.startPosition);
+
+    /* animación sin entrada en la tabla (p.ej. estado transitorio): none */
+    return mode || "none";
+};
+
+/* Muestrea el delta LOCAL de hips entre frames (pose animada cruda) y lo deja en
+   this._vRootDelta, con su conversión a mundo en this._vRootWorld. Devuelve:
+     false -> frame no utilizable (primer frame del estado o wrap del loop)
+     true  -> _vRootDelta/_vRootWorld válidos
+   El guard de wrap se evalúa en MUNDO (escala-independiente): >0.5 m en
+   cualquier eje = el clip se reinició y hips saltó al inicio. */
+Character.prototype._sampleHipsDelta = function (hips) {
+    var cur = hips.getLocalPosition();
+
+    /* primer frame del estado: solo cebar el "previo", sin mover nada */
+    if (!this._rootMotionPrimed) {
+        this._vRootPrev.copy(cur);
+        this._rootMotionPrimed = true;
+        return false;
     }
 
-    /* si el atributo motionrootmode cambia en runtime, resincronizar */
-    if (this._motionRootMode !== this.playerAnimationsOptions.motionrootmode) {
-        this.bones.hips?.setLocalPosition(this.playerAnimationsOptions.startPosition);
-        this._motionRootMode = this.playerAnimationsOptions.motionrootmode;
+    this._vRootDelta.set(cur.x - this._vRootPrev.x, cur.y - this._vRootPrev.y, cur.z - this._vRootPrev.z);
+    this._vRootPrev.copy(cur);
+
+    /* local -> mundo con el transform del PADRE de hips (incluye rotación de
+       encare del template y la escala del rig, p.ej. 0.01 de Mixamo) */
+    var parent = hips.parent || this.entity;
+    parent.getWorldTransform().transformVector(this._vRootDelta, this._vRootWorld);
+
+    if (Math.abs(this._vRootWorld.x) > 0.5 ||
+        Math.abs(this._vRootWorld.y) > 0.5 ||
+        Math.abs(this._vRootWorld.z) > 0.5) {
+        return false;
     }
+    return true;
+};
+
+/* ROOT MOTION por combinación de ejes: "x","y","z","zx","zy","yx","zxy".
+   Extrae el desplazamiento de hips SOLO en los ejes seleccionados (ejes LOCALES
+   del rig, tal como está autorada la animación), lo convierte a mundo y mueve
+   la CÁPSULA (rigidbody.teleport). En los ejes extraídos, hips se re-fija a su
+   posición de reposo para que el mesh no se desplace dos veces; los ejes NO
+   seleccionados quedan animados tal cual. */
+Character.prototype._applyRootMotion = function (hips, mode) {
+    var useX = mode.indexOf("x") !== -1;
+    var useY = mode.indexOf("y") !== -1;
+    var useZ = mode.indexOf("z") !== -1;
+
+    if (!this._sampleHipsDelta(hips)) {
+        /* frame no utilizable (prime/wrap): solo mantener el mesh estable */
+        this._pinHipsAxes(hips, useX, useY, useZ);
+        return;
+    }
+
+    /* filtrar el delta por ejes EN LOCAL (los ejes del rig: z = adelante del
+       personaje aunque esté girado) y convertir SOLO lo filtrado a mundo */
+    this._vRootSel.set(
+        useX ? this._vRootDelta.x : 0,
+        useY ? this._vRootDelta.y : 0,
+        useZ ? this._vRootDelta.z : 0
+    );
+    var parent = hips.parent || this.entity;
+    parent.getWorldTransform().transformVector(this._vRootSel, this._vRootWorld);
+
+    if (this.entity.rigidbody &&
+        (this._vRootWorld.x !== 0 || this._vRootWorld.y !== 0 || this._vRootWorld.z !== 0)) {
+        var p = this.entity.getPosition();
+        this._vRootPos.set(p.x + this._vRootWorld.x, p.y + this._vRootWorld.y, p.z + this._vRootWorld.z);
+        this.entity.rigidbody.teleport(this._vRootPos);
+    }
+
+    this._pinHipsAxes(hips, useX, useY, useZ);
+}
+
+/* Re-fija hips a su posición de reposo SOLO en los ejes indicados (los demás
+   conservan la pose animada). El desplazamiento extraído lo lleva la cápsula. */
+Character.prototype._pinHipsAxes = function (hips, useX, useY, useZ) {
+    var sp = this.playerAnimationsOptions.startPosition;
+    if (!sp) return;
+    var lp = hips.getLocalPosition();
+    this._vHipsPos.set(useX ? sp.x : lp.x, useY ? sp.y : lp.y, useZ ? sp.z : lp.z);
+    hips.setLocalPosition(this._vHipsPos);
+}
+
+/* TELEPORT: la animación se reproduce TAL CUAL (no se toca hips) y la cápsula
+   del rigidbody ACOMPAÑA al render/template (atributo templateEntity). Cada
+   frame: la cápsula se teletransporta el mismo delta horizontal que recorrió
+   hips y el template se compensa en sentido contrario, de modo que el visual
+   queda exactamente donde la animación lo puso y la física viaja debajo.
+   Al terminar/loopear el clip, hips vuelve a su origen y la compensación se
+   restaura: el personaje queda físicamente donde el visual terminó. */
+Character.prototype._applyTeleportFollow = function (hips) {
+    var t = this._templateEntity;
+    if (!t) {
+        /* sin template ni render separado no hay a quién acompañar */
+        this._rootMotionPrimed = false;
+        return;
+    }
+
+    if (!this._sampleHipsDelta(hips)) {
+        /* wrap del loop o primer frame: hips saltó a su origen -> el visual ya
+           vuelve solo a la cápsula (que absorbió el recorrido); restaurar la
+           compensación del template para el nuevo ciclo. */
+        this._restoreTemplateOffset();
+        return;
+    }
+
+    /* solo el plano horizontal: la Y de la cápsula la gobierna la física */
+    var dx = this._vRootWorld.x;
+    var dz = this._vRootWorld.z;
+    if ((dx === 0 && dz === 0) || !this.entity.rigidbody) return;
+
+    /* 1) la cápsula acompaña al visual */
+    var p = this.entity.getPosition();
+    this._vRootPos.set(p.x + dx, p.y, p.z + dz);
+    this.entity.rigidbody.teleport(this._vRootPos);
+
+    /* 2) compensar el template en sentido contrario para que el visual NO se
+       mueva dos veces (la animación ya lo movió por sí sola) */
+    var tp = t.getPosition();
+    this._vTplPos.set(tp.x - dx, tp.y, tp.z - dz);
+    t.setPosition(this._vTplPos);
+    this._teleportShifted = true;
+}
+
+/* Devuelve el template a su posición local de reposo (deshace la compensación
+   acumulada por el modo teleport). */
+Character.prototype._restoreTemplateOffset = function () {
+    if (!this._teleportShifted) return;
+    if (this._templateEntity && this._templateBaseLocalPos) {
+        this._templateEntity.setLocalPosition(this._templateBaseLocalPos);
+    }
+    this._teleportShifted = false;
 }
 
 /*-----------------------------------------------------------------------------------------*/
