@@ -140,23 +140,15 @@ Character.attributes.add("tracerOptions",
                 default: false
             },
             {
-                name: "traceplayercapsule",
-                type: "boolean",
-                default: false
-            },
-            {
                 name: "traceattack",
                 type: "boolean",
                 default: false
-            },
-            {
-                name: "tracehitpoints",
-                type: "boolean",
-                default: false,
-                description: "Dibuja en wireframe las collisions de los hitpoints (huesos). Toggle en caliente."
             }
         ]
     });
+/* NOTA: los antiguos traceplayercapsule/tracehitpoints se eliminaron — todas
+   las colisiones (capsula, hitpoints, armas, mundo) se visualizan con el
+   AmmoDebugDrawer del gameManager (tracer.trenableammodebugdrawer). */
 
 
 Character.attributes.add("playerAnimationsOptions",
@@ -339,7 +331,8 @@ Character.attributes.add("cullingOptions",
    una collision (trigger, sin rigidbody: detecta pero no empuja ni pesa)
    dimensionada automaticamente a partir del MISMO characterHeight que ya
    dimensiona la capsula y la masa. Base para daño localizado (headshots, etc.).
-   Ver _setupHitpoints. Visualizacion: tracerOptions.tracehitpoints. */
+   Ver _setupHitpoints. Visualizacion: AmmoDebugDrawer del gameManager
+   (hitpoints en amarillo, capsulas de personaje en rojo). */
 Character.attributes.add("hitpointsoptions",
     {
         title: "hitpointsoptions",
@@ -671,7 +664,6 @@ Character.prototype.initialize = function () {
 
     if (!this.entity.collision) {
         this.entity.tags.add("uranus-instancing-exclude");
-        this.entity.tags.add("is-capsule-collision");
         this.entity.addComponent("collision", {
             type: "capsule",
             radius: this.characterRadius,
@@ -692,37 +684,6 @@ Character.prototype.initialize = function () {
 
 
 
-    if (this.tracerOptions.enabled && this.tracerOptions.traceplayercapsule) {
-        // Crear el material transparente
-        const transparentMaterial = new pc.StandardMaterial();
-        transparentMaterial.diffuse = new pc.Color(1, 0, 0);  // Color rojo para el material
-        transparentMaterial.update();  // Necesitamos actualizar el material para que los cambios se apliquen
-
-        const capsuleMesh = pc.Mesh.fromGeometry(this.app.graphicsDevice, new pc.CapsuleGeometry({
-            radius: this.characterRadius,
-            height: this.characterHeight,
-            sides: 4,
-            heightSegments: 1
-        }));
-
-        const meshInstance = new pc.MeshInstance(capsuleMesh, transparentMaterial);
-        meshInstance.renderStyle = pc.RENDERSTYLE_WIREFRAME;
-        const model = new pc.Model();
-        model.graph = new pc.GraphNode();
-        model.meshInstances = [meshInstance];
-
-        this.entity.capsule_collision = new pc.Entity(this.entity.name + "_capsule_collision");
-        this.entity.addChild(this.entity.capsule_collision);
-        // Añadir el componente de renderizado con las opciones adecuadas
-        this.entity.capsule_collision.addComponent("render", {
-            type: "asset",
-            renderStyle: pc.RENDERSTYLE_WIREFRAME,  // Estilo de renderizado en alambre
-            material: transparentMaterial,  // Asignamos el material
-            castShadows: false
-        });
-
-        this.entity.capsule_collision.render.meshInstances = model.meshInstances;
-    }
 
 
 
@@ -822,14 +783,11 @@ Character.prototype.initialize = function () {
     }
 
     /* HITPOINTS por hueso (hitboxes localizadas). Va aquí porque necesita
-       characterHeight (calculado arriba) y los huesos ya automapeados. */
+       characterHeight (calculado arriba) y los huesos ya automapeados.
+       Visualización: AmmoDebugDrawer del gameManager (en amarillo). */
     this._hitpoints = [];
-    this._hitpointTraceMaterial = null;
     if (this.hitpointsoptions.enabled) {
         this._setupHitpoints();
-        if (this.tracerOptions.enabled && this.tracerOptions.tracehitpoints) {
-            this._setHitpointTracesVisible(true);
-        }
     }
 
     this.prepareAnimComponent();
@@ -932,14 +890,9 @@ Character.prototype.initialize = function () {
 
     this.on("destroy", this._onDestroy, this);
 
-    /* refleja en runtime los cambios del atributo tracerOptions */
-    this.on("attr:tracerOptions", function (nuevoValor) {
-        if (this.entity.capsule_collision) {
-            this.entity.capsule_collision.render.enabled = nuevoValor.enabled ? nuevoValor.traceplayercapsule : false;
-        }
-        /* hitpoints: ver/apagar los wireframes en tiempo de juego */
-        this._setHitpointTracesVisible(!!(nuevoValor && nuevoValor.enabled && nuevoValor.tracehitpoints));
-    }, this);
+    /* (sin listener attr:tracerOptions: traceinput/tracedetector/traceattack se
+       leen en vivo donde se usan; los wireframes por-script se eliminaron a
+       favor del AmmoDebugDrawer del gameManager) */
 
 
 
@@ -1785,17 +1738,12 @@ Character.prototype._onDestroy = function () {
     this._unequipWeaponScript(this.carryWeapons.rightHandWeaponEntity || this.carryWeapons.rightHandWeaponEntityOld, "right");
 
     /* hitpoints: quitar las collisions que ESTE script añadió a los huesos (el
-       esqueleto puede sobrevivir al script) y sus wireframes de debug */
+       esqueleto puede sobrevivir al script) */
     if (this._hitpoints) {
         for (var h = 0; h < this._hitpoints.length; h++) {
-            var hp = this._hitpoints[h];
-            if (hp.traceEntity) {
-                hp.traceEntity.destroy();
-                hp.traceEntity = null;
-            }
-            var bone = hp.bone;
+            var bone = this._hitpoints[h].bone;
             if (bone) {
-                if (hp.added && bone.collision) bone.removeComponent("collision");
+                if (this._hitpoints[h].added && bone.collision) bone.removeComponent("collision");
                 if (bone.tags) {
                     bone.tags.remove("is-hitpoint");
                     bone.tags.remove("is-damageable");
@@ -1805,20 +1753,12 @@ Character.prototype._onDestroy = function () {
         }
         this._hitpoints.length = 0;
     }
-    this._hitpointTraceMaterial = null;
 
     /* entidad auxiliar colgada de scene.root (NO es hija de la cápsula): hay que
        destruirla a mano o queda huérfana en la escena */
     if (this.pointCharacterEntity) {
         this.pointCharacterEntity.destroy();
         this.pointCharacterEntity = null;
-    }
-
-    /* cápsula de debug (hija de la entidad): si solo se quita el script, limpiarla;
-       si se destruye la entidad, ya cae con ella */
-    if (entity && entity.capsule_collision) {
-        entity.capsule_collision.destroy();
-        entity.capsule_collision = null;
     }
 };
 
@@ -2096,8 +2036,7 @@ Character.prototype._restorePhysics = function () {
    piernas, que viene en unidades locales del rig y se multiplica por la
    escala mundial del hueso.
    PERFORMANCE: todas las shapes son BOX — un solo tipo de primitiva barata
-   para los tests de solape de Ammo (los traces siguen soportando sphere/
-   capsule por si un hueso trae collision del editor). Las PIERNAS se miden de
+   para los tests de solape de Ammo. Las PIERNAS se miden de
    verdad: la caja se tiende del hueso Leg (rodilla) a su hijo Foot (tobillo)
    usando la posicion local del hijo. Sin rigidbody => son triggers: detectan
    armas/proyectiles pero no empujan ni pesan.
@@ -2136,13 +2075,13 @@ Character.prototype._setupHitpoints = function () {
         }
 
         /* collision YA existente (puesta en el editor): NO se agrega otra ni se
-           re-dimensiona; solo se registra (trace/culling/daño) y se etiqueta */
+           re-dimensiona; solo se registra (culling/daño) y se etiqueta */
         if (bone.collision) {
             bone.tags.add("is-hitpoint");
             bone.tags.add("is-damageable");
             bone.hitpointName = spec.name;
             bone.characterEntity = this.entity;
-            this._hitpoints.push({ bone: bone, name: spec.name, added: false, traceEntity: null });
+            this._hitpoints.push({ bone: bone, name: spec.name, added: false });
             continue;
         }
 
@@ -2196,7 +2135,7 @@ Character.prototype._setupHitpoints = function () {
         bone.hitpointName = spec.name;          // "head", "torso", "leg-l"...
         bone.characterEntity = this.entity;     // el daño se resuelve contra el personaje
 
-        this._hitpoints.push({ bone: bone, name: spec.name, added: true, traceEntity: null });
+        this._hitpoints.push({ bone: bone, name: spec.name, added: true });
     }
 };
 
@@ -2209,79 +2148,9 @@ Character.prototype._setHitpointCollisionsEnabled = function (on) {
     }
 };
 
-/* Wireframes de los hitpoints (tracerOptions.tracehitpoints): mismo patron
-   visual que la capsula de debug del player, en AMARILLO para distinguirlos de
-   la capsula (roja). Hijos del hueso => siguen la animacion solos. Se
-   construyen perezosamente la primera vez; despues solo se togglea enabled. */
-Character.prototype._buildHitpointTraces = function () {
-    if (!this._hitpointTraceMaterial) {
-        this._hitpointTraceMaterial = new pc.StandardMaterial();
-        this._hitpointTraceMaterial.diffuse = new pc.Color(1, 1, 0);
-        this._hitpointTraceMaterial.update();
-    }
-
-    for (var i = 0; i < this._hitpoints.length; i++) {
-        var hp = this._hitpoints[i];
-        if (hp.traceEntity || !hp.bone || !hp.bone.collision) continue;
-        var col = hp.bone.collision;
-
-        var geom = null;
-        if (col.type === "sphere") geom = new pc.SphereGeometry({ radius: col.radius });
-        else if (col.type === "box") geom = new pc.BoxGeometry({ halfExtents: col.halfExtents });
-        else if (col.type === "capsule") geom = new pc.CapsuleGeometry({ radius: col.radius, height: col.height });
-        if (!geom) continue;
-
-        var mesh = pc.Mesh.fromGeometry(this.app.graphicsDevice, geom);
-        var mi = new pc.MeshInstance(mesh, this._hitpointTraceMaterial);
-        mi.renderStyle = pc.RENDERSTYLE_WIREFRAME;
-
-        var e = new pc.Entity((hp.bone.name || "bone") + "_hitpoint_trace");
-        hp.bone.addChild(e);
-        e.addComponent("render", {
-            type: "asset",
-            renderStyle: pc.RENDERSTYLE_WIREFRAME,
-            material: this._hitpointTraceMaterial,
-            castShadows: false
-        });
-        e.render.meshInstances = [mi];
-        e.tags.add("uranus-instancing-exclude");
-        e.tags.add("ignore-camera-collision");
-
-        /* CONTRA-ESCALA: el render del trace SI hereda la escala del hueso
-           (0.01 en rigs Mixamo), pero la collision NO (sus tamaños van en
-           metros mundo). Sin esto el wireframe se veria ~100x mas chico que
-           la shape real que muestra el AmmoDebugDrawer. Mismo criterio para
-           la posicion local (el offset en metros se des-escala). */
-        var ts = 1;
-        var twt = hp.bone.getWorldTransform && hp.bone.getWorldTransform();
-        if (twt && twt.getScale) {
-            var tsc = twt.getScale();
-            ts = Math.max(Math.abs(tsc.x), Math.abs(tsc.y), Math.abs(tsc.z)) || 1;
-        }
-        e.setLocalScale(1 / ts, 1 / ts, 1 / ts);
-
-        /* replicar el desplazamiento de la shape respecto al hueso */
-        var off = col.linearOffset;
-        if (off) e.setLocalPosition(off.x / ts, off.y / ts, off.z / ts);
-        /* CapsuleGeometry se genera sobre Y: orientarla segun el axis real */
-        if (col.type === "capsule") {
-            if (col.axis === 0) e.setLocalEulerAngles(0, 0, 90);
-            else if (col.axis === 2) e.setLocalEulerAngles(90, 0, 0);
-        }
-
-        hp.traceEntity = e;
-    }
-};
-
-/* Muestra u oculta los wireframes de hitpoints (toggle en tiempo de juego). */
-Character.prototype._setHitpointTracesVisible = function (show) {
-    if (!this._hitpoints || !this._hitpoints.length) return;
-    if (show) this._buildHitpointTraces();
-    for (var i = 0; i < this._hitpoints.length; i++) {
-        var t = this._hitpoints[i].traceEntity;
-        if (t) t.enabled = show;
-    }
-};
+/* (los wireframes por-script de capsula/hitpoints se eliminaron: todas las
+   colisiones se visualizan con el AmmoDebugDrawer del gameManager, que ademas
+   colorea hitpoints en amarillo y capsulas de personaje en rojo) */
 
 
 /*-----------------------------------------------------------------------------------------*/

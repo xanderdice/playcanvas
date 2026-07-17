@@ -64,48 +64,8 @@ Weapon.attributes.add('collisionPadding', {
     description: 'Margen extra (m) sumado a cada semieje de la caja de colision.'
 });
 
-Weapon.attributes.add('debug', {
-    type: 'boolean', default: false, title: 'Debug'
-});
-
-/* TRAZADO visual de la hitbox (mismo patron que tracerOptions.traceplayercapsule
-   de character.js): con traceweaponbox encendido se dibuja la caja de colision
-   del arma en wireframe. Ademas cambia de color mientras la ventana de daño
-   esta abierta (startDamage..endDamage), para depurar el timing del ataque. */
-Weapon.attributes.add('tracerOptions', {
-    title: 'Trace Options',
-    type: 'json',
-    schema: [
-        {
-            name: 'enabled',
-            type: 'boolean',
-            default: true,
-            title: 'enabled',
-            description: 'enables Tracer Options'
-        },
-        {
-            name: 'traceweaponbox',
-            type: 'boolean',
-            default: false,
-            title: 'traceweaponbox',
-            description: 'Dibuja la caja de colision del arma en wireframe (igual que la capsula del player).'
-        },
-        {
-            name: 'idleColor',
-            type: 'rgba',
-            default: [0, 1, 0, 1],
-            title: 'Idle color',
-            description: 'Color del wireframe con la ventana de daño CERRADA.'
-        },
-        {
-            name: 'damageColor',
-            type: 'rgba',
-            default: [1, 0, 0, 1],
-            title: 'Damage color',
-            description: 'Color del wireframe mientras la ventana de daño esta ABIERTA.'
-        }
-    ]
-});
+/* NOTA: el arma no trae debug propio — las colisiones se visualizan con el
+   AmmoDebugDrawer del gameManager (tracer.trenableammodebugdrawer). */
 
 
 /* =========================================================
@@ -113,21 +73,12 @@ Weapon.attributes.add('tracerOptions', {
    ========================================================= */
 
 Weapon.prototype.initialize = function () {
-    /* BLINDAJE (mismo motivo que en character.js): escena guardada con una
-       version vieja del script -> el grupo json puede llegar null */
-    this.tracerOptions = this.tracerOptions || { enabled: false };
-
     this._owner = null;            // entidad portadora (no recibe daño)
     this._damaging = false;        // ventana de daño abierta
     this._overlaps = {};           // guid -> entidad actualmente solapada
     this._hitThisSwing = {};       // guid -> true si ya recibio daño este swing
     this._fitPending = false;
     this._fitAttempts = 0;
-
-    /* TRACEBOX (debug visual de la hitbox) */
-    this._traceBoxEntity = null;
-    this._traceBoxMaterial = null;
-    this._traceBoxWarned = false;
 
     this._ensureCollision();
 
@@ -143,21 +94,6 @@ Weapon.prototype.initialize = function () {
     } else {
 
     }
-
-    if (this.tracerOptions.enabled && this.tracerOptions.traceweaponbox) {
-        this._buildTraceBox();
-    }
-
-    /* refleja en runtime los cambios del atributo tracerOptions (mismo patron
-       que character.js con la capsula de debug) */
-    this.on('attr:tracerOptions', function (nuevoValor) {
-        var show = !!(nuevoValor && nuevoValor.enabled && nuevoValor.traceweaponbox);
-        if (show && !this._traceBoxEntity) this._buildTraceBox();
-        if (this._traceBoxEntity) {
-            this._traceBoxEntity.enabled = show;
-            this._applyTraceBoxColor();
-        }
-    }, this);
 
     this.on('destroy', this._onDestroy, this);
 };
@@ -208,7 +144,6 @@ Weapon.prototype.refitCollision = function () {
 
     col.halfExtents = box.halfExtents;
     col.linearOffset = box.center;
-    this._refreshTraceBox();   // la caja de debug debe seguir a la hitbox real
     return true;
 };
 
@@ -251,8 +186,6 @@ Weapon.prototype._combinedWorldAABB = function (root) {
     }
 
     function walk(node) {
-        /* la caja wireframe de debug NO es parte del modelo del arma */
-        if (node.__weaponTraceBox) return;
         if (node.render && node.render.meshInstances) {
             for (var i = 0; i < node.render.meshInstances.length; i++) addMi(node.render.meshInstances[i]);
         }
@@ -276,102 +209,12 @@ Weapon.prototype._worldScale = function (entity) {
 
 
 /* =========================================================
-   TRACEBOX: wireframe de la hitbox (debug visual)
-   Mismo patron que la capsula de debug de character.js:
-   StandardMaterial + Mesh.fromGeometry + RENDERSTYLE_WIREFRAME
-   en una entidad hija. La caja replica halfExtents y linearOffset
-   de la collision, asi que lo que se ve ES el volumen que golpea.
-   ========================================================= */
-
-Weapon.prototype._buildTraceBox = function () {
-    var col = this.entity.collision;
-    if (!col) return;
-    if (col.type !== 'box') {
-        /* solo se dibuja el caso que este script gestiona (caja). Una collision
-           de editor con otro tipo no revienta: se avisa una vez y ya. */
-        if (!this._traceBoxWarned) {
-            console.warn('[weapon] traceweaponbox solo soporta collision tipo "box" (actual: "' + col.type + '").');
-            this._traceBoxWarned = true;
-        }
-        return;
-    }
-
-    this._destroyTraceBox();
-
-    this._traceBoxMaterial = new pc.StandardMaterial();
-
-    var boxMesh = pc.Mesh.fromGeometry(this.app.graphicsDevice, new pc.BoxGeometry({
-        halfExtents: col.halfExtents
-    }));
-
-    var meshInstance = new pc.MeshInstance(boxMesh, this._traceBoxMaterial);
-    meshInstance.renderStyle = pc.RENDERSTYLE_WIREFRAME;
-
-    this._traceBoxEntity = new pc.Entity(this.entity.name + '_tracebox');
-    /* marca para que _combinedWorldAABB lo ignore: sin ella, un refit posterior
-       incluiria la propia caja (modelo+padding) en el AABB y la hitbox creceria
-       con cada reajuste */
-    this._traceBoxEntity.__weaponTraceBox = true;
-    this.entity.addChild(this._traceBoxEntity);
-
-    this._traceBoxEntity.addComponent('render', {
-        type: 'asset',
-        renderStyle: pc.RENDERSTYLE_WIREFRAME,
-        material: this._traceBoxMaterial,
-        castShadows: false
-    });
-    this._traceBoxEntity.render.meshInstances = [meshInstance];
-
-    this._traceBoxEntity.tags.add('uranus-instancing-exclude');
-    this._traceBoxEntity.tags.add('ignore-camera-collision');
-
-    /* la caja de colision vive desplazada del origen de la entidad (linearOffset) */
-    var off = col.linearOffset;
-    if (off) this._traceBoxEntity.setLocalPosition(off.x, off.y, off.z);
-
-    this._applyTraceBoxColor();
-};
-
-/* Color segun el estado de la ventana de daño: idleColor cerrada, damageColor
-   abierta. Con esto el timing del ataque se ve a simple vista. */
-Weapon.prototype._applyTraceBoxColor = function () {
-    if (!this._traceBoxMaterial) return;
-    var t = this.tracerOptions || {};
-    var c = this._damaging ? t.damageColor : t.idleColor;
-    if (c && typeof c.r === 'number') {
-        this._traceBoxMaterial.diffuse.set(c.r, c.g, c.b);
-    } else {
-        /* sin atributo (escena vieja): verde cerrado / rojo abierto */
-        this._traceBoxMaterial.diffuse.set(this._damaging ? 1 : 0, this._damaging ? 0 : 1, 0);
-    }
-    this._traceBoxMaterial.update();
-};
-
-/* Reconstruye la caja tras un refit (cambian halfExtents/linearOffset). */
-Weapon.prototype._refreshTraceBox = function () {
-    if (!this._traceBoxEntity) return;
-    var wasEnabled = this._traceBoxEntity.enabled;
-    this._buildTraceBox();
-    if (this._traceBoxEntity) this._traceBoxEntity.enabled = wasEnabled;
-};
-
-Weapon.prototype._destroyTraceBox = function () {
-    if (this._traceBoxEntity) {
-        this._traceBoxEntity.destroy();
-        this._traceBoxEntity = null;
-    }
-    this._traceBoxMaterial = null;
-};
-
-
-/* =========================================================
    VENTANA DE DAÑO (llamado por Character.js)
    ========================================================= */
 
 Weapon.prototype.startDamage = function () {
     this._damaging = true;
     this._hitThisSwing = {};
-    this._applyTraceBoxColor();   // tracebox en damageColor: ventana ABIERTA
 
     /* golpe a bocajarro: dañar a quienes YA estaban solapados al abrir la
        ventana (triggerenter solo dispara al ENTRAR, no si ya estabas dentro). */
@@ -385,7 +228,6 @@ Weapon.prototype.startDamage = function () {
 
 Weapon.prototype.endDamage = function () {
     this._damaging = false;
-    this._applyTraceBoxColor();   // tracebox en idleColor: ventana CERRADA
     this.fire('enddamage');
 
 };
@@ -497,5 +339,4 @@ Weapon.prototype._onDestroy = function () {
     this._overlaps = {};
     this._hitThisSwing = {};
     this._owner = null;
-    this._destroyTraceBox();   // entidad hija de debug: no dejarla huerfana
 };

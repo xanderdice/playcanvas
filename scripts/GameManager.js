@@ -2750,14 +2750,26 @@ GameManager.applyTracerOptions = async function (options) {
    AMMO DEBUG DRAWER: wireframe en tiempo real de TODAS las colisiones del
    mundo físico (rigidbodies estáticos/dinámicos Y triggers: armas, hitpoints,
    cápsulas...). Implementa btIDebugDraw vía Ammo.DebugDrawer: Bullet entrega
-   cada arista con drawLine(punteros al heap WASM), se acumulan en buffers
-   planos reutilizados (cero GC) y se pintan de una vez con drawLineArrays.
+   cada arista con drawLine (punteros al heap WASM), se acumulan en buckets
+   por color (Vec3 de un pool, cero GC) y se pintan con UN drawLines por color:
+   AMARILLO hitpoints/is-damageable, ROJO cápsulas de personaje, VERDE resto.
    Se enciende/apaga con tracer.trenableammodebugdrawer (AmmoDebugDrawer).
    ========================================================================= */
 GameManager.__ammoDebugDrawer = null;     // instancia Ammo.DebugDrawer (lazy)
 GameManager.__ammoDebugWarned = false;
-GameManager.__ammoDebugPositions = [];    // buffer plano x,y,z (reutilizado)
-GameManager.__ammoDebugColors = [];       // buffer plano r,g,b,a (reutilizado)
+/* BUCKETS de lineas por color (pares from/to de pc.Vec3) + pool persistente.
+   Cada bucket se pinta con app.drawLines(lineas, UN pc.Color): la ruta de
+   color POR VERTICE (drawLineArrays) mostraba todas las lineas blancas en
+   este build del engine, asi que el color va por lote, no por vertice. */
+GameManager.__ammoDebugBucketDefault = [];    // VERDE: mundo/props/armas
+GameManager.__ammoDebugBucketCharacter = [];  // ROJO: capsulas de personaje
+GameManager.__ammoDebugBucketHitpoint = [];   // AMARILLO: hitpoints/is-damageable
+GameManager.__ammoDebugBucket = null;         // bucket activo (lo consume drawLine)
+GameManager.__ammoDebugVecPool = [];          // pool de pc.Vec3 (cero GC por frame)
+GameManager.__ammoDebugVecUsed = 0;
+GameManager.__ammoDebugPcColorDefault = new pc.Color(0.2, 0.9, 0.2);
+GameManager.__ammoDebugPcColorCharacter = new pc.Color(1, 0, 0);
+GameManager.__ammoDebugPcColorHitpoint = new pc.Color(1, 1, 0);
 
 /* Crea el drawer y lo registra en el dynamicsWorld. Devuelve false si la
    física aún no está lista (se reintenta solo, cada frame, desde update). */
@@ -2777,30 +2789,38 @@ GameManager._createAmmoDebugDrawer = function () {
         return false;
     }
 
-    var positions = GameManager.__ammoDebugPositions;
-    var colors = GameManager.__ammoDebugColors;
     var debugMode = 1;   // btIDebugDraw::DBG_DrawWireframe
 
     var drawer = new Ammo.DebugDrawer();
 
     /* Bullet pasa PUNTEROS a btVector3 en el heap WASM: se leen como floats
-       (índice = puntero/4). Color en 0..1, alpha fija a 1. */
+       (índice = puntero/4). El color de Bullet se IGNORA: cada linea cae en el
+       bucket activo (__ammoDebugBucket) y el color se aplica por bucket. */
     drawer.drawLine = function (from, to, color) {
         var h = Ammo.HEAPF32;
-        var f = from / 4, t = to / 4, c = color / 4;
-        var r = h[c], g = h[c + 1], b = h[c + 2];
-        positions.push(h[f], h[f + 1], h[f + 2], h[t], h[t + 1], h[t + 2]);
-        colors.push(r, g, b, 1, r, g, b, 1);
+        var f = from / 4, t = to / 4;
+        var pool = GameManager.__ammoDebugVecPool;
+        var idx = GameManager.__ammoDebugVecUsed;
+        var v1 = pool[idx] || (pool[idx] = new pc.Vec3());
+        var v2 = pool[idx + 1] || (pool[idx + 1] = new pc.Vec3());
+        v1.set(h[f], h[f + 1], h[f + 2]);
+        v2.set(h[t], h[t + 1], h[t + 2]);
+        GameManager.__ammoDebugVecUsed = idx + 2;
+        GameManager.__ammoDebugBucket.push(v1, v2);
     };
 
     drawer.drawContactPoint = function (pointOnB, normalOnB, distance, lifeTime, color) {
         var h = Ammo.HEAPF32;
-        var p = pointOnB / 4, n = normalOnB / 4, c = color / 4;
-        var r = h[c], g = h[c + 1], b = h[c + 2];
+        var p = pointOnB / 4, n = normalOnB / 4;
         var s = 0.15;   // largo (m) de la rayita del contacto sobre su normal
-        positions.push(h[p], h[p + 1], h[p + 2],
-            h[p] + h[n] * s, h[p + 1] + h[n + 1] * s, h[p + 2] + h[n + 2] * s);
-        colors.push(r, g, b, 1, r, g, b, 1);
+        var pool = GameManager.__ammoDebugVecPool;
+        var idx = GameManager.__ammoDebugVecUsed;
+        var v1 = pool[idx] || (pool[idx] = new pc.Vec3());
+        var v2 = pool[idx + 1] || (pool[idx + 1] = new pc.Vec3());
+        v1.set(h[p], h[p + 1], h[p + 2]);
+        v2.set(h[p] + h[n] * s, h[p + 1] + h[n + 1] * s, h[p + 2] + h[n + 2] * s);
+        GameManager.__ammoDebugVecUsed = idx + 2;
+        GameManager.__ammoDebugBucket.push(v1, v2);
     };
 
     /* obligatorios en la interfaz; sin uso (el warning llega como puntero
@@ -2812,6 +2832,12 @@ GameManager._createAmmoDebugDrawer = function () {
 
     world.setDebugDrawer(drawer);
     GameManager.__ammoDebugDrawer = drawer;
+
+    /* colores por TIPO de entidad (btVector3 cacheados: cero GC por frame) */
+    GameManager.__ammoDebugColorDefault = new Ammo.btVector3(0.2, 0.9, 0.2);   // VERDE: mundo/props/resto
+    GameManager.__ammoDebugColorCharacter = new Ammo.btVector3(1, 0, 0);       // ROJO: capsulas de personaje
+    GameManager.__ammoDebugColorHitpoint = new Ammo.btVector3(1, 1, 0);        // AMARILLO: hitpoints / is-damageable
+
     return true;
 };
 
@@ -2821,29 +2847,58 @@ GameManager.updateAmmoDebugDrawer = function () {
     if (!GameManager._createAmmoDebugDrawer()) return;
 
     var app = GameManager._app;
-    var positions = GameManager.__ammoDebugPositions;
-    var colors = GameManager.__ammoDebugColors;
+    var world = app.systems.rigidbody.dynamicsWorld;
 
-    positions.length = 0;
-    colors.length = 0;
+    var bDef = GameManager.__ammoDebugBucketDefault;
+    var bChar = GameManager.__ammoDebugBucketCharacter;
+    var bHit = GameManager.__ammoDebugBucketHitpoint;
+    bDef.length = 0;
+    bChar.length = 0;
+    bHit.length = 0;
+    GameManager.__ammoDebugVecUsed = 0;   // el pool de Vec3 se reusa entero
 
-    /* Bullet recorre TODOS los collision objects del mundo y dispara
-       drawer.drawLine por cada arista de cada shape */
-    app.systems.rigidbody.dynamicsWorld.debugDrawWorld();
+    /* COLOREADO POR TIPO: cada collision object se dibuja con debugDrawObject
+       apuntando sus lineas al bucket de su color:
+         AMARILLO = hitpoints / is-damageable
+         ROJO     = capsulas de personaje (is-character)
+         VERDE    = resto (mundo, props, armas...)
+       El wrapper original del body se recupera con Ammo.castObject (ammo.js
+       cachea wrappers por puntero, asi que el .entity que PlayCanvas cuelga
+       del btRigidBody sigue ahi). Si el build no expone estas APIs, fallback
+       al debugDrawWorld clasico (todo al bucket verde). */
+    if (world.getCollisionObjectArray && world.debugDrawObject && Ammo.castObject) {
+        var arr = world.getCollisionObjectArray();
+        var n = arr.size();
+        for (var i = 0; i < n; i++) {
+            var obj = arr.at(i);
+            var ent = Ammo.castObject(obj, Ammo.btRigidBody).entity;
 
-    if (!positions.length) return;
+            var bucket = bDef;
+            var btColor = GameManager.__ammoDebugColorDefault;
+            if (ent && ent.tags) {
+                if (ent.tags.has("is-hitpoint") || ent.tags.has("is-damageable")) {
+                    bucket = bHit;
+                    btColor = GameManager.__ammoDebugColorHitpoint;
+                }
+                /* la capsula tambien es is-damageable: is-character manda */
+                if (ent.tags.has("is-character")) {
+                    bucket = bChar;
+                    btColor = GameManager.__ammoDebugColorCharacter;
+                }
+            }
 
-    if (app.drawLineArrays) {
-        app.drawLineArrays(positions, colors);
-    } else {
-        /* fallback para builds del engine sin drawLineArrays (más GC) */
-        var vecs = [], cols = [];
-        for (var i = 0, ci = 0; i < positions.length; i += 3, ci += 4) {
-            vecs.push(new pc.Vec3(positions[i], positions[i + 1], positions[i + 2]));
-            cols.push(new pc.Color(colors[ci], colors[ci + 1], colors[ci + 2], colors[ci + 3]));
+            GameManager.__ammoDebugBucket = bucket;
+            world.debugDrawObject(obj.getWorldTransform(), obj.getCollisionShape(), btColor);
         }
-        app.drawLines(vecs, cols);
+    } else {
+        GameManager.__ammoDebugBucket = bDef;
+        world.debugDrawWorld();
     }
+
+    /* UN drawLines por color — API basica del engine, color por lote */
+    if (bDef.length) app.drawLines(bDef, GameManager.__ammoDebugPcColorDefault);
+    if (bChar.length) app.drawLines(bChar, GameManager.__ammoDebugPcColorCharacter);
+    if (bHit.length) app.drawLines(bHit, GameManager.__ammoDebugPcColorHitpoint);
 };
 
 
