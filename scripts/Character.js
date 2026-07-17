@@ -585,6 +585,7 @@ Character.prototype.initialize = function () {
     this._jumpAvailable = true;
     this._jumpKeyHeld = false;   /* flanco de subida de Espacio (input.jump es isPressed) */
     this._jumping = false;      /* en el aire por un salto propio (hasta aterrizar) */
+    this._jumpRestTime = 0;     /* s con vy≈0 durante _jumping (aterrizaje sin contactos) */
 
 
     this._animStateGraphData = null;
@@ -673,7 +674,9 @@ Character.prototype.initialize = function () {
         });
     }
     /* SIEMPRE registrar los eventos (aunque la collision venga creada desde el editor):
-       la detección de suelo por contactos depende de ellos */
+       la detección de suelo por contactos depende de ellos. "contact" se dispara
+       en CADA paso de física mientras haya contacto (no solo al empezar). */
+    this.entity.collision.on("contact", this.characterContact, this);
     this.entity.collision.on("collisionstart", this.characterCollisionStart, this);
     this.entity.collision.on("collisionend", this.characterCollisionEnd, this);
     this.entity.other = null;
@@ -688,11 +691,14 @@ Character.prototype.initialize = function () {
 
 
 
-    /* SUELO POR CONTACTOS: _updateGroundedState() no lanza raycasts; el estado se alimenta
-       de los eventos collisionstart/collisionend de la cápsula. */
-    this._groundContacts = 0;   // cuántas superficies "suelo" nos sostienen
-    this._groundBy = {};        // guid de entidad -> true si nos está sosteniendo
-    this._coyoteTime = 0;       // gracia anti-parpadeo de manifolds de Bullet
+    /* SUELO POR CONTACTOS (sin raycasts): el evento "contact" re-marca
+       _groundContactSeen en cada paso de física con apoyo, así el estado de
+       suelo se re-evalúa por frame. El viejo conteo por collisionstart/end
+       clasificaba el par UNA sola vez al empezar a tocarse: si el primer roce
+       con el mesh del nivel era lateral (pared/escalón), ese mesh no contaba
+       como suelo mientras durase el contacto y el salto quedaba muerto. */
+    this._groundContactSeen = false; // hubo contacto de base en el último paso de física
+    this._coyoteTime = 0;            // gracia anti-parpadeo de manifolds de Bullet
 
     /* CULLING FÍSICO (ver cullingOptions): tiempo acumulado fuera de cámara y si
        la física ya está apagada. Solo se usan en NPCs con physicsCulling activo. */
@@ -707,11 +713,15 @@ Character.prototype.initialize = function () {
     /* Tope del casquete inferior de la cápsula, relativo al origen de la entidad:
        solo contactos por debajo de esta cota cuentan como suelo. Se leen las
        dimensiones reales del componente collision (puede venir del editor con
-       valores distintos a characterHeight/Radius). +0.02 de tolerancia por el
-       margen de contactos de Bullet. Precalculado: cero coste por contacto. */
+       valores distintos a characterHeight/Radius) y su linearOffset (el editor
+       puede desplazar la shape respecto al origen; sin esto, una cápsula con la
+       base en el origen dejaba TODOS los contactos de suelo fuera de la cota).
+       +0.02 de tolerancia por el margen de contactos de Bullet. Precalculado:
+       cero coste por contacto. */
     var col = this.entity.collision;
     var colHeight = (col && col.type === "capsule") ? col.height : this.characterHeight;
     var colRadius = (col && col.type === "capsule") ? col.radius : this.characterRadius;
+    var colOffY = (col && col.linearOffset) ? (col.linearOffset.y || 0) : 0;
     /* getWorldScale() no existe en engine 2.x: derivar de la matriz mundial,
        con fallback a la escala local */
     var scaleY = 1;
@@ -721,21 +731,11 @@ Character.prototype.initialize = function () {
     } else if (this.entity.getLocalScale) {
         scaleY = Math.abs(this.entity.getLocalScale().y) || 1;
     }
-    this._capsuleBaseOffset = (-(colHeight * 0.5) + colRadius) * scaleY + 0.02;
+    this._capsuleBaseOffset = (colOffY - (colHeight * 0.5) + colRadius) * scaleY + 0.02;
 
     /* SALTO: el apex del salto es la MITAD del height real (escalado) de la
        cápsula. Precalculado aquí; la velocidad se deriva con v = sqrt(2*g*h). */
     this._jumpApexHeight = (colHeight * scaleY) * 0.5;
-
-    /* REFUERZO DE SUELO por raycast (ver _probeGroundBelow): cotas Y del rayo
-       corto relativas al origen de la entidad. Arranca 0.02 m DENTRO del casquete
-       inferior (así Bullet no reporta auto-impacto) y baja hasta 'groundtolerance'
-       por debajo de la punta de la cápsula. Precalculado: cero coste por consulta. */
-    var groundtol = (this.sensorOptions && typeof this.sensorOptions.groundtolerance === "number")
-        ? this.sensorOptions.groundtolerance : 0.15;
-    var bottomTipY = -(colHeight * 0.5) * scaleY;   // punta inferior de la cápsula
-    this._groundProbeStartY = bottomTipY + 0.02;
-    this._groundProbeEndY = bottomTipY - groundtol;
 
 
 
@@ -811,8 +811,6 @@ Character.prototype.initialize = function () {
     this._vFaceDir = new pc.Vec3();        // dirección a la que mirar
     this._vForward = new pc.Vec3();        // forward actual de la entidad (temporal)
     this._vJump = new pc.Vec3();           // velocidad lineal al saltar
-    this._vProbeStart = new pc.Vec3();     // origen del raycast de refuerzo de suelo
-    this._vProbeEnd = new pc.Vec3();       // destino del raycast de refuerzo de suelo
 
     /* MOTION ROOT — estado persistente entre frames (ver rootMotionFix) */
     this._vHipsPinnedPos = new pc.Vec3();  // posición de hips ya clavada (place-in)
@@ -1405,7 +1403,7 @@ Character.prototype.doMove = function () {
            realimenta el lazo (el fallback por velocidad oscila en -0.3 m/s
            y la caída queda frenada frame a frame). Durante el salto tampoco
            se toca: el coyoteTime residual del despegue la anularía. */
-        if ((this._groundContacts > 0 || this._coyoteTime > 0) && !this._jumping) {
+        if (this._coyoteTime > 0 && !this._jumping) {
             v.y = 0;
         }
 
@@ -1427,11 +1425,25 @@ Character.prototype.doMove = function () {
        mantiene), por eso el flanco de subida con jumpKeyHeld. */
     if (!useFlight) {
         const jumpPressed = !!input.jump;
-        const groundedForJump = (this._groundContacts > 0 || this._coyoteTime > 0) && !this._jumping;
+        /* GATE del salto: entity.isonground (calculado este mismo frame en
+           _updateGroundedState) = contactos frescos + coyote + fallback por
+           velocidad — el MISMO criterio que la versión original con raycasts.
+           Gatear el salto SOLO por contactos lo dejaba muerto cuando el manifold
+           no llegaba a clasificar la base (shape con offset, mesh tocado de
+           lado...), aunque el personaje caminara con normalidad. */
+        const groundedForJump = this.entity.isonground && !this._jumping;
 
         /* re-armar el salto al volver a tener suelo */
         if (groundedForJump) {
             this._jumpAvailable = true;
+        }
+
+        /* diagnóstico: una línea por PULSACIÓN de Espacio, pase o no el gate */
+        if (this.sensorOptions.sensorJumpDebug && jumpPressed && !this._jumpKeyHeld) {
+            console.log("[character] SPACE  isonground =", this.entity.isonground,
+                "| coyote =", this._coyoteTime.toFixed(3),
+                "| _jumping =", this._jumping,
+                "| vy =", rb.linearVelocity.y.toFixed(2));
         }
 
         if (jumpPressed && !this._jumpKeyHeld && groundedForJump && this._jumpAvailable) {
@@ -1446,6 +1458,7 @@ Character.prototype.doMove = function () {
             this._jumping = true;
             this._jumpAvailable = false;
             this._coyoteTime = 0;
+            this._jumpRestTime = 0;
 
             if (this.sensorOptions.sensorJumpDebug) {
                 console.log("[character] JUMP  vy =", vy.toFixed(2), "m/s | apex =", this._jumpApexHeight.toFixed(2), "m");
@@ -1719,6 +1732,7 @@ Character.prototype._onDestroy = function () {
 
     /* contactos de la cápsula (por si la entidad sobrevive al script) */
     if (entity && entity.collision) {
+        entity.collision.off("contact", this.characterContact, this);
         entity.collision.off("collisionstart", this.characterCollisionStart, this);
         entity.collision.off("collisionend", this.characterCollisionEnd, this);
     }
@@ -1861,13 +1875,19 @@ Character.prototype.characterCollisionStart = function (event) {
     if (event.other && event.other.tags && event.other.tags.has("is-hitpoint")) return;
 
     this.entity.other = event.other;
+}
+
+/* "contact" llega en cada paso de física por CADA par en contacto: la
+   clasificación suelo/pared se hace aquí con el manifold fresco (con
+   collisionstart solo se evaluaba el instante inicial del contacto). */
+Character.prototype.characterContact = function (event) {
+    if (event.other && event.other.tags && event.other.tags.has("is-hitpoint")) return;
 
     var contacts = event.contacts;
     if (!contacts) return;
     var selfPos = this.entity.getPosition();
     /* cota máxima en Y para que un contacto cuente como "base de la cápsula" */
     var baseMaxY = selfPos.y + this._capsuleBaseOffset;
-    var groundFound = false;
     for (var i = 0; i < contacts.length; i++) {
         var c = contacts[i];
         var ny = c.normal.y;
@@ -1877,12 +1897,8 @@ Character.prototype.characterCollisionStart = function (event) {
         /* suelo = normal casi vertical (cualquier signo: la convención varió entre
            versiones del engine) Y contacto dentro del casquete inferior de la
            cápsula. Bordes/salientes a la altura de la pierna quedan excluidos. */
-        if (!groundFound && (ny > 0.5 || ny < -0.5) && c.point.y <= baseMaxY) {
-            if (!this._groundBy[event.other._guid]) {
-                this._groundBy[event.other._guid] = true;
-                this._groundContacts++;
-            }
-            groundFound = true;
+        if ((ny > 0.5 || ny < -0.5) && c.point.y <= baseMaxY) {
+            this._groundContactSeen = true;
         } else if (ny < 0.5 && ny > -0.5 && !event.other.isCharacter) {
             /* PARED (no otro personaje): dirección horizontal de escape para la IA,
                desde el punto de contacto hacia la entidad — independiente de la
@@ -1905,43 +1921,28 @@ Character.prototype.characterCollisionEnd = function (other) {
     if (other && other.tags && other.tags.has("is-hitpoint")) return;
 
     if (this.entity.other === other) this.entity.other = null;
-
-    if (this._groundBy[other._guid]) {
-        this._groundBy[other._guid] = false;
-        if (this._groundContacts > 0) this._groundContacts--;
-    }
 }
 
 Character.prototype._updateGroundedState = function () {
-    /* Suelo por CONTACTOS de la cápsula (ver characterCollisionStart/End); un
-       raycast corto SOLO refuerza los casos ambiguos (sin contactos y sin salto).
+    /* Suelo por CONTACTOS de la cápsula (ver characterContact): el evento
+       "contact" re-marca _groundContactSeen en cada paso de física con apoyo.
        coyoteTime = 100 ms de gracia para cubrir el parpadeo de manifolds de Bullet. */
     var rb = this.entity.rigidbody;
     if (!rb) return;
     var dt = this.entity.input.dt || 0;
 
-    if (this._groundContacts > 0) {
+    if (this._groundContactSeen) {
         this._coyoteTime = 0.1;
     } else if (this._coyoteTime > 0) {
         this._coyoteTime -= dt;
     }
 
-    var grounded = this._groundContacts > 0 || this._coyoteTime > 0;
+    var grounded = this._coyoteTime > 0;
 
     /* caída franca: anula la gracia (cubre collisionend perdidos) */
     if (grounded && rb.linearVelocity.y < -1.5) {
         grounded = false;
         this._coyoteTime = 0;
-    }
-
-    /* REFUERZO por raycast: en casos ambiguos (sin contactos de suelo, sin salto
-       propio en curso y fuera del modo vuelo) un rayo corto hacia abajo confirma
-       si hay suelo a <= groundtolerance de los pies. Recupera contactos perdidos
-       (collisionend espurio de Bullet) sin depender del ruidoso fallback por
-       velocidad. Coste casi nulo: no corre parado sobre suelo, ni saltando, ni volando. */
-    if (!this.canmoveonair && this._groundContacts === 0 && !this._jumping && this._probeGroundBelow()) {
-        grounded = true;
-        this._coyoteTime = 0.1;
     }
 
     /* fallback, mismo criterio que la versión original con raycasts: sin evidencia
@@ -1951,10 +1952,15 @@ Character.prototype._updateGroundedState = function () {
     }
 
     /* SALTO: durante el ascenso el fallback por velocidad daría grounded=true
-       (vy > 0); mientras dure el salto se está en el aire. Aterrizaje = volver
-       a tener contacto de suelo sin velocidad ascendente. */
+       (vy > 0); mientras dure el salto se está en el aire. Aterrizaje = contacto
+       de base real sin velocidad ascendente, o (fallback si los contactos no
+       clasifican base) velocidad vertical en reposo SOSTENIDA 150 ms: el paso
+       por el apex no cuenta (vy≈0 dura ~10 ms reales, la gravedad lo saca de la
+       banda enseguida), así no hay doble salto en el aire. */
     if (this._jumping) {
-        if (this._groundContacts > 0 && rb.linearVelocity.y <= 0.01) {
+        var vyNow = rb.linearVelocity.y;
+        this._jumpRestTime = (vyNow > -0.05 && vyNow < 0.05) ? this._jumpRestTime + dt : 0;
+        if ((this._groundContactSeen && vyNow <= 0.01) || this._jumpRestTime >= 0.15) {
             this._jumping = false;
         } else {
             grounded = false;
@@ -1963,27 +1969,12 @@ Character.prototype._updateGroundedState = function () {
 
     if (this.canmoveonair) grounded = false;
 
+    /* consumir la marca: el próximo paso de física la re-pone si sigue el apoyo */
+    this._groundContactSeen = false;
+
     this.entity.isonground = grounded;
     this.entity.isonair = !grounded;
 }
-
-/* REFUERZO DE SUELO: rayo corto hacia abajo desde el interior del casquete
-   inferior de la cápsula hasta 'groundtolerance' bajo los pies. Solo lo llama
-   _updateGroundedState en casos ambiguos (sin contactos, sin salto, sin vuelo),
-   así que no hay coste por frame en el caso normal. Arranca DENTRO de la cápsula
-   (offset +0.02) para que Bullet no reporte auto-impacto; el guard entity!==this
-   lo refuerza. Reutiliza vectores scratch (cero GC). */
-Character.prototype._probeGroundBelow = function () {
-    var sys = this.app.systems.rigidbody;
-    if (!sys) return false;
-    var p = this.entity.getPosition();
-    var start = this._vProbeStart.set(p.x, p.y + this._groundProbeStartY, p.z);
-    var end = this._vProbeEnd.set(p.x, p.y + this._groundProbeEndY, p.z);
-    var hit = sys.raycastFirst(start, end);
-    /* suelo = cuerpo SÓLIDO distinto de uno mismo. Exigir rigidbody descarta los
-       volúmenes trigger (collision sin rigidbody), que rayTest también reporta. */
-    return !!(hit && hit.entity !== this.entity && hit.entity.rigidbody);
-};
 
 /* CULLING FÍSICO — helpers (solo NPCs, opt-in por cullingOptions.physicsCulling).
    "en combate" = atacando o con objetivo/punto de destino activo: nunca se apaga
@@ -2014,9 +2005,9 @@ Character.prototype._restorePhysics = function () {
     if (this.entity.collision) this.entity.collision.enabled = true;
     if (this.entity.rigidbody) this.entity.rigidbody.enabled = true;
     this._setHitpointCollisionsEnabled(true);
-    this._groundContacts = 0;
-    this._groundBy = {};
+    this._groundContactSeen = false;
     this._coyoteTime = 0;
+    this._jumpRestTime = 0;
 };
 
 
@@ -2441,6 +2432,102 @@ Character.prototype._restoreTemplateOffset = function () {
     }
     this._teleportShifted = false;
 }
+
+/* Renombra los nodos con nombre DUPLICADO dentro de 'root', conservando la
+   PRIMERA aparicion en pre-orden (el mismo nodo que el DefaultAnimBinder elige
+   con findByName) y agregando un sufijo a las siguientes. Elimina de raiz el
+   warning "Anim Binder: Multiple animation curves with the path ..." sin alterar
+   el enlace de la animacion. Devuelve cuantos nodos se renombraron. */
+Character.prototype._dedupeAnimNodeNames = function (root) {
+    if (!root) return 0;
+    var seen = Object.create(null);
+    var renamed = 0;
+
+    function walk(node) {
+        var name = node.name;
+        if (name) {
+            if (seen[name]) {
+                /* duplicado: la animacion ya se enlazaba a la 1a aparicion; a
+                   esta se le da un nombre unico para que el path deje de chocar */
+                node.name = name + "__anmdup" + renamed;
+                renamed++;
+            } else {
+                seen[name] = true;
+            }
+        }
+        var ch = node.children;
+        for (var i = 0; i < ch.length; i++) walk(ch[i]);
+    }
+
+    walk(root);
+
+    if (renamed > 0 && this.sensorOptions && this.sensorOptions.sensorDebug) {
+        console.log('[character] anim node dedupe en "' + this.entity.name + '": ' + renamed + " nodo(s) renombrado(s).");
+    }
+    return renamed;
+};
+
+/* Elimina CURVAS DUPLICADAS de un AnimTrack (asset.resource) antes de asignarlo.
+   Es el arreglo del warning cuando la duplicacion viene del ASSET (GLB con dos
+   huesos "LeftEye" -> dos curvas con el mismo path "LeftEye/graph/localX"): el
+   binder avisa "Multiple animation curves with the path X". Se conserva la
+   PRIMERA curva de cada path (la que el binder ya usaba) y se descartan las de
+   path IDENTICO (clave sin perdida): la animacion no cambia y el path deja de
+   estar repetido. Blindado: try/catch + flag idempotente + si la estructura
+   interna del build no coincide, NO toca nada (el set queda inerte). El track
+   es COMPARTIDO entre personajes: se deduplica una sola vez (flag). */
+Character.prototype._dedupeTrackCurves = function (track) {
+    try {
+        if (!track || track.__curvesDeduped) return 0;
+
+        var curves = track.curves || track._curves;
+        if (!curves || !curves.length) return 0;
+
+        var seen = Object.create(null);
+        var kept = [];
+        var removed = 0;
+        var SEP = "";
+
+        for (var i = 0; i < curves.length; i++) {
+            var c = curves[i];
+            var paths = c.paths || c._paths;
+            if (paths && !paths.length && typeof paths === "object") paths = [paths]; // path unico
+
+            var key = "";
+            if (paths && paths.length) {
+                for (var p = 0; p < paths.length; p++) {
+                    var pa = paths[p];
+                    if (typeof pa === "string") {
+                        key += pa + SEP;
+                    } else if (pa) {
+                        key += (pa.entityPath ? pa.entityPath.join("/") : "") + SEP +
+                            (pa.component || "") + SEP +
+                            (pa.propertyPath ? (pa.propertyPath.join ? pa.propertyPath.join(".") : pa.propertyPath) : "") + SEP + SEP;
+                    }
+                }
+            }
+
+            if (!key) { kept.push(c); continue; }   // sin path legible: no arriesgar, mantener
+            if (seen[key]) { removed++; continue; }  // path IDENTICO ya conservado: redundante
+            seen[key] = true;
+            kept.push(c);
+        }
+
+        if (removed > 0) {
+            if (track._curves) track._curves = kept; else track.curves = kept;
+            track.__curvesDeduped = true;
+            if (this.sensorOptions && this.sensorOptions.sensorDebug) {
+                console.log('[character] anim curve dedupe en "' + (track.name || "clip") + '": ' + removed + " curva(s) duplicada(s) eliminada(s).");
+            }
+        } else {
+            track.__curvesDeduped = true;   // ya estaba limpio: no reintentar
+        }
+        return removed;
+    } catch (e) {
+        return 0;   // estructura interna distinta en este build: no tocar nada
+    }
+};
+
 
 /*-----------------------------------------------------------------------------------------*/
 /*******************************/
@@ -3040,10 +3127,34 @@ Character.prototype.prepareAnimComponent = function () {
     }
 
 
+    /* ROOT BONE del anim component: el ARMATURE (padre de hips). Restringe el
+       binder de animacion a ese subarbol, en vez de recorrer TODO el personaje:
+       si una malla se llama igual que un hueso (p.ej. ojos: malla "LeftEye" +
+       hueso "LeftEye"), el binder avisaba "Anim Binder: Multiple animation
+       curves with the path..." y podia enlazar la curva al nodo equivocado.
+       Con el armature como raiz, las mallas hermanas quedan fuera y el enlace
+       es inequivoco. (El antiguo playerAnimationsOptions.hips no existe como
+       atributo: rootBone llegaba siempre undefined.) */
+    var animRootBone;
+    if (this.bones.hips && this.bones.hips.parent && this.bones.hips.parent !== this.entity) {
+        animRootBone = this.bones.hips.parent;
+    }
+
+    /* DEDUP de nombres de nodo (arreglo DEFINITIVO del warning del Anim Binder):
+       el binder construye su mapa recorriendo el subarbol y avisa "Multiple
+       animation curves with the path X" cuando DOS nodos resuelven al mismo
+       nombre (caso tipico: la malla del ojo se llama igual que el hueso,
+       LeftEye/RightEye). Se recorre en PRE-ORDEN (igual que findByName) y se
+       CONSERVA la primera aparicion —justo el nodo al que el binder ya se
+       enlazaba— renombrando solo las duplicadas: la animacion no cambia y el
+       nombre pasa a ser unico, asi el warning desaparece de raiz. Se hace ANTES
+       de crear el anim component (el binder corre en loadStateGraph). */
+    this._dedupeAnimNodeNames(animRootBone || this.entity);
+
     // add an anim component to the entity
     this.entity.addComponent("anim", {
         activate: true,
-        rootBone: this.playerAnimationsOptions.hips && this.playerAnimationsOptions.hips
+        rootBone: animRootBone
     });
 
     this.entity.anim.loadStateGraph(this._animStateGraphData);
@@ -3063,6 +3174,7 @@ Character.prototype.prepareAnimComponent = function () {
             if (asset && asset.type === "animation") {
                 if (asset.resource) {
 
+                    this._dedupeTrackCurves(asset.resource);   // quita curvas de path duplicado (warning Anim Binder)
                     locomotionLayer.assignAnimation(state.name, asset.resource);
                     state.animDuration = asset.resource.duration;
                     if (state.name.indexOf("attack") !== -1) {
@@ -3084,6 +3196,7 @@ Character.prototype.prepareAnimComponent = function () {
                 } else {
                     // El asset aún no está cargado, cargarlo
                     asset.ready(function (e) {
+                        this._dedupeTrackCurves(e.resource);   // quita curvas de path duplicado (warning Anim Binder)
                         locomotionLayer.assignAnimation(state.name, e.resource);
                         state.animDuration = e.resource.duration;
                         if (state.name.indexOf("attack") !== -1) {

@@ -2735,170 +2735,249 @@ GameManager.applyTracerOptions = async function (options) {
     }
 
 
-    /* AMMO DEBUG DRAWER: el dibujado real ocurre POR FRAME en updateGameManager
+    /* COLLISION DEBUG: el dibujado real ocurre POR FRAME en updateGameManager
        (gateado por TracerScript.trenableammodebugdrawer, así el toggle del
-       editor funciona en caliente). Aquí solo se fuerza la creación temprana.
-       Lo anterior ("this.app.drawPhysics = ...") no dibujaba nada: drawPhysics
-       no es API del engine y this.app era undefined en esta función estática. */
-    if (TracerScript.trenableammodebugdrawer) {
-        GameManager._createAmmoDebugDrawer();
-    }
+       editor funciona en caliente). Nada que crear aquí — el visualizador se
+       dibuja desde PlayCanvas recorriendo los componentes collision. */
 };
 
 
 /* =========================================================================
-   AMMO DEBUG DRAWER: wireframe en tiempo real de TODAS las colisiones del
-   mundo físico (rigidbodies estáticos/dinámicos Y triggers: armas, hitpoints,
-   cápsulas...). Implementa btIDebugDraw vía Ammo.DebugDrawer: Bullet entrega
-   cada arista con drawLine (punteros al heap WASM), se acumulan en buckets
-   por color (Vec3 de un pool, cero GC) y se pintan con UN drawLines por color:
-   AMARILLO hitpoints/is-damageable, ROJO cápsulas de personaje, VERDE resto.
-   Se enciende/apaga con tracer.trenableammodebugdrawer (AmmoDebugDrawer).
+   COLLISION DEBUG DRAW: wireframe en tiempo real de las colisiones, coloreado
+   por tipo de entidad. Se DIBUJA DESDE PLAYCANVAS (no desde Ammo): se recorren
+   los componentes `collision` y cada forma se reconstruye con app.drawLine
+   (depthTest:false, para que los hitpoints se vean a traves de la malla).
+   Independiente del build de ammo.js: el AmmoDebugDrawer requeria
+   debugDrawObject, ausente en este build (todo salia verde).
+     ROJO     = cápsulas de personaje (is-character)
+     AMARILLO = hitpoints / is-damageable
+     VERDE    = resto (mundo, props, armas...)
+   Tamaños: las primitivas de collision NO heredan la escala de la entidad en
+   este build (verificado con los hitpoints), asi que halfExtents/radius/height
+   se usan en METROS MUNDO; solo posicion (linearOffset via matriz mundial) y
+   rotacion (rotacion mundial) vienen del transform. Se enciende/apaga con
+   tracer.trenableammodebugdrawer (AmmoDebugDrawer).
    ========================================================================= */
-GameManager.__ammoDebugDrawer = null;     // instancia Ammo.DebugDrawer (lazy)
-GameManager.__ammoDebugWarned = false;
-/* BUCKETS de lineas por color (pares from/to de pc.Vec3) + pool persistente.
-   Cada bucket se pinta con app.drawLines(lineas, UN pc.Color): la ruta de
-   color POR VERTICE (drawLineArrays) mostraba todas las lineas blancas en
-   este build del engine, asi que el color va por lote, no por vertice. */
-GameManager.__ammoDebugBucketDefault = [];    // VERDE: mundo/props/armas
-GameManager.__ammoDebugBucketCharacter = [];  // ROJO: capsulas de personaje
-GameManager.__ammoDebugBucketHitpoint = [];   // AMARILLO: hitpoints/is-damageable
-GameManager.__ammoDebugBucket = null;         // bucket activo (lo consume drawLine)
-GameManager.__ammoDebugVecPool = [];          // pool de pc.Vec3 (cero GC por frame)
-GameManager.__ammoDebugVecUsed = 0;
-GameManager.__ammoDebugPcColorDefault = new pc.Color(0.2, 0.9, 0.2);
-GameManager.__ammoDebugPcColorCharacter = new pc.Color(1, 0, 0);
-GameManager.__ammoDebugPcColorHitpoint = new pc.Color(1, 1, 0);
+GameManager.__colDbgColChar = new pc.Color(1, 0, 0);       // ROJO
+GameManager.__colDbgColHit = new pc.Color(1, 1, 0);        // AMARILLO
+GameManager.__colDbgColDef = new pc.Color(0.2, 0.9, 0.2);  // VERDE
+GameManager.__colDbgPool = [];      // pool de pc.Vec3 (cero GC tras el warm-up)
+GameManager.__colDbgUsed = 0;
+GameManager.__colDbgTmp = new pc.Vec3();
+GameManager.__colDbgZero = new pc.Vec3();
+GameManager.__colDbgCenter = new pc.Vec3();
+GameManager.__colDbgLogged = false;
+/* 12 aristas de una caja unitaria como pares de signos (±1) por vertice */
+GameManager.__colDbgBoxEdges = [
+    [-1, -1, -1, 1, -1, -1], [1, -1, -1, 1, -1, 1], [1, -1, 1, -1, -1, 1], [-1, -1, 1, -1, -1, -1],
+    [-1, 1, -1, 1, 1, -1], [1, 1, -1, 1, 1, 1], [1, 1, 1, -1, 1, 1], [-1, 1, 1, -1, 1, -1],
+    [-1, -1, -1, -1, 1, -1], [1, -1, -1, 1, 1, -1], [1, -1, 1, 1, 1, 1], [-1, -1, 1, -1, 1, 1]
+];
 
-/* Crea el drawer y lo registra en el dynamicsWorld. Devuelve false si la
-   física aún no está lista (se reintenta solo, cada frame, desde update). */
-GameManager._createAmmoDebugDrawer = function () {
-    if (GameManager.__ammoDebugDrawer) return true;
+/* Vec3 del pool (persistente hasta el render de este frame; se reindexa cada
+   frame poniendo __colDbgUsed = 0). */
+GameManager.__colDbgVec = function () {
+    var p = GameManager.__colDbgPool;
+    var i = GameManager.__colDbgUsed++;
+    return p[i] || (p[i] = new pc.Vec3());
+};
 
-    var world = GameManager._app &&
-        GameManager._app.systems.rigidbody &&
-        GameManager._app.systems.rigidbody.dynamicsWorld;
-    if (typeof Ammo === "undefined" || !world) return false;   // reintentar luego
+/* Traza una linea entre dos puntos MUNDO (numeros) con depthTest off. */
+GameManager.__colDbgLine = function (ax, ay, az, bx, by, bz, color) {
+    var a = GameManager.__colDbgVec().set(ax, ay, az);
+    var b = GameManager.__colDbgVec().set(bx, by, bz);
+    GameManager._app.drawLine(a, b, color, false);
+};
 
-    if (!Ammo.DebugDrawer) {
-        if (!GameManager.__ammoDebugWarned) {
-            console.warn("[gameManager] Este build de ammo.js no expone Ammo.DebugDrawer: AmmoDebugDrawer no disponible.");
-            GameManager.__ammoDebugWarned = true;
+/* Punto mundo = centro + q * (lx,ly,lz), escrito en los 6 args de __colDbgLine
+   via el scratch tmp. Devuelve el propio tmp (x,y,z). */
+GameManager.__colDbgWorld = function (c, q, lx, ly, lz) {
+    var t = GameManager.__colDbgTmp.set(lx, ly, lz);
+    q.transformVector(t, t);
+    t.x += c.x; t.y += c.y; t.z += c.z;
+    return t;
+};
+
+/* CAJA: 12 aristas. c=centro mundo, q=rotacion mundial, he=halfExtents. */
+GameManager.__colDbgBox = function (c, q, hx, hy, hz, color) {
+    var E = GameManager.__colDbgBoxEdges;
+    for (var e = 0; e < 12; e++) {
+        var s = E[e];
+        var a = GameManager.__colDbgWorld(c, q, s[0] * hx, s[1] * hy, s[2] * hz);
+        var ax = a.x, ay = a.y, az = a.z;
+        var b = GameManager.__colDbgWorld(c, q, s[3] * hx, s[4] * hy, s[5] * hz);
+        GameManager.__colDbgLine(ax, ay, az, b.x, b.y, b.z, color);
+    }
+};
+
+/* ESFERA: 3 circulos ortogonales (sin rotacion: es simetrica). */
+GameManager.__colDbgSphere = function (c, r, color) {
+    var N = 16, TAU = Math.PI * 2;
+    for (var plane = 0; plane < 3; plane++) {
+        var px = 0, py = 0, pz = 0, first = true, fx = 0, fy = 0, fz = 0;
+        for (var i = 0; i <= N; i++) {
+            var a = (i / N) * TAU, ca = Math.cos(a) * r, sa = Math.sin(a) * r;
+            var x = c.x, y = c.y, z = c.z;
+            if (plane === 0) { x += ca; y += sa; }        // XY
+            else if (plane === 1) { y += ca; z += sa; }   // YZ
+            else { x += ca; z += sa; }                    // XZ
+            if (!first) GameManager.__colDbgLine(px, py, pz, x, y, z, color);
+            else { first = false; fx = x; fy = y; fz = z; }
+            px = x; py = y; pz = z;
         }
-        return false;
+    }
+};
+
+/* CAPSULA / CILINDRO: dos anillos + 4 verticales (+ arcos de casquete si cap).
+   axis 0/1/2 = X/Y/Z. q rota el eje local al mundo. */
+GameManager.__colDbgCapsule = function (c, q, r, height, axis, cap, color) {
+    var N = 16, ARC = 8, TAU = Math.PI * 2;
+    var hc = Math.max(0, height * 0.5 - r);   // media longitud del cilindro
+    /* base local: axisDir a lo largo del eje, u/v perpendiculares */
+    var ax, ay, az, ux, uy, uz, vx, vy, vz;
+    if (axis === 0) { ax = 1; ay = 0; az = 0; ux = 0; uy = 1; uz = 0; vx = 0; vy = 0; vz = 1; }
+    else if (axis === 2) { ax = 0; ay = 0; az = 1; ux = 1; uy = 0; uz = 0; vx = 0; vy = 1; vz = 0; }
+    else { ax = 0; ay = 1; az = 0; ux = 1; uy = 0; uz = 0; vx = 0; vy = 0; vz = 1; }
+
+    /* punto = c + q*( aOff*axisDir + b*u + d*v ) */
+    function P(aOff, b, d) {
+        return GameManager.__colDbgWorld(c, q,
+            aOff * ax + b * ux + d * vx,
+            aOff * ay + b * uy + d * vy,
+            aOff * az + b * uz + d * vz);
     }
 
-    var debugMode = 1;   // btIDebugDraw::DBG_DrawWireframe
-
-    var drawer = new Ammo.DebugDrawer();
-
-    /* Bullet pasa PUNTEROS a btVector3 en el heap WASM: se leen como floats
-       (índice = puntero/4). El color de Bullet se IGNORA: cada linea cae en el
-       bucket activo (__ammoDebugBucket) y el color se aplica por bucket. */
-    drawer.drawLine = function (from, to, color) {
-        var h = Ammo.HEAPF32;
-        var f = from / 4, t = to / 4;
-        var pool = GameManager.__ammoDebugVecPool;
-        var idx = GameManager.__ammoDebugVecUsed;
-        var v1 = pool[idx] || (pool[idx] = new pc.Vec3());
-        var v2 = pool[idx + 1] || (pool[idx + 1] = new pc.Vec3());
-        v1.set(h[f], h[f + 1], h[f + 2]);
-        v2.set(h[t], h[t + 1], h[t + 2]);
-        GameManager.__ammoDebugVecUsed = idx + 2;
-        GameManager.__ammoDebugBucket.push(v1, v2);
-    };
-
-    drawer.drawContactPoint = function (pointOnB, normalOnB, distance, lifeTime, color) {
-        var h = Ammo.HEAPF32;
-        var p = pointOnB / 4, n = normalOnB / 4;
-        var s = 0.15;   // largo (m) de la rayita del contacto sobre su normal
-        var pool = GameManager.__ammoDebugVecPool;
-        var idx = GameManager.__ammoDebugVecUsed;
-        var v1 = pool[idx] || (pool[idx] = new pc.Vec3());
-        var v2 = pool[idx + 1] || (pool[idx + 1] = new pc.Vec3());
-        v1.set(h[p], h[p + 1], h[p + 2]);
-        v2.set(h[p] + h[n] * s, h[p + 1] + h[n + 1] * s, h[p + 2] + h[n + 2] * s);
-        GameManager.__ammoDebugVecUsed = idx + 2;
-        GameManager.__ammoDebugBucket.push(v1, v2);
-    };
-
-    /* obligatorios en la interfaz; sin uso (el warning llega como puntero
-       char* del heap, no como string legible) */
-    drawer.reportErrorWarning = function (warningString) { };
-    drawer.draw3dText = function (location, textString) { };
-    drawer.setDebugMode = function (mode) { debugMode = mode; };
-    drawer.getDebugMode = function () { return debugMode; };
-
-    world.setDebugDrawer(drawer);
-    GameManager.__ammoDebugDrawer = drawer;
-
-    /* colores por TIPO de entidad (btVector3 cacheados: cero GC por frame) */
-    GameManager.__ammoDebugColorDefault = new Ammo.btVector3(0.2, 0.9, 0.2);   // VERDE: mundo/props/resto
-    GameManager.__ammoDebugColorCharacter = new Ammo.btVector3(1, 0, 0);       // ROJO: capsulas de personaje
-    GameManager.__ammoDebugColorHitpoint = new Ammo.btVector3(1, 1, 0);        // AMARILLO: hitpoints / is-damageable
-
-    return true;
+    /* dos anillos (en +hc y -hc). Solo se sostiene UN punto (tmp) a la vez:
+       sus coords se copian a numeros antes de pedir el siguiente. */
+    for (var side = 0; side < 2; side++) {
+        var h = side === 0 ? hc : -hc;
+        var px = 0, py = 0, pz = 0, first = true;
+        for (var i = 0; i <= N; i++) {
+            var a = (i / N) * TAU, cb = Math.cos(a) * r, sb = Math.sin(a) * r;
+            var pt = P(h, cb, sb);
+            var x = pt.x, y = pt.y, z = pt.z;
+            if (!first) GameManager.__colDbgLine(px, py, pz, x, y, z, color);
+            first = false; px = x; py = y; pz = z;
+        }
+    }
+    /* 4 verticales a 0/90/180/270 (guardar top a numeros antes de calcular bot) */
+    var dirs = [[r, 0], [0, r], [-r, 0], [0, -r]];
+    for (var k = 0; k < 4; k++) {
+        var b0 = dirs[k][0], d0 = dirs[k][1];
+        var top = P(hc, b0, d0);
+        var tx = top.x, ty = top.y, tz = top.z;
+        var bot = P(-hc, b0, d0);
+        GameManager.__colDbgLine(tx, ty, tz, bot.x, bot.y, bot.z, color);
+    }
+    if (!cap) return;
+    /* casquetes: un semicirculo por plano y por extremo, de -dir a +dir pasando
+       por el polo (theta 0..PI). Un solo punto vivo a la vez => sin aliasing. */
+    var STEPS = ARC * 2;
+    for (var s2 = 0; s2 < 2; s2++) {
+        var sgn = s2 === 0 ? 1 : -1, base = sgn * hc;
+        for (var pl = 0; pl < 2; pl++) {
+            var hpx = 0, hpy = 0, hpz = 0, hf = true;
+            for (var j = 0; j <= STEPS; j++) {
+                var th = (j / STEPS) * Math.PI;             // 0..180°
+                var radial = Math.cos(th) * r;              // +r -> 0 -> -r
+                var aoff = base + sgn * Math.sin(th) * r;   // base -> polo -> base
+                var pt2 = pl === 0 ? P(aoff, radial, 0) : P(aoff, 0, radial);
+                var qx = pt2.x, qy = pt2.y, qz = pt2.z;
+                if (!hf) GameManager.__colDbgLine(hpx, hpy, hpz, qx, qy, qz, color);
+                hf = false; hpx = qx; hpy = qy; hpz = qz;
+            }
+        }
+    }
 };
 
 /* Llamado cada frame desde updateGameManager mientras el flag esté encendido.
    Immediate mode: al apagar el flag simplemente deja de dibujarse. */
 GameManager.updateAmmoDebugDrawer = function () {
-    if (!GameManager._createAmmoDebugDrawer()) return;
-
     var app = GameManager._app;
-    var world = app.systems.rigidbody.dynamicsWorld;
-
-    var bDef = GameManager.__ammoDebugBucketDefault;
-    var bChar = GameManager.__ammoDebugBucketCharacter;
-    var bHit = GameManager.__ammoDebugBucketHitpoint;
-    bDef.length = 0;
-    bChar.length = 0;
-    bHit.length = 0;
-    GameManager.__ammoDebugVecUsed = 0;   // el pool de Vec3 se reusa entero
-
-    /* COLOREADO POR TIPO: cada collision object se dibuja con debugDrawObject
-       apuntando sus lineas al bucket de su color:
-         AMARILLO = hitpoints / is-damageable
-         ROJO     = capsulas de personaje (is-character)
-         VERDE    = resto (mundo, props, armas...)
-       El wrapper original del body se recupera con Ammo.castObject (ammo.js
-       cachea wrappers por puntero, asi que el .entity que PlayCanvas cuelga
-       del btRigidBody sigue ahi). Si el build no expone estas APIs, fallback
-       al debugDrawWorld clasico (todo al bucket verde). */
-    if (world.getCollisionObjectArray && world.debugDrawObject && Ammo.castObject) {
-        var arr = world.getCollisionObjectArray();
-        var n = arr.size();
-        for (var i = 0; i < n; i++) {
-            var obj = arr.at(i);
-            var ent = Ammo.castObject(obj, Ammo.btRigidBody).entity;
-
-            var bucket = bDef;
-            var btColor = GameManager.__ammoDebugColorDefault;
-            if (ent && ent.tags) {
-                if (ent.tags.has("is-hitpoint") || ent.tags.has("is-damageable")) {
-                    bucket = bHit;
-                    btColor = GameManager.__ammoDebugColorHitpoint;
-                }
-                /* la capsula tambien es is-damageable: is-character manda */
-                if (ent.tags.has("is-character")) {
-                    bucket = bChar;
-                    btColor = GameManager.__ammoDebugColorCharacter;
-                }
-            }
-
-            GameManager.__ammoDebugBucket = bucket;
-            world.debugDrawObject(obj.getWorldTransform(), obj.getCollisionShape(), btColor);
+    if (!app || !app.drawLine) {
+        if (!GameManager.__colDbgLogged) {
+            GameManager.__colDbgLogged = true;
+            console.warn("[gameManager] CollisionDebug: este build del engine no expone app.drawLine; no se puede dibujar.");
         }
-    } else {
-        GameManager.__ammoDebugBucket = bDef;
-        world.debugDrawWorld();
+        return;
     }
 
-    /* UN drawLines por color — API basica del engine, color por lote */
-    if (bDef.length) app.drawLines(bDef, GameManager.__ammoDebugPcColorDefault);
-    if (bChar.length) app.drawLines(bChar, GameManager.__ammoDebugPcColorCharacter);
-    if (bHit.length) app.drawLines(bHit, GameManager.__ammoDebugPcColorHitpoint);
+    GameManager.__colDbgUsed = 0;   // reindexa el pool de Vec3
+
+    var comps = app.root.findComponents ? app.root.findComponents("collision") : null;
+    if (!comps) return;
+
+    var drawn = 0;
+    for (var i = 0; i < comps.length; i++) {
+        var col = comps[i];
+        var e = col.entity;
+        if (!col.enabled || !e || !e.enabled) continue;
+
+        /* color por tag (is-character manda sobre is-damageable) */
+        var color = GameManager.__colDbgColDef;
+        if (e.tags) {
+            if (e.tags.has("is-hitpoint") || e.tags.has("is-damageable")) color = GameManager.__colDbgColHit;
+            if (e.tags.has("is-character")) color = GameManager.__colDbgColChar;
+        }
+
+        /* centro mundo = matriz mundial * linearOffset; rotacion = rotacion mundial */
+        var offset = col.linearOffset || GameManager.__colDbgZero;
+        var c = e.getWorldTransform().transformPoint(offset, GameManager.__colDbgCenter);
+        var q = e.getRotation();
+
+        switch (col.type) {
+            case "box":
+                var he = col.halfExtents;
+                GameManager.__colDbgBox(c, q, he.x, he.y, he.z, color);
+                break;
+            case "sphere":
+                GameManager.__colDbgSphere(c, col.radius, color);
+                break;
+            case "capsule":
+                GameManager.__colDbgCapsule(c, q, col.radius, col.height, col.axis, true, color);
+                break;
+            case "cylinder":
+            case "cone":
+                GameManager.__colDbgCapsule(c, q, col.radius, col.height, col.axis, false, color);
+                break;
+            default:
+                /* mesh/compound/otros: caja del AABB del render si existe */
+                var aabb = GameManager.__colDbgRenderAabb(e);
+                if (aabb) {
+                    GameManager.__colDbgAabbBox(aabb.center, aabb.halfExtents, color);
+                    drawn++;
+                }
+                continue;
+        }
+        drawn++;
+    }
+
+    if (!GameManager.__colDbgLogged) {
+        GameManager.__colDbgLogged = true;
+        console.log("[gameManager] CollisionDebug ON | collisions:", comps.length, "| dibujadas:", drawn,
+            "| ROJO=personaje AMARILLO=hitpoint/damageable VERDE=resto");
+    }
+};
+
+/* AABB (world) del render/model de una entidad, o null si no tiene meshes. */
+GameManager.__colDbgRenderAabb = function (e) {
+    var mis = (e.render && e.render.meshInstances) || (e.model && e.model.meshInstances);
+    if (!mis || !mis.length) return null;
+    var box = GameManager.__colDbgAabb || (GameManager.__colDbgAabb = new pc.BoundingBox());
+    box.copy(mis[0].aabb);
+    for (var i = 1; i < mis.length; i++) box.add(mis[i].aabb);
+    return box;
+};
+
+/* Caja AABB (sin rotacion) a partir de centro + halfExtents mundo. */
+GameManager.__colDbgAabbBox = function (ce, he, color) {
+    var E = GameManager.__colDbgBoxEdges;
+    for (var e = 0; e < 12; e++) {
+        var s = E[e];
+        GameManager.__colDbgLine(
+            ce.x + s[0] * he.x, ce.y + s[1] * he.y, ce.z + s[2] * he.z,
+            ce.x + s[3] * he.x, ce.y + s[4] * he.y, ce.z + s[5] * he.z, color);
+    }
 };
 
 
