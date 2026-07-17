@@ -148,6 +148,12 @@ Character.attributes.add("tracerOptions",
                 name: "traceattack",
                 type: "boolean",
                 default: false
+            },
+            {
+                name: "tracehitpoints",
+                type: "boolean",
+                default: false,
+                description: "Dibuja en wireframe las collisions de los hitpoints (huesos). Toggle en caliente."
             }
         ]
     });
@@ -161,15 +167,23 @@ Character.attributes.add("playerAnimationsOptions",
             {
                 name: "global",
                 title: "Motion Root (global)",
-                description: "Modo de motion root GLOBAL. Si se pone en 'none', cada animacion " +
-                    "usa su propio selector (Motion Root <mode>); con cualquier otro valor, ese " +
-                    "valor manda sobre TODAS las animaciones (comportamiento actual).",
+                description: "Modo de motion root GLOBAL. En 'none' (default), cada animacion " +
+                    "usa su propio selector 'motion root' (esta debajo de cada animacion). " +
+                    "Con cualquier otro valor, ese valor manda sobre TODAS las animaciones: " +
+                    "place-in-<ejes> = el modelo queda CLAVADO en su sitio en esos ejes (el " +
+                    "desplazamiento de la animacion se descarta; la capsula se mueve solo por " +
+                    "input/fisica); teleport = la animacion mueve al modelo y la capsula lo sigue.",
                 type: "string", enum: [
-                    { "in_place_all_axis": "in_place_all_axis" },
-                    { "in_place_z_axis": "in_place_z_axis" },
+                    { "none": "none" },
                     { "teleport": "teleport" },
-                    { "none": "none" }],
-                default: "in_place_z_axis"
+                    { "place-in-x": "place-in-x" },
+                    { "place-in-y": "place-in-y" },
+                    { "place-in-z": "place-in-z" },
+                    { "place-in-zx": "place-in-zx" },
+                    { "place-in-zy": "place-in-zy" },
+                    { "place-in-yx": "place-in-yx" },
+                    { "place-in-zxy": "place-in-zxy" }],
+                default: "none"
             }
         ]
     });
@@ -207,6 +221,26 @@ Character.attributes.add("bones",
             },
             {
                 name: "rightFoot",
+                type: "entity",
+                default: null
+            },
+            {
+                name: "leftLeg",
+                type: "entity",
+                default: null
+            },
+            {
+                name: "rightLeg",
+                type: "entity",
+                default: null
+            },
+            {
+                name: "spine2",
+                type: "entity",
+                default: null
+            },
+            {
+                name: "head",
                 type: "entity",
                 default: null
             },
@@ -268,6 +302,55 @@ Character.attributes.add("health",
                 min: 1,
                 title: "max",
                 description: "Vida maxima del personaje. Al llegar a 0 se dispara la animacion de muerte."
+            }
+        ]
+    });
+
+
+/* CULLING FÍSICO AGRESIVO (opcional). OFF por defecto: activarlo apaga rigidbody
+   y collision de los NPCs que llevan 'physicsCullDelay' segundos fuera de cámara
+   y NO están en combate, ahorrando simulación de Ammo.js. Se reactivan al volver
+   a ser visibles. El PLAYER nunca se culla. */
+Character.attributes.add("cullingOptions",
+    {
+        title: "Culling options",
+        type: "json",
+        schema: [
+            {
+                name: "physicsCulling",
+                type: "boolean",
+                default: true,
+                title: "Physics culling",
+                description: "Apaga rigidbody+collision de NPCs fuera de cámara (no en combate) para ahorrar Ammo.js."
+            },
+            {
+                name: "physicsCullDelay",
+                type: "number",
+                default: 2,
+                min: 0,
+                title: "Physics cull delay (s)",
+                description: "Segundos fuera de cámara antes de apagar la física del NPC."
+            }
+        ]
+    });
+
+
+/* HITPOINTS por hueso: al habilitarlo, cada hueso de la seccion bones recibe
+   una collision (trigger, sin rigidbody: detecta pero no empuja ni pesa)
+   dimensionada automaticamente a partir del MISMO characterHeight que ya
+   dimensiona la capsula y la masa. Base para daño localizado (headshots, etc.).
+   Ver _setupHitpoints. Visualizacion: tracerOptions.tracehitpoints. */
+Character.attributes.add("hitpointsoptions",
+    {
+        title: "hitpointsoptions",
+        type: "json",
+        schema: [
+            {
+                name: "enabled",
+                type: "boolean",
+                default: true,
+                title: "enabled",
+                description: "enables hitpointsoptions"
             }
         ]
     });
@@ -351,49 +434,44 @@ for (var a_s = 0; a_s < Character.animation_modes.length; a_s++) {
     }
 
     if (statesSchema.length > 0) {
-        Character.attributes.add("animations_" + modeName,
-            {
-                title: "Animations " + modeName,
-                type: "json",
-                schema: statesSchema
-            }
-        );
-
-        /* MOTION ROOT POR-ANIMACIÓN: un selector por cada animación (mismo nombre
-           que en animations_<mode>). SOLO se usan estos valores cuando el global
-           (playerAnimationsOptions.global) está en "none"; con cualquier otro valor
-           global, todas las animaciones usan el global y esto se ignora.
-             - none     : no hace NADA (la animación se reproduce tal cual está)
-             - teleport : no toca la animación, pero la cápsula del rigidbody
-                          ACOMPAÑA al render/template (atributo templateEntity)
-             - x/y/z y combinaciones (zx, zy, yx, zxy): extrae el desplazamiento
-               de hips en ESOS ejes (locales del rig) y lo aplica a la cápsula;
-               en los ejes extraídos, hips queda fijado (el mesh no se mueve dos
-               veces); los ejes NO seleccionados se reproducen tal cual. */
-        var motionSchema = [];
-        for (var ms = 0; ms < statesSchema.length; ms++) {
-            motionSchema.push({
-                name: statesSchema[ms].name,
+        /* Debajo de CADA animación va su selector "<anim>_rootmotion" (en el MISMO
+           grupo, no en un grupo aparte). El selector dice qué hacer con el
+           desplazamiento que la animación trae "de fábrica":
+             - none         : no se hace nada (la animación se ve tal cual)
+             - teleport     : la animación se desplaza sola y la cápsula (física)
+                              la sigue por debajo (para ataques/embestidas)
+             - place-in-<ejes> (x, y, z, zx, zy, yx, zxy):
+                              en esos ejes el modelo queda CLAVADO en su sitio
+                              (el desplazamiento de la animación se descarta);
+                              la cápsula se mueve SOLO por input/física
+           SOLO se usan cuando el global (Motion Root global) está en "none". */
+        const fullSchema = [];
+        for (let fs = 0; fs < statesSchema.length; fs++) {
+            fullSchema.push(statesSchema[fs]);
+            fullSchema.push({
+                name: statesSchema[fs].name + "_rootmotion",
+                title: "motion root",
                 type: "string",
                 enum: [
                     { "none": "none" },
                     { "teleport": "teleport" },
-                    { "x": "x" },
-                    { "y": "y" },
-                    { "z": "z" },
-                    { "zx": "zx" },
-                    { "zy": "zy" },
-                    { "yx": "yx" },
-                    { "zxy": "zxy" }
+                    { "place-in-x": "place-in-x" },
+                    { "place-in-y": "place-in-y" },
+                    { "place-in-z": "place-in-z" },
+                    { "place-in-zx": "place-in-zx" },
+                    { "place-in-zy": "place-in-zy" },
+                    { "place-in-yx": "place-in-yx" },
+                    { "place-in-zxy": "place-in-zxy" }
                 ],
                 default: "none"
             });
         }
-        Character.attributes.add("animMotion_" + modeName,
+
+        Character.attributes.add("animations_" + modeName,
             {
-                title: "Motion Root " + modeName,
+                title: "Animations " + modeName,
                 type: "json",
-                schema: motionSchema
+                schema: fullSchema
             }
         );
     }
@@ -437,6 +515,23 @@ const CharacterAttackSystemStatusEnum = Object.freeze({
 
 
 Character.prototype.initialize = function () {
+    /* BLINDAJE de atributos json: si la escena guarda datos de una versión
+       vieja del script (sin re-parsear en el editor), un grupo puede llegar
+       null y una sola lectura (p.ej. this.attackSystem.canAttack) rompería
+       TODO el initialize -> personaje muerto, sin movimiento ni armas.
+       Con esto el script arranca siempre, con defaults seguros. */
+    this.playerOptions = this.playerOptions || {};
+    this.ccd = this.ccd || { enabled: false };
+    this.sensorOptions = this.sensorOptions || {};
+    this.tracerOptions = this.tracerOptions || {};
+    this.playerAnimationsOptions = this.playerAnimationsOptions || {};
+    this.bones = this.bones || { autodetectFromMixamoArmature: true };
+    this.carryWeapons = this.carryWeapons || {};
+    this.attackSystem = this.attackSystem || { canAttack: true, walkAndAttack: false };
+    this.health = this.health || { max: 100 };
+    this.cullingOptions = this.cullingOptions || { physicsCulling: false, physicsCullDelay: 2 };
+    this.hitpointsoptions = this.hitpointsoptions || { enabled: false };
+
     this.entity.isCharacter = true;
     if (this.entity.isCharacter) {
         this.entity.tags.add("is-character");
@@ -462,7 +557,10 @@ Character.prototype.initialize = function () {
     this.pointCharacterEntity = new pc.Entity()
     this.pointCharacterEntity.name = (this.entity.isPlayer ? "player-" : "") + "point-character-entity";
     this.pointCharacterEntity.tags.add(this.pointCharacterEntity.name);
-    this.app.scene.root.addChild(this.pointCharacterEntity);
+    /* scene.root lo asigna el scene handler AL CARGAR la escena; si este script
+       inicializa antes (o la escena se instancia por código), sería null y
+       rompería todo el initialize -> fallback al root de la app */
+    (this.app.scene.root || this.app.root).addChild(this.pointCharacterEntity);
 
 
 
@@ -478,10 +576,15 @@ Character.prototype.initialize = function () {
     this.entity.renderCharacterComponent = this.renderCharacterComponent;
     if (this.renderCharacterComponent) {
         this.renderCharacterComponent.entity.tags.add("uranus-instancing-exclude");
-        this._characterMeshInstance = ((this.renderCharacterComponent.meshInstances || [])[0] || { visibleThisFrame: false });
-    } else {
-        this._characterMeshInstance = { visibleThisFrame: true };
     }
+    /* meshInstance para el culling por visibilidad de doMove. Si todavía no hay
+       meshes (asset sin cargar o render desactivado), se usa un placeholder
+       VISIBLE y doMove adopta la mesh real cuando aparezca. El placeholder viejo
+       era { visibleThisFrame: false }: dejaba al personaje CONGELADO para
+       siempre (sin movimiento, sin animación, "sin agarrar armas"). */
+    this._characterMeshInstance =
+        (this.renderCharacterComponent && (this.renderCharacterComponent.meshInstances || [])[0]) ||
+        { visibleThisFrame: true, __placeholder: true };
 
 
 
@@ -532,11 +635,22 @@ Character.prototype.initialize = function () {
     if (!this.bones.rightFoot && this.bones.autodetectFromMixamoArmature) {
         this.bones.rightFoot = this.entity.findByName("mixamorig:RightFoot");
     }
+    if (!this.bones.leftLeg && this.bones.autodetectFromMixamoArmature) {
+        this.bones.leftLeg = this.entity.findByName("mixamorig:LeftLeg");
+    }
+    if (!this.bones.rightLeg && this.bones.autodetectFromMixamoArmature) {
+        this.bones.rightLeg = this.entity.findByName("mixamorig:RightLeg");
+    }
+    if (!this.bones.spine2 && this.bones.autodetectFromMixamoArmature) {
+        this.bones.spine2 = this.entity.findByName("mixamorig:Spine2");
+    }
+    if (!this.bones.head && this.bones.autodetectFromMixamoArmature) {
+        this.bones.head = this.entity.findByName("mixamorig:Head");
+    }
 
     if (this.bones.hips) {
         this.playerAnimationsOptions.startPosition = this.bones.hips.getLocalPosition().clone();
     }
-    this._motionRootMode = this.playerAnimationsOptions.global;
     if (this.renderCharacterComponent) {
         this.renderCharacterComponent.rootBone = this.bones.hips;
     }
@@ -619,6 +733,11 @@ Character.prototype.initialize = function () {
     this._groundBy = {};        // guid de entidad -> true si nos está sosteniendo
     this._coyoteTime = 0;       // gracia anti-parpadeo de manifolds de Bullet
 
+    /* CULLING FÍSICO (ver cullingOptions): tiempo acumulado fuera de cámara y si
+       la física ya está apagada. Solo se usan en NPCs con physicsCulling activo. */
+    this._invisibleTime = 0;
+    this._physicsCulled = false;
+
     /* contacto de PARED más reciente (lo consume CharacterIA): dirección
        horizontal de escape + timestamp en ms */
     this.entity.wallAway = new pc.Vec3();
@@ -646,6 +765,16 @@ Character.prototype.initialize = function () {
     /* SALTO: el apex del salto es la MITAD del height real (escalado) de la
        cápsula. Precalculado aquí; la velocidad se deriva con v = sqrt(2*g*h). */
     this._jumpApexHeight = (colHeight * scaleY) * 0.5;
+
+    /* REFUERZO DE SUELO por raycast (ver _probeGroundBelow): cotas Y del rayo
+       corto relativas al origen de la entidad. Arranca 0.02 m DENTRO del casquete
+       inferior (así Bullet no reporta auto-impacto) y baja hasta 'groundtolerance'
+       por debajo de la punta de la cápsula. Precalculado: cero coste por consulta. */
+    var groundtol = (this.sensorOptions && typeof this.sensorOptions.groundtolerance === "number")
+        ? this.sensorOptions.groundtolerance : 0.15;
+    var bottomTipY = -(colHeight * 0.5) * scaleY;   // punta inferior de la cápsula
+    this._groundProbeStartY = bottomTipY + 0.02;
+    this._groundProbeEndY = bottomTipY - groundtol;
 
 
 
@@ -692,6 +821,17 @@ Character.prototype.initialize = function () {
         ccd?.setContactProcessingThreshold(this.ccd.contactProcessingThreshold);
     }
 
+    /* HITPOINTS por hueso (hitboxes localizadas). Va aquí porque necesita
+       characterHeight (calculado arriba) y los huesos ya automapeados. */
+    this._hitpoints = [];
+    this._hitpointTraceMaterial = null;
+    if (this.hitpointsoptions.enabled) {
+        this._setupHitpoints();
+        if (this.tracerOptions.enabled && this.tracerOptions.tracehitpoints) {
+            this._setHitpointTracesVisible(true);
+        }
+    }
+
     this.prepareAnimComponent();
 
 
@@ -700,33 +840,50 @@ Character.prototype.initialize = function () {
     /* OPTIMIZACION (GC): vectores/quats reutilizables para evitar "new pc.Vec3()" / ".clone()"
        en el hot-path (doMove, _updateGroundedState, rootMotionFix). Cada uno tiene una única responsabilidad
        dentro de una misma llamada para evitar aliasing entre ellos. */
-    this._vTmp = new pc.Vec3();            // temporal de uso puntual (una sola responsabilidad por llamada)
+    this._vDirToTarget = new pc.Vec3();    // dirección del NPC hacia su objetivo (doMove)
     this._vDirection = new pc.Vec3();      // dirección de movimiento deseada
     this._vCamForward = new pc.Vec3();     // forward de cámara/objetivo (temporal)
     this._vCamRight = new pc.Vec3();       // right de cámara/objetivo (temporal)
     this._vDesired = new pc.Vec3();        // velocidad deseada
-    this._vCurrent = new pc.Vec3();        // velocidad lineal actual (lectura)
+    this._vCurrent = new pc.Vec3();        // velocidad lineal actual (lectura/escritura)
     this._vAccel = new pc.Vec3();          // aceleración / fuerza a aplicar
     this._vLinStop = new pc.Vec3();        // velocidad lineal al detenerse
     this._vAngStop = new pc.Vec3();        // velocidad angular al detenerse
     this._vAngTurn = new pc.Vec3();        // velocidad angular al girar
     this._vFaceDir = new pc.Vec3();        // dirección a la que mirar
     this._vForward = new pc.Vec3();        // forward actual de la entidad (temporal)
-    this._vHipsPos = new pc.Vec3();        // posición local de hips (rootMotionFix)
-    this._qHipsRot = new pc.Quat();        // rotación local de hips (rootMotionFix)
     this._vJump = new pc.Vec3();           // velocidad lineal al saltar
+    this._vProbeStart = new pc.Vec3();     // origen del raycast de refuerzo de suelo
+    this._vProbeEnd = new pc.Vec3();       // destino del raycast de refuerzo de suelo
 
-    /* ROOT MOTION (por-animación): extracción del desplazamiento de hips para
-       trasladar la cápsula. Estado persistente entre frames. */
-    this._vRootPrev = new pc.Vec3();       // pose local de hips del frame anterior
-    this._vRootDelta = new pc.Vec3();      // delta local de hips este frame (crudo, para el guard)
-    this._vRootSel = new pc.Vec3();        // delta local FILTRADO por ejes seleccionados
-    this._vRootWorld = new pc.Vec3();      // delta convertido a mundo
-    this._vRootPos = new pc.Vec3();        // posición destino de la cápsula
-    this._vTplPos = new pc.Vec3();         // compensación del template (modo teleport)
+    /* MOTION ROOT — estado persistente entre frames (ver rootMotionFix) */
+    this._vHipsPinnedPos = new pc.Vec3();  // posición de hips ya clavada (place-in)
+    this._vHipsPrevLocal = new pc.Vec3();  // pose local de hips del frame anterior
+    this._vHipsDeltaLocal = new pc.Vec3(); // cuánto se movió hips este frame (local)
+    this._vHipsDeltaWorld = new pc.Vec3(); // ese movimiento convertido a mundo
+    this._vTemplatePos = new pc.Vec3();    // posición compensada del template (teleport)
     this._teleportShifted = false;         // el template tiene compensación acumulada
     this._rootMotionState = null;          // último estado de anim muestreado
     this._rootMotionPrimed = false;        // ya hay un frame previo válido
+
+    /* caché del modo (se recalcula SOLO al cambiar de animación o de valor en
+       el editor; el resto de frames son comparaciones baratas, cero basura GC) */
+    this._rootMotionKey = null;            // "<anim>_rootmotion" de la anim en curso
+    this._rootMotionTable = null;          // tabla animations_<modo> de la anim en curso
+    this._rootMotionRaw = "__dirty__";     // último texto de modo parseado
+    this._motionKind = 0;                  // tipo interno (CharacterMotionKindEnum)
+    this._motionUseX = false;              // clavar el modelo en el eje X
+    this._motionUseY = false;              // clavar el modelo en el eje Y
+    this._motionUseZ = false;              // clavar el modelo en el eje Z
+
+    /* CONDUCCIÓN por root motion (solo modo teleport): la cápsula se mueve
+       fijando su VELOCIDAD (nunca con rigidbody.teleport(): eso rompe los
+       contactos de suelo y pelea con las fuerzas de doMove).
+       "driving" decide quién conduce: la animación o el input (doMove). */
+    this._rootMotionDriving = false;       // true = la animación conduce la cápsula
+    this._vRootMotionVel = new pc.Vec3();  // velocidad que la animación pide este frame
+    this._vRootMotionVelAvg = new pc.Vec3(); // media suavizada (decide driving, con histéresis)
+    this._vCapsulePrevPos = new pc.Vec3(); // posición previa de la cápsula (teleport)
 
     /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
      *  GIRO DEL TEMPLATE (hijo con render/armature), NO de la cápsula.
@@ -780,6 +937,8 @@ Character.prototype.initialize = function () {
         if (this.entity.capsule_collision) {
             this.entity.capsule_collision.render.enabled = nuevoValor.enabled ? nuevoValor.traceplayercapsule : false;
         }
+        /* hitpoints: ver/apagar los wireframes en tiempo de juego */
+        this._setHitpointTracesVisible(!!(nuevoValor && nuevoValor.enabled && nuevoValor.tracehitpoints));
     }, this);
 
 
@@ -919,8 +1078,18 @@ Character.prototype.initialize = function () {
 
 Character.prototype.updateSpeedAnimBlendFromVelocity = function (dt) {
 
-    const v = this.entity.rigidbody.linearVelocity;
-    const horizontalSpeed = Math.sqrt(v.x * v.x + v.z * v.z);
+    /* Cuando el ROOT MOTION conduce, el parámetro "speed" del grafo debe salir
+       de la INTENCIÓN (input/IA), no de la velocidad medida: la animación
+       genera velocidad, y esa velocidad mantendría a la animación sonando —
+       un lazo que dejaba al personaje caminando para siempre o alternando
+       idle/walk de forma errática. */
+    let horizontalSpeed;
+    if (this._rootMotionDriving) {
+        horizontalSpeed = this._isMoving ? (this._charSpeed || 0) : 0;
+    } else {
+        const v = this.entity.rigidbody.linearVelocity;
+        horizontalSpeed = Math.sqrt(v.x * v.x + v.z * v.z);
+    }
 
     const idleThreshold = 0.12; // m/s: por debajo de esto debe quedar en idle
 
@@ -939,15 +1108,6 @@ Character.prototype.updateSpeedAnimBlendFromVelocity = function (dt) {
         this._speedAnimBlend = 0;
     }
 };
-
-
-Character.prototype.stopMovement = function () {
-
-    this.entity.rigidbody.linearVelocity = new pc.Vec3(0, this.entity.rigidbody.linearVelocity.y, 0);
-
-
-
-}
 
 
 /* Resuelve el "template": el hijo DIRECTO de la cápsula que contiene el render/
@@ -995,6 +1155,11 @@ Character.prototype.doMove = function () {
     if (this._doMoveBusy) return;
     this._doMoveBusy = true;
 
+    /* CACHÉ del componente físico: se accede muchas veces por frame
+       (linearVelocity/angularVelocity/mass/applyForce). Guardar la referencia
+       evita re-resolver this.entity.rigidbody en cada acceso. */
+    const rb = this.entity.rigidbody;
+
     const input = this.entity.input || {};
     const dt = Number(input.dt || 0);
     const useFlight = !!this.canmoveonair;
@@ -1005,12 +1170,50 @@ Character.prototype.doMove = function () {
         this.pointCharacterEntity.setPosition(this._curPosition);
     }
 
-    const visibleThisFrame = (this._characterMeshInstance && typeof this._characterMeshInstance.visibleThisFrame === "boolean")
-        ? this._characterMeshInstance.visibleThisFrame
-        : true;
+    /* si initialize arrancó sin meshes (placeholder), adoptar la mesh real en
+       cuanto exista para que el culling vuelva a funcionar en NPCs */
+    if (this._characterMeshInstance && this._characterMeshInstance.__placeholder &&
+        this.renderCharacterComponent && (this.renderCharacterComponent.meshInstances || [])[0]) {
+        this._characterMeshInstance = this.renderCharacterComponent.meshInstances[0];
+    }
+
+    /* CULLING por visibilidad (optimización para multitudes): un NPC fuera de
+       cámara no simula movimiento. Reglas para no "matar" a un personaje:
+       - el PLAYER NUNCA se congela (aunque su render esté desactivado/oculto)
+       - visibleThisFrame solo es fiable si el render está de verdad activo
+         (componente y entidad habilitados); con el render DESACTIVADO ese flag
+         queda false para siempre y congelaba TODO: movimiento, animación... */
+    let visibleThisFrame = true;
+    if (!this.entity.isPlayer &&
+        this.renderCharacterComponent &&
+        this.renderCharacterComponent.enabled &&
+        this.renderCharacterComponent.entity.enabled &&
+        this._characterMeshInstance &&
+        typeof this._characterMeshInstance.visibleThisFrame === "boolean") {
+        visibleThisFrame = this._characterMeshInstance.visibleThisFrame;
+    }
 
     if (this.entity.anim) {
         this.entity.anim.enabled = visibleThisFrame;
+    }
+
+    /* CULLING FÍSICO AGRESIVO (opcional, off por defecto): un NPC que lleva
+       'physicsCullDelay' s fuera de cámara y NO está en combate apaga su
+       rigidbody+collision para no gastar simulación de Ammo.js. Se reactiva en
+       cuanto vuelve a ser visible (o si entra en combate). El player nunca se culla. */
+    if (!this.entity.isPlayer && this.cullingOptions && this.cullingOptions.physicsCulling) {
+        if (visibleThisFrame) {
+            if (this._physicsCulled) this._restorePhysics();
+            this._invisibleTime = 0;
+        } else {
+            this._invisibleTime += dt;
+            const inCombat = this._isInCombat();
+            if (this._physicsCulled) {
+                if (inCombat) this._restorePhysics();   // reanuda simulación si entra en combate
+            } else if (!inCombat && this._invisibleTime >= (this.cullingOptions.physicsCullDelay || 0)) {
+                this._cullPhysics();
+            }
+        }
     }
 
     if (visibleThisFrame) {
@@ -1063,8 +1266,8 @@ Character.prototype.doMove = function () {
         targetDirection = input.targetEntity;
 
         if (targetDirection) {
-            /* OPTIMIZACION (GC): this._vTmp en vez de .clone() para el vector temporal */
-            const directionToTarget = this._vTmp.copy(targetDirection.getPosition()).sub(this._curPosition).normalize();
+            /* OPTIMIZACION (GC): scratch reutilizable en vez de .clone() */
+            const directionToTarget = this._vDirToTarget.copy(targetDirection.getPosition()).sub(this._curPosition).normalize();
 
             input.x = directionToTarget.x;
             if (input.x < 0.1 && input.x > -0.1) input.x = 0;
@@ -1197,8 +1400,6 @@ Character.prototype.doMove = function () {
         stopMovementNow = true;
     }
 
-    this._isMoving = this._isMoving && this.entity.anim.getInteger("turn180") === 0;
-
     if (this._isMoving && !useFlight && this.entity.isonair) {
         this._isMoving = false;
         stopMovementNow = true;
@@ -1211,31 +1412,33 @@ Character.prototype.doMove = function () {
         if (useFlight) {
             /* VUELO: aceleración suave hacia la velocidad deseada
                (el setter de linearVelocity copia el vector: seguro reutilizarlo) */
-            const current = this._vCurrent.copy(this.entity.rigidbody.linearVelocity);
+            const current = this._vCurrent.copy(rb.linearVelocity);
             current.lerp(current, desiredVelocity, Math.min(1, dt * 8));
-            this.entity.rigidbody.linearVelocity = current;
-        } else {
-            const currentVelocity = this._vCurrent.copy(this.entity.rigidbody.linearVelocity);
+            rb.linearVelocity = current;
+        } else if (!this._rootMotionDriving) {
+            const currentVelocity = this._vCurrent.copy(rb.linearVelocity);
             currentVelocity.y = 0;
             desiredVelocity.y = 0;
 
             const accel = this._vAccel.copy(desiredVelocity).sub(currentVelocity);
-            const force = accel.scale(this.entity.rigidbody.mass * 8);
+            const force = accel.scale(rb.mass * 8);
             force.y = 0;
 
-            this.entity.rigidbody.applyForce(force);
+            rb.applyForce(force);
         }
+        /* si _rootMotionDriving: la velocidad la fija la ANIMACIÓN (rootMotionFix,
+           en postUpdate). Empujar además con fuerzas = doble motor y tirones. */
     } else if (useFlight) {
         /* VUELO sin input: frenado suave hasta quedar en hover (sin esto, al no
            haber gravedad ni damping, la velocidad persistiría para siempre) */
-        const v = this._vLinStop.copy(this.entity.rigidbody.linearVelocity);
+        const v = this._vLinStop.copy(rb.linearVelocity);
         const damp = 1 - Math.min(1, dt * (this.inertia ? 4 : 20));
         v.x *= damp;
         v.y *= damp;
         v.z *= damp;
-        this.entity.rigidbody.linearVelocity = v;
+        rb.linearVelocity = v;
     } else if (stopMovementNow || (!this._isMoving && !this.inertia)) {
-        const v = this._vLinStop.copy(this.entity.rigidbody.linearVelocity);
+        const v = this._vLinStop.copy(rb.linearVelocity);
 
         /* SALTO: durante el arco del salto se conserva el momento horizontal
            (sin esto, saltar corriendo frenaría en seco al pasar a isonair) */
@@ -1253,13 +1456,13 @@ Character.prototype.doMove = function () {
             v.y = 0;
         }
 
-        this.entity.rigidbody.linearVelocity = v;
+        rb.linearVelocity = v;
 
-        const a = this._vAngStop.copy(this.entity.rigidbody.angularVelocity);
+        const a = this._vAngStop.copy(rb.angularVelocity);
         a.x = 0;
         a.y = 0;
         a.z = 0;
-        this.entity.rigidbody.angularVelocity = a;
+        rb.angularVelocity = a;
     }
 
     /* * * * * * * * * */
@@ -1283,9 +1486,9 @@ Character.prototype.doMove = function () {
             const g = Math.abs(this.app.systems.rigidbody.gravity.y) || Math.abs(this.gravity) || 9.8;
             const vy = Math.sqrt(2 * g * this._jumpApexHeight);
 
-            const v = this._vJump.copy(this.entity.rigidbody.linearVelocity);
+            const v = this._vJump.copy(rb.linearVelocity);
             v.y = vy;
-            this.entity.rigidbody.linearVelocity = v;
+            rb.linearVelocity = v;
 
             this._jumping = true;
             this._jumpAvailable = false;
@@ -1381,11 +1584,11 @@ Character.prototype.doMove = function () {
             const turnSpeed = 20;
             const maxTurnSpeed = 14;
 
-            const ang = this._vAngTurn.copy(this.entity.rigidbody.angularVelocity);
+            const ang = this._vAngTurn.copy(rb.angularVelocity);
             ang.x = 0;
             ang.z = 0;
             ang.y = pc.math.clamp(delta * turnSpeed, -maxTurnSpeed, maxTurnSpeed);
-            this.entity.rigidbody.angularVelocity = ang;
+            rb.angularVelocity = ang;
         }
     }
 
@@ -1499,7 +1702,7 @@ Character.prototype._equipWeaponScript = function (weaponEntity, hand) {
     if (!weaponEntity) return;
     weaponEntity.tags.add("is-taken");
 
-    var ws = (weaponEntity.script && weaponEntity.script.weapon) || null;
+    const ws = (weaponEntity.script && weaponEntity.script.weapon) || null;
     this.entity.attackSystem[hand + "HandWeaponScript"] = ws;
 
     if (ws) {
@@ -1515,7 +1718,7 @@ Character.prototype._unequipWeaponScript = function (weaponEntity, hand) {
     if (!weaponEntity) return;
 
     weaponEntity.tags.remove("is-taken");
-    var ws = (weaponEntity.script && weaponEntity.script.weapon) || null;
+    const ws = (weaponEntity.script && weaponEntity.script.weapon) || null;
     if (ws) {
         ws.endDamage();
         ws.setOwner(null);
@@ -1525,9 +1728,9 @@ Character.prototype._unequipWeaponScript = function (weaponEntity, hand) {
 /* Abre (on=true) o cierra (on=false) la ventana de daño de las armas equipadas.
    Lo llaman los eventos de animacion del ataque (ver prepareAnimComponent). */
 Character.prototype._setWeaponsDamaging = function (on) {
-    var as = this.entity.attackSystem;
-    var l = as.leftHandWeaponScript;
-    var r = as.rightHandWeaponScript;
+    const as = this.entity.attackSystem;
+    const l = as.leftHandWeaponScript;
+    const r = as.rightHandWeaponScript;
     if (l) { if (on) l.startDamage(); else l.endDamage(); }
     if (r) { if (on) r.startDamage(); else r.endDamage(); }
 };
@@ -1539,7 +1742,7 @@ Character.prototype._onReceiveDamage = function (amount, attacker, weaponEntity)
 
 /* Aplica daño a la vida y dispara la reaccion (impact / death). */
 Character.prototype.applyDamage = function (amount, attacker) {
-    var h = this.entity.health;
+    const h = this.entity.health;
     if (!h || !h.alive) return;
 
     h.current = Math.max(0, h.current - (amount || 0));
@@ -1575,12 +1778,34 @@ Character.prototype._onDestroy = function () {
         entity.anim.off("attack-end-damage-animation");
     }
 
-    /* armas: la entidad del arma es EXTERNA (no hija). No la destruimos, solo
-       desenganchamos nuestros triggers y el tag is-taken. */
-    this._detachWeapon(this.carryWeapons.leftHandWeaponEntity || this.carryWeapons.leftHandWeaponEntityOld,
-        this.onCollisionStartLeftWeapon, this.onCollisionEndLeftWeapon);
-    this._detachWeapon(this.carryWeapons.rightHandWeaponEntity || this.carryWeapons.rightHandWeaponEntityOld,
-        this.onCollisionStartRightWeapon, this.onCollisionEndRightWeapon);
+    /* armas: la entidad del arma es EXTERNA (no hija). No se destruye: se cierra
+       su ventana de daño, se le quita el portador y el tag is-taken (weapon.js
+       gestiona sus propios eventos de colisión). */
+    this._unequipWeaponScript(this.carryWeapons.leftHandWeaponEntity || this.carryWeapons.leftHandWeaponEntityOld, "left");
+    this._unequipWeaponScript(this.carryWeapons.rightHandWeaponEntity || this.carryWeapons.rightHandWeaponEntityOld, "right");
+
+    /* hitpoints: quitar las collisions que ESTE script añadió a los huesos (el
+       esqueleto puede sobrevivir al script) y sus wireframes de debug */
+    if (this._hitpoints) {
+        for (var h = 0; h < this._hitpoints.length; h++) {
+            var hp = this._hitpoints[h];
+            if (hp.traceEntity) {
+                hp.traceEntity.destroy();
+                hp.traceEntity = null;
+            }
+            var bone = hp.bone;
+            if (bone) {
+                if (hp.added && bone.collision) bone.removeComponent("collision");
+                if (bone.tags) {
+                    bone.tags.remove("is-hitpoint");
+                    bone.tags.remove("is-damageable");
+                }
+                bone.characterEntity = null;
+            }
+        }
+        this._hitpoints.length = 0;
+    }
+    this._hitpointTraceMaterial = null;
 
     /* entidad auxiliar colgada de scene.root (NO es hija de la cápsula): hay que
        destruirla a mano o queda huérfana en la escena */
@@ -1596,40 +1821,6 @@ Character.prototype._onDestroy = function () {
         entity.capsule_collision = null;
     }
 };
-
-/* Suelta los triggers y el tag is-taken que este script enganchó en un arma.
-   La entidad del arma es externa: no se destruye, solo se desengancha. */
-Character.prototype._detachWeapon = function (weaponEntity, onEnter, onLeave) {
-    if (!weaponEntity || !weaponEntity.findComponent) return;
-    var col = weaponEntity.findComponent("collision");
-    if (col) {
-        col.entity.tags.remove("is-taken");
-        col.off("triggerenter", onEnter, this);
-        col.off("triggerleave", onLeave, this);
-    }
-};
-
-Character.prototype.onCollisionStartRightWeapon = function (other) {
-    this.onCollisionStartWeapon(other, "right");
-}
-Character.prototype.onCollisionEndRightWeapon = function (other) {
-}
-Character.prototype.onCollisionStartLeftWeapon = function (other) {
-    this.onCollisionStartWeapon(other, "left");
-}
-Character.prototype.onCollisionEndLeftWeapon = function (other) {
-}
-
-
-Character.prototype.onCollisionStartWeapon = function (other, hand) {
-    if (this.entity.attackSystem.status === CharacterAttackSystemStatusEnum.DAMAGING) {
-        if (this.entity.isPlayer && other.isPlayer) return;
-
-        if (other.isCharacter) {
-            console.log("DAMAGIN CHARACTER !!!");
-        }
-    }
-}
 
 /* * * * * * * * * * * * * * * * */
 /* D O  A T T A C K  S Y S T E M */
@@ -1724,6 +1915,11 @@ Character.prototype.doAttackSystem = function (input) {
 /*                             */
 /*******************************/
 Character.prototype.characterCollisionStart = function (event) {
+    /* HITPOINTS: los triggers de hueso (propios o de OTRO personaje) disparan
+       collisionstart SIN contacts sobre la cápsula; no son suelo ni pared y no
+       deben pisar entity.other */
+    if (event.other && event.other.tags && event.other.tags.has("is-hitpoint")) return;
+
     this.entity.other = event.other;
 
     var contacts = event.contacts;
@@ -1765,6 +1961,9 @@ Character.prototype.characterCollisionStart = function (event) {
 
 
 Character.prototype.characterCollisionEnd = function (other) {
+    /* simetría con el guard de collisionstart: ignorar triggers de hitpoint */
+    if (other && other.tags && other.tags.has("is-hitpoint")) return;
+
     if (this.entity.other === other) this.entity.other = null;
 
     if (this._groundBy[other._guid]) {
@@ -1774,8 +1973,11 @@ Character.prototype.characterCollisionEnd = function (other) {
 }
 
 Character.prototype._updateGroundedState = function () {
-    /* Suelo por contactos de la cápsula, sin raycasts (ver characterCollisionStart/End).
+    /* Suelo por CONTACTOS de la cápsula (ver characterCollisionStart/End); un
+       raycast corto SOLO refuerza los casos ambiguos (sin contactos y sin salto).
        coyoteTime = 100 ms de gracia para cubrir el parpadeo de manifolds de Bullet. */
+    var rb = this.entity.rigidbody;
+    if (!rb) return;
     var dt = this.entity.input.dt || 0;
 
     if (this._groundContacts > 0) {
@@ -1787,22 +1989,32 @@ Character.prototype._updateGroundedState = function () {
     var grounded = this._groundContacts > 0 || this._coyoteTime > 0;
 
     /* caída franca: anula la gracia (cubre collisionend perdidos) */
-    if (grounded && this.entity.rigidbody.linearVelocity.y < -1.5) {
+    if (grounded && rb.linearVelocity.y < -1.5) {
         grounded = false;
         this._coyoteTime = 0;
+    }
+
+    /* REFUERZO por raycast: en casos ambiguos (sin contactos de suelo, sin salto
+       propio en curso y fuera del modo vuelo) un rayo corto hacia abajo confirma
+       si hay suelo a <= groundtolerance de los pies. Recupera contactos perdidos
+       (collisionend espurio de Bullet) sin depender del ruidoso fallback por
+       velocidad. Coste casi nulo: no corre parado sobre suelo, ni saltando, ni volando. */
+    if (!this.canmoveonair && this._groundContacts === 0 && !this._jumping && this._probeGroundBelow()) {
+        grounded = true;
+        this._coyoteTime = 0.1;
     }
 
     /* fallback, mismo criterio que la versión original con raycasts: sin evidencia
        de contacto solo se está en el aire si se está cayendo (vy <= -0.3) */
     if (!grounded) {
-        grounded = this.entity.rigidbody.linearVelocity.y > -0.3;
+        grounded = rb.linearVelocity.y > -0.3;
     }
 
     /* SALTO: durante el ascenso el fallback por velocidad daría grounded=true
        (vy > 0); mientras dure el salto se está en el aire. Aterrizaje = volver
        a tener contacto de suelo sin velocidad ascendente. */
     if (this._jumping) {
-        if (this._groundContacts > 0 && this.entity.rigidbody.linearVelocity.y <= 0.01) {
+        if (this._groundContacts > 0 && rb.linearVelocity.y <= 0.01) {
             this._jumping = false;
         } else {
             grounded = false;
@@ -1815,6 +2027,257 @@ Character.prototype._updateGroundedState = function () {
     this.entity.isonair = !grounded;
 }
 
+/* REFUERZO DE SUELO: rayo corto hacia abajo desde el interior del casquete
+   inferior de la cápsula hasta 'groundtolerance' bajo los pies. Solo lo llama
+   _updateGroundedState en casos ambiguos (sin contactos, sin salto, sin vuelo),
+   así que no hay coste por frame en el caso normal. Arranca DENTRO de la cápsula
+   (offset +0.02) para que Bullet no reporte auto-impacto; el guard entity!==this
+   lo refuerza. Reutiliza vectores scratch (cero GC). */
+Character.prototype._probeGroundBelow = function () {
+    var sys = this.app.systems.rigidbody;
+    if (!sys) return false;
+    var p = this.entity.getPosition();
+    var start = this._vProbeStart.set(p.x, p.y + this._groundProbeStartY, p.z);
+    var end = this._vProbeEnd.set(p.x, p.y + this._groundProbeEndY, p.z);
+    var hit = sys.raycastFirst(start, end);
+    /* suelo = cuerpo SÓLIDO distinto de uno mismo. Exigir rigidbody descarta los
+       volúmenes trigger (collision sin rigidbody), que rayTest también reporta. */
+    return !!(hit && hit.entity !== this.entity && hit.entity.rigidbody);
+};
+
+/* CULLING FÍSICO — helpers (solo NPCs, opt-in por cullingOptions.physicsCulling).
+   "en combate" = atacando o con objetivo/punto de destino activo: nunca se apaga
+   la física en ese caso para no romper persecuciones ni golpes fuera de cámara. */
+Character.prototype._isInCombat = function () {
+    var as = this.entity.attackSystem;
+    if (as && as.status !== CharacterAttackSystemStatusEnum.NONE) return true;
+    var input = this.entity.input;
+    if (input && (input.targetEntity || input.targetPoint)) return true;
+    return false;
+};
+
+/* Apaga rigidbody+collision: el cuerpo sale de la simulación de Ammo.js y deja de
+   generar contactos/integración. Incluye los triggers de hitpoint de los huesos. */
+Character.prototype._cullPhysics = function () {
+    this._physicsCulled = true;
+    if (this.entity.rigidbody) this.entity.rigidbody.enabled = false;
+    if (this.entity.collision) this.entity.collision.enabled = false;
+    this._setHitpointCollisionsEnabled(false);
+};
+
+/* Reactiva la física: collision primero (recrea la shape) y luego rigidbody
+   (re-crea el body). La detección de suelo por contactos parte de cero: los
+   manifolds se reconstruyen con los próximos collisionstart. */
+Character.prototype._restorePhysics = function () {
+    this._physicsCulled = false;
+    this._invisibleTime = 0;
+    if (this.entity.collision) this.entity.collision.enabled = true;
+    if (this.entity.rigidbody) this.entity.rigidbody.enabled = true;
+    this._setHitpointCollisionsEnabled(true);
+    this._groundContacts = 0;
+    this._groundBy = {};
+    this._coyoteTime = 0;
+};
+
+
+/* =========================================================================
+   HITPOINTS: collision (trigger) por hueso, para daño localizado
+   ========================================================================= */
+
+/* Crea las collisions de los huesos de la seccion bones. Tamaños derivados del
+   MISMO characterHeight (AABB del template) que ya dimensiona la capsula y la
+   masa, con proporciones antropometricas estandar (la cabeza mide ~0.13*H, los
+   hombros ~0.25*H...).
+   ESCALA: las primitivas de collision NO heredan la escala de la entidad en
+   este build (verificado con el AmmoDebugDrawer: compensar dividiendo por la
+   escala del hueso las dejaba ~100x fuera de escala con el rig 0.01 de
+   Mixamo). Por eso radius/halfExtents/offsets se pasan en METROS MUNDO tal
+   cual; lo unico que se convierte es el vector rodilla->tobillo de las
+   piernas, que viene en unidades locales del rig y se multiplica por la
+   escala mundial del hueso.
+   Las PIERNAS se miden de verdad: la capsula se tiende del hueso Leg (rodilla)
+   a su hijo Foot (tobillo) usando la posicion local del hijo. Sin rigidbody =>
+   son triggers: detectan armas/proyectiles pero no empujan ni pesan.
+   Cada hueso recibe el tag "is-damageable": el arma (weapon.js) los reconoce
+   como golpeables y resuelve el daño contra el PERSONAJE via characterEntity
+   (una sola vida; un golpe por swing aunque cruce varios huesos). */
+Character.prototype._setupHitpoints = function () {
+    var H = this.characterHeight;
+    var b = this.bones;
+
+    var specs = [
+        { bone: b.head, name: "head", shape: "sphere", radius: 0.08 * H, offsetY: 0.06 * H },
+        { bone: b.spine2, name: "torso", shape: "box", he: [0.13 * H, 0.10 * H, 0.075 * H], offsetY: 0.04 * H },
+        { bone: b.hips, name: "hips", shape: "box", he: [0.12 * H, 0.08 * H, 0.08 * H], offsetY: 0 },
+        { bone: b.leftHand, name: "hand-l", shape: "sphere", radius: 0.045 * H, offsetY: 0 },
+        { bone: b.rightHand, name: "hand-r", shape: "sphere", radius: 0.045 * H, offsetY: 0 },
+        { bone: b.leftFoot, name: "foot-l", shape: "sphere", radius: 0.05 * H, offsetY: 0 },
+        { bone: b.rightFoot, name: "foot-r", shape: "sphere", radius: 0.05 * H, offsetY: 0 },
+        { bone: b.leftLeg, name: "leg-l", shape: "capsule", radius: 0.045 * H, along: b.leftFoot },
+        { bone: b.rightLeg, name: "leg-r", shape: "capsule", radius: 0.045 * H, along: b.rightFoot }
+    ];
+
+    for (var i = 0; i < specs.length; i++) {
+        var spec = specs[i];
+        var bone = spec.bone;
+        if (!bone) continue;
+
+        /* los huesos de un glb instanciado por codigo pueden ser GraphNodes
+           puros (sin addComponent): solo las Entities admiten collision */
+        if (typeof bone.addComponent !== "function") {
+            console.warn('[character] hitpoints: el hueso "' + bone.name + '" no es una Entity; sin collision.');
+            continue;
+        }
+
+        /* collision YA existente (puesta en el editor): NO se agrega otra ni se
+           re-dimensiona; solo se registra (trace/culling/daño) y se etiqueta */
+        if (bone.collision) {
+            bone.tags.add("is-hitpoint");
+            bone.tags.add("is-damageable");
+            bone.hitpointName = spec.name;
+            bone.characterEntity = this.entity;
+            this._hitpoints.push({ bone: bone, name: spec.name, added: false, traceEntity: null });
+            continue;
+        }
+
+        /* escala mundial del hueso (los rigs de Mixamo suelen traer 0.01):
+           SOLO se usa para pasar a mundo el vector rodilla->tobillo */
+        var s = 1;
+        var wt = bone.getWorldTransform && bone.getWorldTransform();
+        if (wt && wt.getScale) {
+            var sc = wt.getScale();
+            s = Math.max(Math.abs(sc.x), Math.abs(sc.y), Math.abs(sc.z)) || 1;
+        }
+
+        var opts;
+        if (spec.shape === "sphere") {
+            opts = {
+                type: "sphere",
+                radius: spec.radius,
+                linearOffset: new pc.Vec3(0, spec.offsetY, 0)
+            };
+        } else if (spec.shape === "box") {
+            opts = {
+                type: "box",
+                halfExtents: new pc.Vec3(spec.he[0], spec.he[1], spec.he[2]),
+                linearOffset: new pc.Vec3(0, spec.offsetY, 0)
+            };
+        } else {
+            /* CAPSULE (pierna): si el hueso del pie es hijo directo, la capsula
+               va EXACTA de rodilla a tobillo (posicion local del hijo, en
+               unidades del rig, convertida a METROS multiplicando por la
+               escala mundial del hueso); si no, fallback proporcional 0.26*H. */
+            var radiusW = spec.radius;
+            var axis = 1, heightW, off;
+            var child = spec.along;
+            if (child && child.parent === bone) {
+                var dl = child.getLocalPosition();
+                var len = dl.length() * s;
+                heightW = Math.max(len, radiusW * 2.2);
+                off = new pc.Vec3(dl.x * 0.5 * s, dl.y * 0.5 * s, dl.z * 0.5 * s);
+                var axv = Math.abs(dl.x), ayv = Math.abs(dl.y), azv = Math.abs(dl.z);
+                axis = (axv > ayv && axv > azv) ? 0 : ((azv > ayv) ? 2 : 1);
+            } else {
+                heightW = Math.max(0.26 * H, radiusW * 2.2);
+                off = new pc.Vec3(0, heightW * 0.5, 0);
+            }
+            opts = { type: "capsule", radius: radiusW, height: heightW, axis: axis, linearOffset: off };
+        }
+
+        bone.addComponent("collision", opts);
+        bone.tags.add("is-hitpoint");
+        bone.tags.add("is-damageable");         // el arma los reconoce como golpeables
+        bone.tags.add("ignore-camera-collision");
+        bone.hitpointName = spec.name;          // "head", "torso", "leg-l"...
+        bone.characterEntity = this.entity;     // el daño se resuelve contra el personaje
+
+        this._hitpoints.push({ bone: bone, name: spec.name, added: true, traceEntity: null });
+    }
+};
+
+/* Enciende/apaga las collisions de los hitpoints (culling físico). */
+Character.prototype._setHitpointCollisionsEnabled = function (on) {
+    if (!this._hitpoints) return;
+    for (var i = 0; i < this._hitpoints.length; i++) {
+        var bone = this._hitpoints[i].bone;
+        if (bone && bone.collision) bone.collision.enabled = on;
+    }
+};
+
+/* Wireframes de los hitpoints (tracerOptions.tracehitpoints): mismo patron
+   visual que la capsula de debug del player, en AMARILLO para distinguirlos de
+   la capsula (roja). Hijos del hueso => siguen la animacion solos. Se
+   construyen perezosamente la primera vez; despues solo se togglea enabled. */
+Character.prototype._buildHitpointTraces = function () {
+    if (!this._hitpointTraceMaterial) {
+        this._hitpointTraceMaterial = new pc.StandardMaterial();
+        this._hitpointTraceMaterial.diffuse = new pc.Color(1, 1, 0);
+        this._hitpointTraceMaterial.update();
+    }
+
+    for (var i = 0; i < this._hitpoints.length; i++) {
+        var hp = this._hitpoints[i];
+        if (hp.traceEntity || !hp.bone || !hp.bone.collision) continue;
+        var col = hp.bone.collision;
+
+        var geom = null;
+        if (col.type === "sphere") geom = new pc.SphereGeometry({ radius: col.radius });
+        else if (col.type === "box") geom = new pc.BoxGeometry({ halfExtents: col.halfExtents });
+        else if (col.type === "capsule") geom = new pc.CapsuleGeometry({ radius: col.radius, height: col.height });
+        if (!geom) continue;
+
+        var mesh = pc.Mesh.fromGeometry(this.app.graphicsDevice, geom);
+        var mi = new pc.MeshInstance(mesh, this._hitpointTraceMaterial);
+        mi.renderStyle = pc.RENDERSTYLE_WIREFRAME;
+
+        var e = new pc.Entity((hp.bone.name || "bone") + "_hitpoint_trace");
+        hp.bone.addChild(e);
+        e.addComponent("render", {
+            type: "asset",
+            renderStyle: pc.RENDERSTYLE_WIREFRAME,
+            material: this._hitpointTraceMaterial,
+            castShadows: false
+        });
+        e.render.meshInstances = [mi];
+        e.tags.add("uranus-instancing-exclude");
+        e.tags.add("ignore-camera-collision");
+
+        /* CONTRA-ESCALA: el render del trace SI hereda la escala del hueso
+           (0.01 en rigs Mixamo), pero la collision NO (sus tamaños van en
+           metros mundo). Sin esto el wireframe se veria ~100x mas chico que
+           la shape real que muestra el AmmoDebugDrawer. Mismo criterio para
+           la posicion local (el offset en metros se des-escala). */
+        var ts = 1;
+        var twt = hp.bone.getWorldTransform && hp.bone.getWorldTransform();
+        if (twt && twt.getScale) {
+            var tsc = twt.getScale();
+            ts = Math.max(Math.abs(tsc.x), Math.abs(tsc.y), Math.abs(tsc.z)) || 1;
+        }
+        e.setLocalScale(1 / ts, 1 / ts, 1 / ts);
+
+        /* replicar el desplazamiento de la shape respecto al hueso */
+        var off = col.linearOffset;
+        if (off) e.setLocalPosition(off.x / ts, off.y / ts, off.z / ts);
+        /* CapsuleGeometry se genera sobre Y: orientarla segun el axis real */
+        if (col.type === "capsule") {
+            if (col.axis === 0) e.setLocalEulerAngles(0, 0, 90);
+            else if (col.axis === 2) e.setLocalEulerAngles(90, 0, 0);
+        }
+
+        hp.traceEntity = e;
+    }
+};
+
+/* Muestra u oculta los wireframes de hitpoints (toggle en tiempo de juego). */
+Character.prototype._setHitpointTracesVisible = function (show) {
+    if (!this._hitpoints || !this._hitpoints.length) return;
+    if (show) this._buildHitpointTraces();
+    for (var i = 0; i < this._hitpoints.length; i++) {
+        var t = this._hitpoints[i].traceEntity;
+        if (t) t.enabled = show;
+    }
+};
+
 
 /*-----------------------------------------------------------------------------------------*/
 /*-----------------------------------------------------------------------------------------*/
@@ -1825,226 +2288,274 @@ Character.prototype._updateGroundedState = function () {
 /*******************************/
 /*-----------------------------------------------------------------------------------------*/
 Character.prototype.postUpdate = function (dt) {
-    this.rootMotionFix();
+    this.rootMotionFix(dt);
     this.doCarryWeapons();
 }
 
-Character.prototype.rootMotionFix = function () {
-    var hips = this.bones.hips;
-    if (!hips) return;
+/* ============================================================================
+   MOTION ROOT — cómo leerlo si no sabes programar:
+   Cada animación puede traer "de fábrica" un desplazamiento del esqueleto
+   (el hueso de la cadera / hips se mueve). Aquí se decide, UNA VEZ POR FRAME,
+   qué hacer con ese desplazamiento según el modo elegido en el editor:
+     none         -> no tocar nada (la animación se ve tal cual)
+     place-in-XYZ -> el modelo queda CLAVADO en su sitio en esos ejes (ese
+                     desplazamiento se descarta). La cápsula física se mueve
+                     SOLO por input/IA, como siempre. Es el modo típico para
+                     caminar/correr cuando el clip trae drift indeseado.
+     teleport     -> la animación mueve al modelo tal cual fue autorada y la
+                     cápsula física lo sigue por debajo (fijando su VELOCIDAD,
+                     nunca con teleports que rompen los contactos de suelo).
+                     Es el modo para ataques/embestidas con desplazamiento.
+   El modo se elige así: si "Motion Root (global)" NO está en none, manda el
+   global para TODAS las animaciones. Si está en none, manda el selector
+   "motion root" que hay debajo de cada animación.
+   ============================================================================ */
 
-    /* estado de anim que se está reproduciendo AHORA (p.ej. "unarmed_attack1") */
-    var stateName = (this.entity.anim && this.entity.anim.baseLayer)
+/* Tipos internos de modo (números: comparar números por frame es más barato
+   que comparar textos, y no genera basura para el recolector/GC) */
+const CharacterMotionKindEnum = Object.freeze({
+    NONE: 0,          // no hacer nada
+    TELEPORT: 1,      // la cápsula sigue al modelo (única variante que "conduce")
+    AXES: 2,          // place-in-<ejes>: clavar el modelo en esos ejes
+    IN_PLACE_ALL: 3,  // legacy: fijar hips en todos los ejes
+});
+
+/* rootMotionFix: ÚNICO punto de entrada del motion root (corre en postUpdate).
+   Hace todo en orden, de arriba a abajo:
+     1. Mira qué animación suena y, si cambió, reinicia el estado interno.
+     2. Lee el modo elegido en el editor (global o el de la animación) y, SOLO
+        si el texto cambió, lo traduce a banderas internas (kind + ejes).
+     3. Aplica el modo:  none -> nada | place-in -> clavar modelo en esos ejes
+        | teleport -> la cápsula sigue al modelo (_applyTeleportFollow)
+        | in_place_all (legacy) -> clavar modelo en todos los ejes.
+   Cero reservas de memoria por frame: los textos solo se construyen al cambiar
+   de animación y los vectores son scratch pre-creados en initialize. */
+Character.prototype.rootMotionFix = function (dt) {
+    const hips = this.bones.hips;
+    if (!hips || !(dt > 0)) return;
+
+    /* --- 1. ¿QUÉ ANIMACIÓN SUENA? (p.ej. "unarmed_attack1") --- */
+    const stateName = (this.entity.anim && this.entity.anim.baseLayer)
         ? this.entity.anim.baseLayer.activeState
         : null;
 
-    /* modo de motion root de ESA animación (o el global si no está en "none") */
-    var mode = this._resolveMotionMode(stateName);
-
-    /* cambio de estado -> reiniciar el muestreo de root motion (evita saltos) y
-       restaurar la compensación del template si el estado anterior era teleport */
     if (stateName !== this._rootMotionState) {
+        /* cambió la animación: reiniciar muestreo/conducción y cachear la clave
+           del selector y su tabla (así no se construyen textos cada frame) */
         this._rootMotionState = stateName;
         this._rootMotionPrimed = false;
+        this._rootMotionDriving = false;
+        this._vRootMotionVelAvg.set(0, 0, 0);
         this._restoreTemplateOffset();
-    }
+        this._rootMotionKey = stateName ? (stateName + "_rootmotion") : null;
+        this._rootMotionRaw = "__dirty__";   /* fuerza re-parseo abajo */
 
-    var sp = this.playerAnimationsOptions.startPosition;
-
-    /* ---- legacy del GLOBAL (in_place_*): comportamiento original intacto ---- */
-    if (mode === "in_place_all") {
-        if (sp) hips.setLocalPosition(sp);
-        this._rootMotionPrimed = false;
-        return;
-    }
-
-    if (mode === "in_place_z") {
-        var vecpos = hips.getLocalPosition();
-        this._vHipsPos.set(vecpos.x, vecpos.y, (sp && sp.z) ?? 0);
-        hips.setLocalPosition(this._vHipsPos);
-
-        const isTurning180 = this.entity.anim.getInteger("turn180") !== 0;
-        if (isTurning180) {
-            var vecrot = hips.getLocalRotation();
-            this._qHipsRot.set(vecrot.x, 0, vecrot.z, vecrot.w);
-            hips.setLocalRotation(this._qHipsRot);
+        /* tabla animations_<modo> a la que pertenece la animación, por su
+           prefijo ("unarmed_attack1" -> animations_unarmed) */
+        this._rootMotionTable = null;
+        if (stateName) {
+            const modes = Character.animation_modes;
+            for (let i = 0; i < modes.length; i++) {
+                if (stateName.indexOf(modes[i] + "_") === 0) {
+                    this._rootMotionTable = this["animations_" + modes[i]] || null;
+                    break;
+                }
+            }
         }
+    }
+
+    /* --- 2. ¿QUÉ MODO PIDIÓ EL USUARIO? ---
+       El global manda salvo que esté en "none"; en "none" manda el selector
+       propio de la animación. Se relee cada frame (2 lecturas de propiedad,
+       costo casi cero) para que tocar un dropdown en caliente aplique al
+       instante; el parseo solo corre si el TEXTO cambió. */
+    let raw = this.playerAnimationsOptions.global;
+    if (!raw || raw === "none") {
+        raw = (this._rootMotionTable && this._rootMotionKey)
+            ? (this._rootMotionTable[this._rootMotionKey] || "none")
+            : "none";
+    }
+
+    if (raw !== this._rootMotionRaw) {
+        /* PARSEO (solo al cambiar): texto -> kind + banderas de ejes */
+        if (this._motionKind === CharacterMotionKindEnum.TELEPORT) {
+            this._restoreTemplateOffset();   /* veníamos de teleport */
+        }
+        this._rootMotionRaw = raw;
         this._rootMotionPrimed = false;
+        this._rootMotionDriving = false;
+        this._vRootMotionVelAvg.set(0, 0, 0);
+        this._motionUseX = false;
+        this._motionUseY = false;
+        this._motionUseZ = false;
+
+        if (raw === "teleport") {
+            this._motionKind = CharacterMotionKindEnum.TELEPORT;
+        } else if (raw === "in_place_all_axis" || raw === "in_place_all") {
+            this._motionKind = CharacterMotionKindEnum.IN_PLACE_ALL;   /* legacy */
+        } else if (typeof raw === "string" && raw.indexOf("place-in-") === 0) {
+            /* las letras tras "place-in-" dicen en qué ejes queda clavado */
+            const axes = raw.slice(9);   /* 9 = longitud de "place-in-" */
+            this._motionUseX = axes.indexOf("x") !== -1;
+            this._motionUseY = axes.indexOf("y") !== -1;
+            this._motionUseZ = axes.indexOf("z") !== -1;
+            this._motionKind = (this._motionUseX || this._motionUseY || this._motionUseZ)
+                ? CharacterMotionKindEnum.AXES
+                : CharacterMotionKindEnum.NONE;
+        } else {
+            this._motionKind = CharacterMotionKindEnum.NONE;   /* "none" o desconocido */
+        }
+    }
+
+    /* --- 3. APLICAR EL MODO --- */
+
+    /* en VUELO (canmoveonair) la velocidad es del sistema de vuelo: el root
+       motion no debe conducir la cápsula */
+    if (this.canmoveonair) {
+        this._rootMotionDriving = false;
+        this._rootMotionPrimed = false;
+        this._restoreTemplateOffset();
         return;
     }
 
-    /* ---- modos nuevos ---- */
-    if (mode === "teleport") {
-        this._applyTeleportFollow(hips);
-        return;
+    switch (this._motionKind) {
+        case CharacterMotionKindEnum.TELEPORT:
+            this._applyTeleportFollow(hips, dt);
+            return;
+
+        case CharacterMotionKindEnum.AXES: {
+            /* place-in-<ejes>: clavar el modelo en esos ejes y NADA MÁS (el
+               desplazamiento que la animación trae se descarta; los ejes no
+               elegidos conservan la pose animada). La cápsula se mueve solo
+               por input/física: cero interferencia = cero trabas al caminar. */
+            const restPos = this.playerAnimationsOptions.startPosition;
+            if (restPos) {
+                const hipsPos = hips.getLocalPosition();
+                this._vHipsPinnedPos.set(
+                    this._motionUseX ? restPos.x : hipsPos.x,
+                    this._motionUseY ? restPos.y : hipsPos.y,
+                    this._motionUseZ ? restPos.z : hipsPos.z
+                );
+                hips.setLocalPosition(this._vHipsPinnedPos);
+            }
+            this._rootMotionPrimed = false;
+            this._rootMotionDriving = false;
+            return;
+        }
+
+        case CharacterMotionKindEnum.IN_PLACE_ALL: {
+            /* legacy: clavar el modelo en TODOS los ejes */
+            const restPos = this.playerAnimationsOptions.startPosition;
+            if (restPos) hips.setLocalPosition(restPos);
+            this._rootMotionPrimed = false;
+            this._rootMotionDriving = false;
+            return;
+        }
     }
 
-    if (mode !== "none") {
-        /* combinaciones de ejes: x, y, z, zx, zy, yx, zxy */
-        this._applyRootMotion(hips, mode);
-        return;
-    }
-
-    /* mode === "none": NO se hace nada (ni hips, ni cápsula, ni template) */
+    /* NONE: no se hace nada (ni hips, ni cápsula, ni template) */
     this._rootMotionPrimed = false;
+    this._rootMotionDriving = false;
     this._restoreTemplateOffset();
 }
 
-/* Traduce el valor GLOBAL (playerAnimationsOptions.global) al vocabulario interno
-   de rootMotionFix. El global se mantiene con su enum original. */
-Character.prototype._globalToPerAnim = function (globalMode) {
-    switch (globalMode) {
-        case "in_place_all_axis": return "in_place_all";
-        case "in_place_z_axis": return "in_place_z";
-        case "teleport": return "teleport";
-        case "none": return "none";
-        default: return "in_place_z";
-    }
-};
-
-/* Resuelve el modo de motion root para el estado de anim en curso.
-   Regla: si el GLOBAL está en "none", cada animación usa su propio selector
-   (animMotion_<mode>[stateName]); con cualquier otro valor global, ese valor
-   manda sobre TODAS las animaciones (lo que se venía haciendo). */
-Character.prototype._resolveMotionMode = function (stateName) {
-    var globalMode = this.playerAnimationsOptions.global;
-
-    /* global != "none": el global manda sobre todas las animaciones */
-    if (globalMode !== "none") {
-        return this._globalToPerAnim(globalMode);
-    }
-
-    /* global == "none": tomar el selector de ESTA animación */
-    var mode = null;
-    if (stateName) {
-        for (var i = 0; i < Character.animation_modes.length; i++) {
-            var tbl = this["animMotion_" + Character.animation_modes[i]];
-            if (tbl && tbl[stateName]) { mode = tbl[stateName]; break; }
-        }
-    }
-
-    /* animación sin entrada en la tabla (p.ej. estado transitorio): none */
-    return mode || "none";
-};
-
-/* Muestrea el delta LOCAL de hips entre frames (pose animada cruda) y lo deja en
-   this._vRootDelta, con su conversión a mundo en this._vRootWorld. Devuelve:
-     false -> frame no utilizable (primer frame del estado o wrap del loop)
-     true  -> _vRootDelta/_vRootWorld válidos
-   El guard de wrap se evalúa en MUNDO (escala-independiente): >0.5 m en
-   cualquier eje = el clip se reinició y hips saltó al inicio. */
-Character.prototype._sampleHipsDelta = function (hips) {
-    var cur = hips.getLocalPosition();
-
-    /* primer frame del estado: solo cebar el "previo", sin mover nada */
-    if (!this._rootMotionPrimed) {
-        this._vRootPrev.copy(cur);
-        this._rootMotionPrimed = true;
-        return false;
-    }
-
-    this._vRootDelta.set(cur.x - this._vRootPrev.x, cur.y - this._vRootPrev.y, cur.z - this._vRootPrev.z);
-    this._vRootPrev.copy(cur);
-
-    /* local -> mundo con el transform del PADRE de hips (incluye rotación de
-       encare del template y la escala del rig, p.ej. 0.01 de Mixamo) */
-    var parent = hips.parent || this.entity;
-    parent.getWorldTransform().transformVector(this._vRootDelta, this._vRootWorld);
-
-    if (Math.abs(this._vRootWorld.x) > 0.5 ||
-        Math.abs(this._vRootWorld.y) > 0.5 ||
-        Math.abs(this._vRootWorld.z) > 0.5) {
-        return false;
-    }
-    return true;
-};
-
-/* ROOT MOTION por combinación de ejes: "x","y","z","zx","zy","yx","zxy".
-   Extrae el desplazamiento de hips SOLO en los ejes seleccionados (ejes LOCALES
-   del rig, tal como está autorada la animación), lo convierte a mundo y mueve
-   la CÁPSULA (rigidbody.teleport). En los ejes extraídos, hips se re-fija a su
-   posición de reposo para que el mesh no se desplace dos veces; los ejes NO
-   seleccionados quedan animados tal cual. */
-Character.prototype._applyRootMotion = function (hips, mode) {
-    var useX = mode.indexOf("x") !== -1;
-    var useY = mode.indexOf("y") !== -1;
-    var useZ = mode.indexOf("z") !== -1;
-
-    if (!this._sampleHipsDelta(hips)) {
-        /* frame no utilizable (prime/wrap): solo mantener el mesh estable */
-        this._pinHipsAxes(hips, useX, useY, useZ);
-        return;
-    }
-
-    /* filtrar el delta por ejes EN LOCAL (los ejes del rig: z = adelante del
-       personaje aunque esté girado) y convertir SOLO lo filtrado a mundo */
-    this._vRootSel.set(
-        useX ? this._vRootDelta.x : 0,
-        useY ? this._vRootDelta.y : 0,
-        useZ ? this._vRootDelta.z : 0
-    );
-    var parent = hips.parent || this.entity;
-    parent.getWorldTransform().transformVector(this._vRootSel, this._vRootWorld);
-
-    if (this.entity.rigidbody &&
-        (this._vRootWorld.x !== 0 || this._vRootWorld.y !== 0 || this._vRootWorld.z !== 0)) {
-        var p = this.entity.getPosition();
-        this._vRootPos.set(p.x + this._vRootWorld.x, p.y + this._vRootWorld.y, p.z + this._vRootWorld.z);
-        this.entity.rigidbody.teleport(this._vRootPos);
-    }
-
-    this._pinHipsAxes(hips, useX, useY, useZ);
-}
-
-/* Re-fija hips a su posición de reposo SOLO en los ejes indicados (los demás
-   conservan la pose animada). El desplazamiento extraído lo lleva la cápsula. */
-Character.prototype._pinHipsAxes = function (hips, useX, useY, useZ) {
-    var sp = this.playerAnimationsOptions.startPosition;
-    if (!sp) return;
-    var lp = hips.getLocalPosition();
-    this._vHipsPos.set(useX ? sp.x : lp.x, useY ? sp.y : lp.y, useZ ? sp.z : lp.z);
-    hips.setLocalPosition(this._vHipsPos);
-}
-
 /* TELEPORT: la animación se reproduce TAL CUAL (no se toca hips) y la cápsula
-   del rigidbody ACOMPAÑA al render/template (atributo templateEntity). Cada
-   frame: la cápsula se teletransporta el mismo delta horizontal que recorrió
-   hips y el template se compensa en sentido contrario, de modo que el visual
-   queda exactamente donde la animación lo puso y la física viaja debajo.
+   del rigidbody ACOMPAÑA al render/template (atributo templateEntity).
+   Cómo: la cápsula persigue al visual fijando su VELOCIDAD horizontal
+   (delta de hips / dt) — nunca con rigidbody.teleport(), que rompía los
+   contactos de suelo — y el template se compensa cada frame por lo que la
+   cápsula se movió DE VERDAD (medido, no estimado), de modo que el visual
+   queda clavado a la animación aunque la física se frene contra una pared.
    Al terminar/loopear el clip, hips vuelve a su origen y la compensación se
    restaura: el personaje queda físicamente donde el visual terminó. */
-Character.prototype._applyTeleportFollow = function (hips) {
-    var t = this._templateEntity;
-    if (!t) {
-        /* sin template ni render separado no hay a quién acompañar */
+Character.prototype._applyTeleportFollow = function (hips, dt) {
+    const template = this._templateEntity;
+    const body = this.entity.rigidbody;
+    if (!template || !body) {
+        /* sin template/render separado o sin física no hay a quién acompañar */
         this._rootMotionPrimed = false;
+        this._rootMotionDriving = false;
         return;
     }
 
-    if (!this._sampleHipsDelta(hips)) {
-        /* wrap del loop o primer frame: hips saltó a su origen -> el visual ya
+    const capsulePos = this.entity.getPosition();
+
+    /* --- MUESTREO: cuánto se movió hips desde el frame anterior --- */
+    let sampleOk = false;
+    const hipsLocalPos = hips.getLocalPosition();
+    if (!this._rootMotionPrimed) {
+        /* primer frame de la animación: aún no hay "frame anterior" */
+        this._vHipsPrevLocal.copy(hipsLocalPos);
+        this._rootMotionPrimed = true;
+    } else {
+        this._vHipsDeltaLocal.set(
+            hipsLocalPos.x - this._vHipsPrevLocal.x,
+            hipsLocalPos.y - this._vHipsPrevLocal.y,
+            hipsLocalPos.z - this._vHipsPrevLocal.z
+        );
+        this._vHipsPrevLocal.copy(hipsLocalPos);
+
+        /* local -> mundo con el transform del PADRE de hips (incluye el giro de
+           encare del template y la escala del rig, p.ej. 0.01 de Mixamo) */
+        const hipsParent = hips.parent || this.entity;
+        hipsParent.getWorldTransform().transformVector(this._vHipsDeltaLocal, this._vHipsDeltaWorld);
+
+        /* guard de wrap: al reiniciarse el clip, hips salta al inicio en un solo
+           frame. Se detecta porque el delta supera lo que un personaje podría
+           moverse de verdad en un frame (15 m/s, suelo de 0.25 m para dt chicos). */
+        const wrapLimit = (dt * 15 > 0.25) ? dt * 15 : 0.25;
+        sampleOk = Math.abs(this._vHipsDeltaWorld.x) <= wrapLimit &&
+            Math.abs(this._vHipsDeltaWorld.y) <= wrapLimit &&
+            Math.abs(this._vHipsDeltaWorld.z) <= wrapLimit;
+    }
+
+    if (!sampleOk) {
+        /* wrap del loop o primer frame: hips volvió a su origen -> el visual ya
            vuelve solo a la cápsula (que absorbió el recorrido); restaurar la
-           compensación del template para el nuevo ciclo. */
+           compensación y re-anclar la referencia de posición. */
         this._restoreTemplateOffset();
+        this._vCapsulePrevPos.copy(capsulePos);
+        this._vRootMotionVelAvg.set(0, 0, 0);
+        this._rootMotionDriving = false;
         return;
     }
 
-    /* solo el plano horizontal: la Y de la cápsula la gobierna la física */
-    var dx = this._vRootWorld.x;
-    var dz = this._vRootWorld.z;
-    if ((dx === 0 && dz === 0) || !this.entity.rigidbody) return;
+    /* --- 1) compensar el template por el movimiento REAL de la cápsula desde
+       el frame anterior (solo mientras conducimos nosotros; si conduce el
+       input, el visual debe viajar con la cápsula como siempre) --- */
+    const capsuleMovedX = capsulePos.x - this._vCapsulePrevPos.x;
+    const capsuleMovedZ = capsulePos.z - this._vCapsulePrevPos.z;
+    this._vCapsulePrevPos.copy(capsulePos);
+    if (this._rootMotionDriving && (capsuleMovedX !== 0 || capsuleMovedZ !== 0)) {
+        const templatePos = template.getPosition();
+        this._vTemplatePos.set(templatePos.x - capsuleMovedX, templatePos.y, templatePos.z - capsuleMovedZ);
+        template.setPosition(this._vTemplatePos);
+        this._teleportShifted = true;
+    }
 
-    /* 1) la cápsula acompaña al visual */
-    var p = this.entity.getPosition();
-    this._vRootPos.set(p.x + dx, p.y, p.z + dz);
-    this.entity.rigidbody.teleport(this._vRootPos);
+    /* --- 2) velocidad de persecución (solo plano horizontal: la Y de la
+       cápsula la gobierna la gravedad) con tope de seguridad --- */
+    this._vRootMotionVel.set(this._vHipsDeltaWorld.x / dt, 0, this._vHipsDeltaWorld.z / dt);
+    const speedSq = this._vRootMotionVel.lengthSq();
+    if (speedSq > 225) this._vRootMotionVel.scale(15 / Math.sqrt(speedSq));   /* max 15 m/s */
 
-    /* 2) compensar el template en sentido contrario para que el visual NO se
-       mueva dos veces (la animación ya lo movió por sí sola) */
-    var tp = t.getPosition();
-    this._vTplPos.set(tp.x - dx, tp.y, tp.z - dz);
-    t.setPosition(this._vTplPos);
-    this._teleportShifted = true;
+    /* media + histéresis: el vaivén de un idle no debe poner a la cápsula a
+       perseguir; un desplazamiento real (>0.2 m/s sostenido) sí. Suelta por
+       debajo de 0.1 m/s (sin parpadeo en el umbral). */
+    this._vRootMotionVelAvg.lerp(this._vRootMotionVelAvg, this._vRootMotionVel, Math.min(1, dt * 5));
+    const avgSpeedSq = this._vRootMotionVelAvg.lengthSq();
+    if (this._rootMotionDriving) {
+        if (avgSpeedSq < 0.01) this._rootMotionDriving = false;
+    } else if (avgSpeedSq > 0.04) {
+        this._rootMotionDriving = true;
+    }
+
+    if (this._rootMotionDriving) {
+        const newVelocity = this._vCurrent.copy(body.linearVelocity);
+        newVelocity.x = this._vRootMotionVel.x;
+        newVelocity.z = this._vRootMotionVel.z;
+        body.linearVelocity = newVelocity;
+    }
 }
 
 /* Devuelve el template a su posición local de reposo (deshace la compensación
@@ -2065,6 +2576,15 @@ Character.prototype._restoreTemplateOffset = function () {
 /*******************************/
 /*-----------------------------------------------------------------------------------------*/
 Character.prototype.prepareAnimComponent = function () {
+
+    /* BLINDAJE: si algún grupo animations_<modo> no existe aún (escena vieja
+       sin re-parsear en el editor), usar objeto vacío en vez de reventar
+       Object.keys(undefined) y tumbar todo el initialize */
+    for (var g = 0; g < Character.animation_modes.length; g++) {
+        if (!this["animations_" + Character.animation_modes[g]]) {
+            this["animations_" + Character.animation_modes[g]] = {};
+        }
+    }
 
     this._animStateGraphData = {
         layers: [
@@ -2132,7 +2652,10 @@ Character.prototype.prepareAnimComponent = function () {
         var i = 0;
         for (; i < keys_length; i++) {
             const stateName = keys[i];
-            if (animAttr[stateName]) {
+            /* los "<anim>_rootmotion" son selectores de texto, NO animaciones:
+               saltarlos (y exigir .id: solo un asset real crea un estado) */
+            if (stateName.indexOf("_rootmotion") !== -1) continue;
+            if (animAttr[stateName] && animAttr[stateName].id) {
                 animAttr[stateName].preload = true;
                 const stateLoop = !statesNoLoops.some(s => stateName.includes(s));
                 this._animStateGraphData.layers[0].states.push({ name: stateName, loop: stateLoop, assetId: animAttr[stateName].id });
@@ -2528,8 +3051,12 @@ Character.prototype.prepareAnimComponent = function () {
         const animAttr = this["animations_" + modeName], keys = Object.keys(animAttr), keys_length = keys.length;
         var i = 0;
         for (; i < keys_length; i++) {
+            /* saltar los selectores "motion root": son texto, no animaciones, y
+               crearían transiciones hacia estados que no existen */
+            if ((keys[i] || "").indexOf("_rootmotion") !== -1) continue;
             const stateName = (keys[i] || "").replace(modeName + "_", "");
-            if (this["animations_" + modeName][modeName + "_" + stateName] && this["animations_" + afterModeName][afterModeName + "_" + stateName]) {
+            if (this["animations_" + modeName][modeName + "_" + stateName] && this["animations_" + modeName][modeName + "_" + stateName].id &&
+                this["animations_" + afterModeName][afterModeName + "_" + stateName] && this["animations_" + afterModeName][afterModeName + "_" + stateName].id) {
 
                 this._animStateGraphData.layers[0].transitions.push(
                     {
@@ -2671,12 +3198,11 @@ Character.prototype.prepareAnimComponent = function () {
                                 name: "attack-end-animation"
                             },
                             {
-                                time: asset.resource.duration * 1000 / 4 / 1000,
+                                time: asset.resource.duration * 0.25,
                                 name: "attack-start-damage-animation"
                             },
                             {
-
-                                time: (3 * asset.resource.duration * 1000 / 4) / 1000,
+                                time: asset.resource.duration * 0.75,
                                 name: "attack-end-damage-animation"
                             }
                         ]);
@@ -2693,11 +3219,11 @@ Character.prototype.prepareAnimComponent = function () {
                                     name: "attack-end-animation"
                                 },
                                 {
-                                    time: e.resource.duration * 1000 / 4 / 1000,
+                                    time: e.resource.duration * 0.25,
                                     name: "attack-start-damage-animation"
                                 },
                                 {
-                                    time: (3 * asset.resource.duration * 1000 / 4) / 1000,
+                                    time: e.resource.duration * 0.75,
                                     name: "attack-end-damage-animation"
                                 }
                             ]);

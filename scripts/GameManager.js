@@ -606,13 +606,19 @@ GameManager.attributes.add("tracer", {
             title: "enabled",
             description: "enables Tracer"
         },
-
         {
             name: "trenablefps",
             title: "FPS Enabled",
             type: "boolean",
             default: true
         },
+        {
+            name: "trenableammodebugdrawer",
+            title: "AmmoDebugDrawer",
+            type: "boolean",
+            default: false
+        },
+
         {
             name: "trshowstats",
             type: "boolean",
@@ -726,7 +732,7 @@ GameManager.prototype.initialize = function () {
 
     GameManager.cameraOptions = this.cameraOptions;
     GameManager.currentCamera = GameManager.calculateCameraScene();
-    GameManager.initCameraPos = GameManager.currentCamera ? GameManager.currentCamera.entity.getPosition().clone() : new pc.Vec3.ZERO;
+    GameManager.initCameraPos = GameManager.currentCamera ? GameManager.currentCamera.entity.getPosition().clone() : new pc.Vec3(); /* FIX: "new pc.Vec3.ZERO" lanzaba TypeError (ZERO no es constructor) sin camara y mataba el juego entero */
     GameManager.cameraPostProcessing = this.cameraPostProcessing;
     GameManager.applyCameraPostProcessing(this.cameraPostProcessing);
     GameManager.input.camera = GameManager.currentCamera;
@@ -920,6 +926,7 @@ GameManager.prototype.initialize = function () {
     this.app.assets.on("load", function (asset) {
         GameManager.assetLoaded(asset);
     }, this);
+
 
     TracerScript.initialize();
 
@@ -1627,6 +1634,7 @@ GameManager.updateGameManager = function (dt) {
         });
 
 
+
         GameManager.checkForPlayerAndTargetEntities = false;
     }
 
@@ -1652,6 +1660,14 @@ GameManager.updateGameManager = function (dt) {
     if (TracerScript.trenablefps) {
         TracerScript.fps.tick();
     }
+
+    /* AMMO DEBUG DRAWER: wireframe de todas las colisiones del mundo físico.
+       Gateado aquí para que el toggle del atributo funcione en caliente. */
+    if (TracerScript.trenableammodebugdrawer) {
+        GameManager.updateAmmoDebugDrawer();
+    }
+
+
 
     if (TracerScript.trshowstats) {
         if (window.performance && window.performance.memory) {
@@ -2190,7 +2206,7 @@ GameManager.loadScene = function (sceneName) {
                     }
 
                     GameManager.currentCamera = GameManager.calculateCameraScene();
-                    GameManager.initCameraPos = GameManager.currentCamera ? GameManager.currentCamera.entity.getPosition().clone() : new pc.Vec3.ZERO;
+                    GameManager.initCameraPos = GameManager.currentCamera ? GameManager.currentCamera.entity.getPosition().clone() : new pc.Vec3(); /* FIX: "new pc.Vec3.ZERO" lanzaba TypeError (ZERO no es constructor) sin camara y mataba el juego entero */
                     GameManager.applyCameraPostProcessing(GameManager.cameraPostProcessing);
                     GameManager.input.camera = GameManager.currentCamera;
                     GameManager.followCamera.initialFov = GameManager.currentCamera ? GameManager.currentCamera.fov : 45;
@@ -2691,6 +2707,9 @@ GameManager.applyTracerOptions = async function (options) {
     TracerScript.tralwaysshow = options.tralwaysshow;
     TracerScript.trordermode = options.trordermode;
     TracerScript.trenablefps = TracerScript.trenable ? options.trenablefps : false;
+    /* FIX: se auto-referenciaba (TracerScript.trenableammodebugdrawer arranca
+       undefined) en vez de mirar trenable => el flag JAMÁS podía encenderse */
+    TracerScript.trenableammodebugdrawer = TracerScript.trenable ? options.trenableammodebugdrawer : false;
     TracerScript.trshowstats = TracerScript.trenable ? options.trshowstats : false;
     TracerScript.trtargetpoint = TracerScript.trenable ? options.trtargetpoint : false;
     TracerScript.trenablelightingdebugLayer = TracerScript.trenable ? options.trenablelightingdebugLayer : false;
@@ -2716,8 +2735,115 @@ GameManager.applyTracerOptions = async function (options) {
     }
 
 
+    /* AMMO DEBUG DRAWER: el dibujado real ocurre POR FRAME en updateGameManager
+       (gateado por TracerScript.trenableammodebugdrawer, así el toggle del
+       editor funciona en caliente). Aquí solo se fuerza la creación temprana.
+       Lo anterior ("this.app.drawPhysics = ...") no dibujaba nada: drawPhysics
+       no es API del engine y this.app era undefined en esta función estática. */
+    if (TracerScript.trenableammodebugdrawer) {
+        GameManager._createAmmoDebugDrawer();
+    }
+};
 
 
+/* =========================================================================
+   AMMO DEBUG DRAWER: wireframe en tiempo real de TODAS las colisiones del
+   mundo físico (rigidbodies estáticos/dinámicos Y triggers: armas, hitpoints,
+   cápsulas...). Implementa btIDebugDraw vía Ammo.DebugDrawer: Bullet entrega
+   cada arista con drawLine(punteros al heap WASM), se acumulan en buffers
+   planos reutilizados (cero GC) y se pintan de una vez con drawLineArrays.
+   Se enciende/apaga con tracer.trenableammodebugdrawer (AmmoDebugDrawer).
+   ========================================================================= */
+GameManager.__ammoDebugDrawer = null;     // instancia Ammo.DebugDrawer (lazy)
+GameManager.__ammoDebugWarned = false;
+GameManager.__ammoDebugPositions = [];    // buffer plano x,y,z (reutilizado)
+GameManager.__ammoDebugColors = [];       // buffer plano r,g,b,a (reutilizado)
+
+/* Crea el drawer y lo registra en el dynamicsWorld. Devuelve false si la
+   física aún no está lista (se reintenta solo, cada frame, desde update). */
+GameManager._createAmmoDebugDrawer = function () {
+    if (GameManager.__ammoDebugDrawer) return true;
+
+    var world = GameManager._app &&
+        GameManager._app.systems.rigidbody &&
+        GameManager._app.systems.rigidbody.dynamicsWorld;
+    if (typeof Ammo === "undefined" || !world) return false;   // reintentar luego
+
+    if (!Ammo.DebugDrawer) {
+        if (!GameManager.__ammoDebugWarned) {
+            console.warn("[gameManager] Este build de ammo.js no expone Ammo.DebugDrawer: AmmoDebugDrawer no disponible.");
+            GameManager.__ammoDebugWarned = true;
+        }
+        return false;
+    }
+
+    var positions = GameManager.__ammoDebugPositions;
+    var colors = GameManager.__ammoDebugColors;
+    var debugMode = 1;   // btIDebugDraw::DBG_DrawWireframe
+
+    var drawer = new Ammo.DebugDrawer();
+
+    /* Bullet pasa PUNTEROS a btVector3 en el heap WASM: se leen como floats
+       (índice = puntero/4). Color en 0..1, alpha fija a 1. */
+    drawer.drawLine = function (from, to, color) {
+        var h = Ammo.HEAPF32;
+        var f = from / 4, t = to / 4, c = color / 4;
+        var r = h[c], g = h[c + 1], b = h[c + 2];
+        positions.push(h[f], h[f + 1], h[f + 2], h[t], h[t + 1], h[t + 2]);
+        colors.push(r, g, b, 1, r, g, b, 1);
+    };
+
+    drawer.drawContactPoint = function (pointOnB, normalOnB, distance, lifeTime, color) {
+        var h = Ammo.HEAPF32;
+        var p = pointOnB / 4, n = normalOnB / 4, c = color / 4;
+        var r = h[c], g = h[c + 1], b = h[c + 2];
+        var s = 0.15;   // largo (m) de la rayita del contacto sobre su normal
+        positions.push(h[p], h[p + 1], h[p + 2],
+            h[p] + h[n] * s, h[p + 1] + h[n + 1] * s, h[p + 2] + h[n + 2] * s);
+        colors.push(r, g, b, 1, r, g, b, 1);
+    };
+
+    /* obligatorios en la interfaz; sin uso (el warning llega como puntero
+       char* del heap, no como string legible) */
+    drawer.reportErrorWarning = function (warningString) { };
+    drawer.draw3dText = function (location, textString) { };
+    drawer.setDebugMode = function (mode) { debugMode = mode; };
+    drawer.getDebugMode = function () { return debugMode; };
+
+    world.setDebugDrawer(drawer);
+    GameManager.__ammoDebugDrawer = drawer;
+    return true;
+};
+
+/* Llamado cada frame desde updateGameManager mientras el flag esté encendido.
+   Immediate mode: al apagar el flag simplemente deja de dibujarse. */
+GameManager.updateAmmoDebugDrawer = function () {
+    if (!GameManager._createAmmoDebugDrawer()) return;
+
+    var app = GameManager._app;
+    var positions = GameManager.__ammoDebugPositions;
+    var colors = GameManager.__ammoDebugColors;
+
+    positions.length = 0;
+    colors.length = 0;
+
+    /* Bullet recorre TODOS los collision objects del mundo y dispara
+       drawer.drawLine por cada arista de cada shape */
+    app.systems.rigidbody.dynamicsWorld.debugDrawWorld();
+
+    if (!positions.length) return;
+
+    if (app.drawLineArrays) {
+        app.drawLineArrays(positions, colors);
+    } else {
+        /* fallback para builds del engine sin drawLineArrays (más GC) */
+        var vecs = [], cols = [];
+        for (var i = 0, ci = 0; i < positions.length; i += 3, ci += 4) {
+            vecs.push(new pc.Vec3(positions[i], positions[i + 1], positions[i + 2]));
+            cols.push(new pc.Color(colors[ci], colors[ci + 1], colors[ci + 2], colors[ci + 3]));
+        }
+        app.drawLines(vecs, cols);
+    }
 };
 
 
