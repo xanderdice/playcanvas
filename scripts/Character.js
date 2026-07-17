@@ -2095,9 +2095,12 @@ Character.prototype._restorePhysics = function () {
    cual; lo unico que se convierte es el vector rodilla->tobillo de las
    piernas, que viene en unidades locales del rig y se multiplica por la
    escala mundial del hueso.
-   Las PIERNAS se miden de verdad: la capsula se tiende del hueso Leg (rodilla)
-   a su hijo Foot (tobillo) usando la posicion local del hijo. Sin rigidbody =>
-   son triggers: detectan armas/proyectiles pero no empujan ni pesan.
+   PERFORMANCE: todas las shapes son BOX — un solo tipo de primitiva barata
+   para los tests de solape de Ammo (los traces siguen soportando sphere/
+   capsule por si un hueso trae collision del editor). Las PIERNAS se miden de
+   verdad: la caja se tiende del hueso Leg (rodilla) a su hijo Foot (tobillo)
+   usando la posicion local del hijo. Sin rigidbody => son triggers: detectan
+   armas/proyectiles pero no empujan ni pesan.
    Cada hueso recibe el tag "is-damageable": el arma (weapon.js) los reconoce
    como golpeables y resuelve el daño contra el PERSONAJE via characterEntity
    (una sola vida; un golpe por swing aunque cruce varios huesos). */
@@ -2105,16 +2108,19 @@ Character.prototype._setupHitpoints = function () {
     var H = this.characterHeight;
     var b = this.bones;
 
+    /* TODAS las shapes son BOX (uniforme y barato para Ammo). halfExtents en
+       metros mundo. Las piernas no llevan "he": su box se tiende midiendo
+       rodilla->tobillo (thickness = semiancho de los ejes no dominantes). */
     var specs = [
-        { bone: b.head, name: "head", shape: "sphere", radius: 0.08 * H, offsetY: 0.06 * H },
-        { bone: b.spine2, name: "torso", shape: "box", he: [0.13 * H, 0.10 * H, 0.075 * H], offsetY: 0.04 * H },
-        { bone: b.hips, name: "hips", shape: "box", he: [0.12 * H, 0.08 * H, 0.08 * H], offsetY: 0 },
-        { bone: b.leftHand, name: "hand-l", shape: "sphere", radius: 0.045 * H, offsetY: 0 },
-        { bone: b.rightHand, name: "hand-r", shape: "sphere", radius: 0.045 * H, offsetY: 0 },
-        { bone: b.leftFoot, name: "foot-l", shape: "sphere", radius: 0.05 * H, offsetY: 0 },
-        { bone: b.rightFoot, name: "foot-r", shape: "sphere", radius: 0.05 * H, offsetY: 0 },
-        { bone: b.leftLeg, name: "leg-l", shape: "capsule", radius: 0.045 * H, along: b.leftFoot },
-        { bone: b.rightLeg, name: "leg-r", shape: "capsule", radius: 0.045 * H, along: b.rightFoot }
+        { bone: b.head, name: "head", he: [0.055 * H, 0.07 * H, 0.065 * H], offsetY: 0.06 * H },
+        { bone: b.spine2, name: "torso", he: [0.13 * H, 0.10 * H, 0.075 * H], offsetY: 0.04 * H },
+        { bone: b.hips, name: "hips", he: [0.12 * H, 0.08 * H, 0.08 * H], offsetY: 0 },
+        { bone: b.leftHand, name: "hand-l", he: [0.045 * H, 0.045 * H, 0.045 * H], offsetY: 0 },
+        { bone: b.rightHand, name: "hand-r", he: [0.045 * H, 0.045 * H, 0.045 * H], offsetY: 0 },
+        { bone: b.leftFoot, name: "foot-l", he: [0.05 * H, 0.05 * H, 0.05 * H], offsetY: 0 },
+        { bone: b.rightFoot, name: "foot-r", he: [0.05 * H, 0.05 * H, 0.05 * H], offsetY: 0 },
+        { bone: b.leftLeg, name: "leg-l", thickness: 0.045 * H, along: b.leftFoot },
+        { bone: b.rightLeg, name: "leg-r", thickness: 0.045 * H, along: b.rightFoot }
     ];
 
     for (var i = 0; i < specs.length; i++) {
@@ -2150,38 +2156,37 @@ Character.prototype._setupHitpoints = function () {
         }
 
         var opts;
-        if (spec.shape === "sphere") {
-            opts = {
-                type: "sphere",
-                radius: spec.radius,
-                linearOffset: new pc.Vec3(0, spec.offsetY, 0)
-            };
-        } else if (spec.shape === "box") {
+        if (spec.he) {
+            /* BOX simple centrada en el hueso (con offset opcional en su +Y) */
             opts = {
                 type: "box",
                 halfExtents: new pc.Vec3(spec.he[0], spec.he[1], spec.he[2]),
                 linearOffset: new pc.Vec3(0, spec.offsetY, 0)
             };
         } else {
-            /* CAPSULE (pierna): si el hueso del pie es hijo directo, la capsula
-               va EXACTA de rodilla a tobillo (posicion local del hijo, en
+            /* BOX de PIERNA: si el hueso del pie es hijo directo, la caja se
+               tiende EXACTA de rodilla a tobillo (posicion local del hijo, en
                unidades del rig, convertida a METROS multiplicando por la
-               escala mundial del hueso); si no, fallback proporcional 0.26*H. */
-            var radiusW = spec.radius;
-            var axis = 1, heightW, off;
+               escala mundial del hueso); el eje dominante recibe la mitad de
+               esa longitud y los otros dos el thickness. Fallback: 0.26*H
+               sobre +Y. */
+            var t = spec.thickness;
+            var hx = t, hy = t, hz = t;
+            var off;
             var child = spec.along;
             if (child && child.parent === bone) {
                 var dl = child.getLocalPosition();
-                var len = dl.length() * s;
-                heightW = Math.max(len, radiusW * 2.2);
-                off = new pc.Vec3(dl.x * 0.5 * s, dl.y * 0.5 * s, dl.z * 0.5 * s);
+                var half = Math.max(dl.length() * s * 0.5, t);
                 var axv = Math.abs(dl.x), ayv = Math.abs(dl.y), azv = Math.abs(dl.z);
-                axis = (axv > ayv && axv > azv) ? 0 : ((azv > ayv) ? 2 : 1);
+                if (axv > ayv && axv > azv) hx = half;
+                else if (azv > ayv) hz = half;
+                else hy = half;
+                off = new pc.Vec3(dl.x * 0.5 * s, dl.y * 0.5 * s, dl.z * 0.5 * s);
             } else {
-                heightW = Math.max(0.26 * H, radiusW * 2.2);
-                off = new pc.Vec3(0, heightW * 0.5, 0);
+                hy = Math.max(0.13 * H, t);
+                off = new pc.Vec3(0, hy, 0);
             }
-            opts = { type: "capsule", radius: radiusW, height: heightW, axis: axis, linearOffset: off };
+            opts = { type: "box", halfExtents: new pc.Vec3(hx, hy, hz), linearOffset: off };
         }
 
         bone.addComponent("collision", opts);
