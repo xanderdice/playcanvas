@@ -878,21 +878,27 @@ void main(void) {
        1.43e5 / 5e8, que superan el maximo de mediump ~65504). En WebGPU todo
        es f32; en WebGL2 highp esta garantizado en fragment. quality solo
        controla iteraciones/octavas/supersampling via FIRE_HD. */
-    const header = (this.quality === "hd")
-        ? "#define FIRE_HD\nprecision highp float;\n"
-        : "precision highp float;\n";
+    var cache = FirePlane._matCache || (FirePlane._matCache = {});
+    var cacheKey = this.shaderType + "_" + this.quality;
+    this.material = cache[cacheKey];
+    if (!this.material) {
+        const header = (this.quality === "hd")
+            ? "#define FIRE_HD\nprecision highp float;\n"
+            : "precision highp float;\n";
 
-    this.material = new pc.ShaderMaterial({
-        uniqueName: this.shaderType + "Shader_" + this.quality,
-        attributes: {
-            aPosition: pc.SEMANTIC_POSITION,
-            aUv0: pc.SEMANTIC_TEXCOORD0
-        },
-        vertexGLSL: vs,
-        fragmentGLSL: header + fs[this.shaderType]
-    });
-    this.material.name = this.material.uniqueName;
-    this.material.depthWrite = false;
+        this.material = new pc.ShaderMaterial({
+            uniqueName: this.shaderType + "Shader_" + this.quality,
+            attributes: {
+                aPosition: pc.SEMANTIC_POSITION,
+                aUv0: pc.SEMANTIC_TEXCOORD0
+            },
+            vertexGLSL: vs,
+            fragmentGLSL: header + fs[this.shaderType]
+        });
+        this.material.name = this.material.uniqueName;
+        this.material.depthWrite = false;
+        cache[cacheKey] = this.material;
+    }
 
     this.entity.render.material = this.material;
 

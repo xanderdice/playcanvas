@@ -679,6 +679,8 @@ GameManager.showMenuOnEnabledPointer = true;
 GameManager.__menuchecktime = 0;
 GameManager.__subtitleTimeout = null;
 GameManager.__assetLoaderTimeout = null;
+GameManager.__scratchEuler = new pc.Vec3();
+GameManager.__scratchPos = new pc.Vec3();
 GameManager.currentCamera = null;
 GameManager.cameraOptions = {};
 GameManager.followCamera = {};
@@ -1086,6 +1088,7 @@ GameManager.handleEscToggle = function () {
 /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/
 /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/
 /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/ /**/
+GameManager.__mouseThrottleId = null;
 GameManager._onMouseMove = async function (event) {
     if (GameManager.__gameMouseMoved) return;
 
@@ -1132,11 +1135,14 @@ GameManager._onMouseMove = async function (event) {
         GameManager.input.previousX = hasClientCoords ? event.clientX : GameManager.input.previousX;
         GameManager.input.previousY = hasClientCoords ? event.clientY : GameManager.input.previousY;
 
-        // Hover/raycast solo cuando el mouse no está capturado
-        if (GameManager.mouseState === "free") {
-            await GameManager._updateMouseHoverTarget(event);
+        // Hover/raycast solo cuando el mouse no está capturado, máximo 1 vez por frame
+        if (GameManager.mouseState === "free" && !GameManager.__mouseHoverPending) {
+            GameManager.__mouseHoverPending = true;
+            requestAnimationFrame(function () {
+                GameManager.__mouseHoverPending = false;
+                GameManager._updateMouseHoverTarget(event);
+            });
         }
-
 
         GameManager.__gameMouseMoved = true;
         GameManager.__gameMouse_busy = false;
@@ -1494,11 +1500,12 @@ GameManager.updateCameraOrientation = function () {
     if (GameManager.mouseState !== "captured") return;
 
     if (GameManager.followCamera && GameManager.followCamera.eulers) {
-        GameManager.currentCamera.entity.setEulerAngles(new pc.Vec3(
+        GameManager.__scratchEuler.set(
             -GameManager.followCamera.eulers.y,
             GameManager.followCamera.eulers.x + 180,
             0
-        ));
+        );
+        GameManager.currentCamera.entity.setEulerAngles(GameManager.__scratchEuler);
     }
 };
 
@@ -1528,7 +1535,7 @@ GameManager.updateCameraPosition = function (dt) {
             const deltaTimeAdjustment = dt / (1.0 / 60);
             const smoothFactor = GameManager.followCamera.smoothFactor * deltaTimeAdjustment;
 
-            const newPosition = new pc.Vec3();
+            const newPosition = GameManager.__scratchPos;
 
             if (smoothFactor > 0 && smoothFactor < 1) {
                 newPosition.lerp(currentPosition, desiredPosition, smoothFactor);
@@ -1563,13 +1570,17 @@ GameManager.updateCameraPosition = function (dt) {
 
     ///ThirdPerson: 
 
-    let cameraPosition = targetPosition.clone().add(GameManager.currentCamera.entity.forward.scale(-GameManager.followCamera.orbitRadius));
+    /* entity.forward devuelve una referencia interna (_forward): escalarla
+       directamente la muta. Se clona antes de escalar. */
+    let cameraPosition = targetPosition.clone().add(GameManager.currentCamera.entity.forward.clone().scale(-GameManager.followCamera.orbitRadius));
     cameraPosition.y = pc.math.clamp(cameraPosition.y, 0.5, Number.POSITIVE_INFINITY);
 
     const hit = GameManager._app.systems.rigidbody.raycastFirst(targetPosition, cameraPosition);
 
     if (hit && hit.entity && !(hit.entity.isPlayer ?? false) && hit.entity.name.toLowerCase() !== "charactersensor" && !hit.entity.tags.has("ignore-camera-collision")) {
-        const direction = GameManager.followCamera.target.getPosition().sub(hit.point).normalize();
+        /* getPosition() devuelve la referencia interna (_position) de la entidad
+           objetivo: .sub() la mutaría y desplazaría al player. Se clona antes. */
+        const direction = GameManager.followCamera.target.getPosition().clone().sub(hit.point).normalize();
         cameraPosition = hit.point.clone().add(direction.scale(0.1));
     }
 
@@ -1771,23 +1782,13 @@ GameManager.updateCharactersMovement = function () {
     let someoneMoved = false;
 
     // =========================================================
-    // 1️⃣ SIEMPRE mover players primero
+    // 1️⃣ Mover player (referencia directa, sin escanear la lista)
     // =========================================================
-    for (let i = 0; i < total; i++) {
-
-        const character = characters[i];
-        if (!character || !character.enabled) continue;
-
-        if (!character.tags || !character.tags.has("is-player")) continue;
-
-        const script = character.script && character.script.character;
-        if (!script) continue;
-
-        character.input = GameManager.input;
-
-        if (script.doMove) {
-            script.doMove();
-            someoneMoved = true;
+    if (GameManager.playerEntity && GameManager.playerEntity.enabled) {
+        var ps = GameManager.playerEntityScript;
+        if (ps) {
+            GameManager.playerEntity.input = GameManager.input;
+            if (ps.doMove) { ps.doMove(); someoneMoved = true; }
         }
     }
 
@@ -1803,7 +1804,6 @@ GameManager.updateCharactersMovement = function () {
 
     const estCost = Math.max(0.0001, this._avgMsPerChar);
     let batchSize = Math.floor(targetBudgetMs / estCost);
-
     if (batchSize < 1) batchSize = 1;
 
     const minPercent = Math.max(1, Math.floor(total * 0.005));
@@ -1817,14 +1817,9 @@ GameManager.updateCharactersMovement = function () {
 
     let processed = 0;
     let index = this._movementIndex;
-
     if (index >= total) index = 0;
 
-    let attempts = 0;
-
-    while (processed < batchSize && attempts < total) {
-
-        attempts++;
+    while (processed < batchSize && processed < total) {
 
         const character = characters[index];
 
@@ -1832,7 +1827,7 @@ GameManager.updateCharactersMovement = function () {
         if (index >= total) index = 0;
 
         if (!character || !character.enabled) continue;
-        if (character.tags && character.tags.has("is-player")) continue;
+        if (character.isPlayer) continue;
 
         const script = character.script && character.script.character;
         if (!script) continue;
@@ -1840,7 +1835,6 @@ GameManager.updateCharactersMovement = function () {
         character.input = character.input || {};
         character.input.dt = dt;
 
-        // AI distribuida
         const aiFreq = character.aiFrequency || 10;
 
         if (aiFreq > 0 && ((this._globalFrame + index) % aiFreq) === 0) {
@@ -1861,7 +1855,8 @@ GameManager.updateCharactersMovement = function () {
     // 4️⃣ Notificar instancer solo una vez
     // =========================================================
     if (someoneMoved && instancerCells) {
-        for (let i = 0; i < instancerCells.length; i++) {
+        const len = instancerCells.length;
+        for (let i = 0; i < len; i++) {
             instancerCells[i].entityMoved = true;
         }
     }

@@ -1106,16 +1106,13 @@ Character.prototype.doMove = function () {
     if (this._doMoveBusy) return;
     this._doMoveBusy = true;
 
-    /* CACHÉ del componente físico: se accede muchas veces por frame
-       (linearVelocity/angularVelocity/mass/applyForce). Guardar la referencia
-       evita re-resolver this.entity.rigidbody en cada acceso. */
     const rb = this.entity.rigidbody;
 
     const input = this.entity.input || {};
     const dt = Number(input.dt || 0);
     const useFlight = !!this.canmoveonair;
 
-    this._curPosition = this.entity.getPosition();
+    this._curPosition.copy(this.entity.getPosition());
 
     if (this.pointCharacterEntity) {
         this.pointCharacterEntity.setPosition(this._curPosition);
@@ -1134,47 +1131,39 @@ Character.prototype.doMove = function () {
        - visibleThisFrame solo es fiable si el render está de verdad activo
          (componente y entidad habilitados); con el render DESACTIVADO ese flag
          queda false para siempre y congelaba TODO: movimiento, animación... */
-    let visibleThisFrame = true;
     if (!this.entity.isPlayer &&
         this.renderCharacterComponent &&
         this.renderCharacterComponent.enabled &&
         this.renderCharacterComponent.entity.enabled &&
         this._characterMeshInstance &&
-        typeof this._characterMeshInstance.visibleThisFrame === "boolean") {
-        visibleThisFrame = this._characterMeshInstance.visibleThisFrame;
-    }
-
-    if (this.entity.anim) {
-        this.entity.anim.enabled = visibleThisFrame;
-    }
-
-    /* CULLING FÍSICO AGRESIVO (opcional, off por defecto): un NPC que lleva
-       'physicsCullDelay' s fuera de cámara y NO está en combate apaga su
-       rigidbody+collision para no gastar simulación de Ammo.js. Se reactiva en
-       cuanto vuelve a ser visible (o si entra en combate). El player nunca se culla. */
-    if (!this.entity.isPlayer && this.cullingOptions && this.cullingOptions.physicsCulling) {
-        if (visibleThisFrame) {
-            if (this._physicsCulled) this._restorePhysics();
-            this._invisibleTime = 0;
-        } else {
+        typeof this._characterMeshInstance.visibleThisFrame === "boolean" &&
+        !this._characterMeshInstance.visibleThisFrame) {
+        /* NPC fuera de cámara: no mover, no física */
+        if (this.entity.anim) this.entity.anim.enabled = false;
+        if (this.cullingOptions && this.cullingOptions.physicsCulling) {
             this._invisibleTime += dt;
             const inCombat = this._isInCombat();
-            if (this._physicsCulled) {
-                if (inCombat) this._restorePhysics();   // reanuda simulación si entra en combate
-            } else if (!inCombat && this._invisibleTime >= (this.cullingOptions.physicsCullDelay || 0)) {
+            if (!inCombat && this._invisibleTime >= (this.cullingOptions.physicsCullDelay || 0)) {
                 this._cullPhysics();
             }
         }
-    }
-
-    if (visibleThisFrame) {
-        this._updateGroundedState();
-    }
-
-    if (!visibleThisFrame) {
         this._doMoveBusy = false;
         return;
     }
+
+    if (this.entity.anim) {
+        this.entity.anim.enabled = true;
+    }
+
+    if (!this.entity.isPlayer && this.cullingOptions && this.cullingOptions.physicsCulling) {
+        if (this._physicsCulled) {
+            const inCombat = this._isInCombat();
+            if (inCombat) this._restorePhysics();
+        }
+        this._invisibleTime = 0;
+    }
+
+    this._updateGroundedState();
 
     if (this.tracerOptions && this.tracerOptions.traceinput && this.entity.isPlayer) {
         const t = {};
@@ -1470,8 +1459,6 @@ Character.prototype.doMove = function () {
         this._jumpKeyHeld = !!input.jump;
     }
 
-    /* OPTIMIZACION (GC): faceDir es un vector reutilizable; hasFaceDir sustituye al antiguo
-       patrón "faceDir = null" para indicar "no hay dirección a la que mirar". */
     let hasFaceDir = false;
     const faceDir = this._vFaceDir;
 
@@ -1493,7 +1480,8 @@ Character.prototype.doMove = function () {
                 hasFaceDir = true;
             }
         }
-    } else {
+    } else if (this._templateEntity) {
+        /* NPCs sin template usan angularFactor 0: no rotan, saltar faceDir */
         if (targetPoint) {
             const tpPos = targetPoint.getPosition ? targetPoint.getPosition() : targetPoint;
             faceDir.copy(tpPos).sub(this._curPosition);
@@ -2605,7 +2593,6 @@ Character.prototype.prepareAnimComponent = function () {
     };
 
 
-    const statesNoLoops = ["death", "landing"];
     const animation_modes_length = Character.animation_modes.length;
     var m = 0;
     for (; m < animation_modes_length; m++) {
@@ -2613,12 +2600,10 @@ Character.prototype.prepareAnimComponent = function () {
         var i = 0;
         for (; i < keys_length; i++) {
             const stateName = keys[i];
-            /* los "<anim>_rootmotion" son selectores de texto, NO animaciones:
-               saltarlos (y exigir .id: solo un asset real crea un estado) */
             if (stateName.indexOf("_rootmotion") !== -1) continue;
             if (animAttr[stateName] && animAttr[stateName].id) {
                 animAttr[stateName].preload = true;
-                const stateLoop = !statesNoLoops.some(s => stateName.includes(s));
+                const stateLoop = stateName.indexOf("death") === -1 && stateName.indexOf("landing") === -1;
                 this._animStateGraphData.layers[0].states.push({ name: stateName, loop: stateLoop, assetId: animAttr[stateName].id });
             }
         }
@@ -2929,35 +2914,6 @@ Character.prototype.prepareAnimComponent = function () {
 
 
 
-
-        /*IMPACT*/
-        if (this["animations_" + modeName][modeName + "_impact_block"]) {
-
-            this._animStateGraphData.layers[0].transitions.push(
-                {
-                    from: "ANY",
-                    to: modeName + "_impact_block",
-                    time: 0.2,
-                    priority: 0,
-                    conditions: [
-                        { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
-                        { parameterName: "impact", predicate: pc.ANIM_EQUAL_TO, value: 1 }
-                    ]
-                },
-                {
-                    from: modeName + "_impact_block",
-                    to: modeName + "_idle",
-                    time: 0.2,
-                    priority: 0,
-                    conditions: [
-                        { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
-                        { parameterName: "impact", predicate: pc.ANIM_EQUAL_TO, value: 0 }
-                    ]
-                }
-            );
-        }
-
-
         /*ATTACK*/
 
         for (var i = 0; i < Character.animation_attack.length; i++) {
@@ -3063,11 +3019,10 @@ Character.prototype.prepareAnimComponent = function () {
     const airModeName = Character.animation_modes[CharacterLocomotionModeEnum.ONAIR];
     const airIdleState = airModeName + "_idle";
     const graphStates = this._animStateGraphData.layers[0].states;
-    const hasGraphState = function (n) {
-        return graphStates.some(function (s) { return s.name === n; });
-    };
+    const graphStateSet = new Set();
+    for (var si = 0; si < graphStates.length; si++) graphStateSet.add(graphStates[si].name);
 
-    if (hasGraphState(airIdleState)) {
+    if (graphStateSet.has(airIdleState)) {
         /* ENTRADA: cualquier estado -> pose de aire cuando mode==ONAIR */
         this._animStateGraphData.layers[0].transitions.push({
             from: "ANY",
@@ -3086,7 +3041,7 @@ Character.prototype.prepareAnimComponent = function () {
             if (wm === CharacterLocomotionModeEnum.ONAIR) continue;
             const wModeName = Character.animation_modes[wm];
 
-            if (hasGraphState(wModeName + "_idle")) {
+            if (graphStateSet.has(wModeName + "_idle")) {
                 this._animStateGraphData.layers[0].transitions.push({
                     from: airIdleState,
                     to: wModeName + "_idle",
@@ -3098,7 +3053,7 @@ Character.prototype.prepareAnimComponent = function () {
                     ]
                 });
             }
-            if (hasGraphState(wModeName + "_walking")) {
+            if (graphStateSet.has(wModeName + "_walking")) {
                 this._animStateGraphData.layers[0].transitions.push({
                     from: airIdleState,
                     to: wModeName + "_walking",
@@ -3111,7 +3066,7 @@ Character.prototype.prepareAnimComponent = function () {
                     ]
                 });
             }
-            if (hasGraphState(wModeName + "_running")) {
+            if (graphStateSet.has(wModeName + "_running")) {
                 this._animStateGraphData.layers[0].transitions.push({
                     from: airIdleState,
                     to: wModeName + "_running",

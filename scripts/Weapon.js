@@ -91,6 +91,7 @@ Weapon.prototype.initialize = function () {
         col.on('collisionstart', this._onCollisionStart, this);
         col.on('collisionend', this._onCollisionEnd, this);
         this.entity.tags.add("ignore-camera-collision");
+        if (!this.entity.tags.has("can-damage")) this.entity.tags.add("can-damage");
     } else {
 
     }
@@ -116,9 +117,8 @@ Weapon.prototype._ensureCollision = function () {
         halfExtents = box.halfExtents;
         offset = box.center;
     } else {
-        /* sin modelo disponible: caja fina vertical por defecto (arma tipo espada) */
-        halfExtents = new pc.Vec3(0.05, 0.5, 0.05);
-        offset = new pc.Vec3(0, 0, 0);
+        halfExtents = Weapon._defaultHE;
+        offset = Weapon._defaultOff;
         if (this.fitCollisionToAABB) {
             /* el modelo aun no esta cargado: reintentar en update */
             this._fitPending = true;
@@ -156,21 +156,24 @@ Weapon.prototype._computeLocalBox = function () {
     var scale = this._worldScale(this.entity);
     var pad = this.collisionPadding;
 
-    var he = new pc.Vec3(
+    var he = Weapon._scratchVec;
+    he.set(
         Math.abs(aabb.halfExtents.x / (scale.x || 1)) + pad,
         Math.abs(aabb.halfExtents.y / (scale.y || 1)) + pad,
         Math.abs(aabb.halfExtents.z / (scale.z || 1)) + pad
     );
 
-    /* centro del AABB (world) -> local de la entidad = linearOffset.
-       linearOffset se rota+escala con el transform mundial, igual que los
-       vertices del modelo, por eso basta con invertir la matriz mundial. */
-    var inv = new pc.Mat4().copy(this.entity.getWorldTransform()).invert();
-    var localCenter = new pc.Vec3();
+    var inv = Weapon._scratchMat.copy(this.entity.getWorldTransform()).invert();
+    var localCenter = Weapon._scratchCenter;
     inv.transformPoint(aabb.center, localCenter);
 
     return { halfExtents: he, center: localCenter };
 };
+Weapon._scratchVec = new pc.Vec3();
+Weapon._scratchCenter = new pc.Vec3();
+Weapon._scratchMat = new pc.Mat4();
+Weapon._defaultHE = new pc.Vec3(0.05, 0.5, 0.05);
+Weapon._defaultOff = new pc.Vec3(0, 0, 0);
 
 /* Union de los AABB (world) de todos los meshInstances del subarbol.
    Devuelve pc.BoundingBox o null si no hay meshes cargadas. */
@@ -314,12 +317,24 @@ Weapon.prototype.update = function (dt) {
     if (!this._fitPending) return;
 
     this._fitAttempts++;
-    if (this.refitCollision()) {
-        this._fitPending = false;
 
-    } else if (this._fitAttempts > 180) {
-        this._fitPending = false;  // rendirse tras ~3s a 60fps
+    /* ventana inicial (~3s a 60fps): reintento cada frame; el modelo suele
+       cargar dentro de ella. Pasada la ventana NO se abandona con la caja
+       minima por defecto (dejaba al arma sin poder golpear): si el arma TIENE
+       render/model pero aun sin meshes, el asset sigue cargando -> se sigue
+       reintentando pero espaciado (barato). Solo se rinde si no existe ningun
+       componente renderizable del que derivar el AABB (no habra meshes nunca). */
+    var inGrace = this._fitAttempts <= 180;
 
+    if (inGrace || (this._fitAttempts % 30 === 0)) {
+        if (this.refitCollision()) {
+            this._fitPending = false;
+            return;
+        }
+    }
+
+    if (!inGrace && !this.entity.render && !this.entity.model) {
+        this._fitPending = false;  // sin render/model: no hay AABB posible
     }
 };
 
