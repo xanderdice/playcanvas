@@ -23,6 +23,7 @@ playcanvas scripts textures and more
 # example proyect 
 https://elanrastudios.com/games/instant-worlds-elysium/?uranusRoomId=UnIZjbWN1
 
+https://github.com/diegosouzapw/OmniRoute
 
 # IA
 🔗 Free Hunyuan 3.0 - https://3d.hunyuan.tencent.com/
