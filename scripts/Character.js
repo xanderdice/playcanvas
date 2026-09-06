@@ -143,6 +143,16 @@ Character.attributes.add("tracerOptions",
                 name: "traceattack",
                 type: "boolean",
                 default: false
+            },
+            {
+                name: "tracefacing",
+                type: "boolean",
+                default: false
+            },
+            {
+                name: "traceanimlod",
+                type: "boolean",
+                default: false
             }
         ]
     });
@@ -151,9 +161,14 @@ Character.attributes.add("tracerOptions",
    AmmoDebugDrawer del gameManager (tracer.trenableammodebugdrawer). */
 
 
+/* TODO lo relativo a ANIMACION del personaje vive en este grupo: el motion root
+   global y el LOD de animacion. Estaban separados (playerAnimationsOptions y
+   animationLod) y no habia motivo: los dos gobiernan como corre la animacion y
+   se leen juntos en el mismo sitio (rootMotionFix lee el motion root usando el
+   _animDtApplied que publica el LOD). Un solo grupo en el editor. */
 Character.attributes.add("playerAnimationsOptions",
     {
-        title: "Player Animations Options",
+        title: "Animations Options (motion root + LOD)",
         type: "json",
         schema: [
             {
@@ -176,6 +191,51 @@ Character.attributes.add("playerAnimationsOptions",
                     { "place-in-yx": "place-in-yx" },
                     { "place-in-zxy": "place-in-zxy" }],
                 default: "none"
+            },
+
+            /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+             *  LOD DE ANIMACION
+             *  En una multitud el coste dominante NO es doMove: es el sistema de
+             *  animacion (evaluar ~200 curvas por clip, escribir ~65 huesos y
+             *  re-sincronizar la jerarquia, por personaje y por frame). El LOD
+             *  desacopla la tasa de ANIMACION de la de RENDER: la animacion corre
+             *  a lodRateHz fijos en vez de a los fps que de la maquina.
+             *  Ver _updateAnimLod para el mecanismo y las garantias en maquinas
+             *  lentas (resumen: por debajo de lodRateHz el LOD se apaga solo y no
+             *  puede saltear ni un frame, asi que nunca empeora lo que habia).
+             * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+            {
+                name: "lodEnabled",
+                type: "boolean",
+                default: true,
+                title: "Animation LOD",
+                description: "Desacopla la tasa de animacion de la de render. Apagado, cada frame de " +
+                    "render evalua la animacion (comportamiento anterior)."
+            },
+            {
+                name: "lodRateHz",
+                type: "number",
+                default: 30,
+                min: 5,
+                max: 120,
+                precision: 0,
+                title: "LOD rate (Hz)",
+                description: "Veces por segundo que se evalua la animacion. 30 = a 60 fps se anima 1 de " +
+                    "cada 2 frames; a 120 fps 1 de cada 4; a 30 fps o menos TODOS los frames (el LOD se " +
+                    "desactiva solo y nunca puede empeorar lo que habia). El frame que si anima avanza el " +
+                    "tiempo acumulado, asi que la animacion NO se ve en camara lenta: solo se muestrea " +
+                    "mas grueso."
+            },
+            {
+                name: "lodPlayerFullRate",
+                type: "boolean",
+                default: true,
+                title: "player at full rate",
+                description: "ENCENDIDO por defecto: el PLAYER se exime del LOD y anima a la tasa de " +
+                    "render. Es el personaje que el jugador mira de cerca todo el tiempo y el unico cuya " +
+                    "animacion responde a su input, asi que ahi el muestreo grueso se nota (sobre todo en " +
+                    "ataques rapidos) y ademas ahorra 1 personaje de 30: no compensa. Apagalo solo si " +
+                    "necesitas hasta ese ultimo frame."
             }
         ]
     });
@@ -277,76 +337,159 @@ Character.attributes.add("attackSystem",
                 name: "walkAndAttack",
                 type: "boolean",
                 default: false
-            }
-        ]
-    });
-
-
-Character.attributes.add("health",
-    {
-        title: "health",
-        type: "json",
-        schema: [
+            },
+            /* ENCARE (facing lock): dentro de un radio, el personaje MIRA al character
+               mas cercano en vez de mirar hacia donde se mueve (asi camina hacia atras
+               sin dar la espalda). Vive en attackSystem porque encarar al rival es
+               parte del combate. Lo demas se deriva solo en runtime: cada cuanto se
+               busca objetivo y cuanto trabajo cabe por frame. Ver el planificador
+               compartido mas abajo. */
             {
-                name: "max",
-                type: "number",
-                default: 100,
-                min: 1,
-                title: "max",
-                description: "Vida maxima del personaje. Al llegar a 0 se dispara la animacion de muerte."
-            }
-        ]
-    });
-
-
-/* CULLING FÍSICO AGRESIVO (opcional). OFF por defecto: activarlo apaga rigidbody
-   y collision de los NPCs que llevan 'physicsCullDelay' segundos fuera de cámara
-   y NO están en combate, ahorrando simulación de Ammo.js. Se reactivan al volver
-   a ser visibles. El PLAYER nunca se culla. */
-Character.attributes.add("cullingOptions",
-    {
-        title: "Culling options",
-        type: "json",
-        schema: [
-            {
-                name: "physicsCulling",
+                name: "faceNearbyCharacters",
                 type: "boolean",
                 default: true,
-                title: "Physics culling",
-                description: "Apaga rigidbody+collision de NPCs fuera de cámara (no en combate) para ahorrar Ammo.js."
+                title: "face nearby characters",
+                description: "Encarar al character mas cercano cuando entra en el radio de encare. " +
+                    "Apagado, el personaje siempre mira hacia donde se mueve."
             },
             {
-                name: "physicsCullDelay",
+                name: "facingRadius",
                 type: "number",
-                default: 2,
+                default: 0,
                 min: 0,
-                title: "Physics cull delay (s)",
-                description: "Segundos fuera de cámara antes de apagar la física del NPC."
+                title: "facing radius (0 = auto)",
+                description: "Radio de encare en metros. En 0 se DERIVA solo: del rango de ataque " +
+                    "de characterIA si la entidad lo lleva, y si no de la altura del personaje."
             }
         ]
     });
 
 
-/* HITPOINTS por hueso: al habilitarlo, cada hueso de la seccion bones recibe
-   una collision (trigger, sin rigidbody: detecta pero no empuja ni pesa)
-   dimensionada automaticamente a partir del MISMO characterHeight que ya
-   dimensiona la capsula y la masa. Base para daño localizado (headshots, etc.).
+/* VIDA. Deliberadamente NO es un atributo del editor. Es un valor de GAMEPLAY,
+   no de montaje de escena: por atributo obligaba a tocarlo personaje por
+   personaje en el inspector, y ademas invitaba a que cada instancia guardara un
+   numero distinto sin que nada lo justificara.
+   El estado real vive donde siempre: entity.health = { max, current, alive }.
+   Para configurarlo hay un unico camino soportado, setMaxHealth(), que ademas
+   maneja bien el caso de cambiarlo con el personaje ya dañado.
+   El valor de arranque es el MISMO que tenia el atributo por defecto, asi que
+   quitar el atributo no cambia el balance de nada que ya estuviera montado. */
+var CHARACTER_DEFAULT_MAX_HEALTH = 100;
+
+
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ *  C U L L I N G  —  lo hace la ENTIDAD, no este script
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ *  Aca vivia "cullingOptions" (physicsCulling / physicsCullDelay) y, repartido
+ *  por todo el archivo, un sistema propio de visibilidad que espiaba
+ *  meshInstance.visibleThisFrame para congelar animacion, movimiento y fisica.
+ *  Todo eso se elimino: el motor ya lo hace, mejor y gratis.
+ *
+ *  Apagar la ENTIDAD del personaje:
+ *
+ *      entity.enabled = false;
+ *
+ *  cascadea a TODOS los descendientes (GraphNode#enabled: "activate or
+ *  deactivate all the enabled children"), y con eso, en un solo flag:
+ *
+ *    - los SCRIPTS dejan de correr           -> ni update, ni postUpdate, ni doMove
+ *      (GameManager.updateCharactersMovement ya saltea !character.enabled)
+ *    - la ANIMACION deja de evaluarse        -> AnimComponentSystem exige
+ *      component.enabled && component.entity.enabled && component.playing
+ *    - el RENDER deja de dibujar             -> incluidos TODOS los hijos _LODn
+ *      que genera el Auto LOD
+ *    - el RIGIDBODY sale de la simulacion    -> RigidBodyComponent.onDisable()
+ *      llama a disableSimulation()
+ *    - las COLLISIONS/TRIGGERS salen tambien -> incluidos los 9 hitpoints de hueso
+ *
+ *  Es estrictamente mas de lo que apagaba el sistema anterior, con cero codigo
+ *  y sin la fragilidad de espiar una meshInstance que puede ser destruida o
+ *  reemplazada (que es justo lo que pasaba al reestructurar en LODs).
+ *
+ *  QUIEN decide apagar es un sistema EXTERNO —spawner, gestor de zona, el futuro
+ *  gestor de LOD/distancia—, no este script. Character solo reacciona: ver
+ *  onEnable / onDisable.
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+
+/* LOD de animación — constantes internas (ver _updateAnimLod) */
+var ANIM_LOD_MIN_HZ = 1;                                 // suelo de lodRateHz (evita 1/0)
+var ANIM_LOD_PHASE_STEP = 0.6180339887498949;            // razón áurea: reparto de fases
+var ANIM_LOD_FIRE_TOLERANCE = 0.95;                      // margen del umbral (mata el escalón en dt≈intervalo)
+
+
+/* HITPOINTS por hueso: cada hueso de la seccion bones recibe una collision
+   (trigger, sin rigidbody: detecta pero no empuja ni pesa) dimensionada
+   automaticamente a partir del MISMO characterHeight que ya dimensiona la
+   capsula y la masa. Base para daño localizado (headshots, etc.).
    Ver _setupHitpoints. Visualizacion: AmmoDebugDrawer del gameManager
-   (hitpoints en amarillo, capsulas de personaje en rojo). */
+   (hitpoints en amarillo, capsulas de personaje en rojo).
+
+   COSTE, que es lo que motiva los tres modos: una collision SIN rigidbody es un
+   trigger (ghost object de Bullet), y el sistema de fisica le hace
+   updateTransform() a CADA trigger en CADA frame — leer el transform mundial
+   del hueso (que fuerza el sync de todo el esqueleto), escribirlo en Ammo y
+   actualizar su AABB en el broadphase, mas el cache de pares que cada ghost
+   mantiene por su cuenta. Son 9 por personaje: con 30 en pantalla, 270 ghosts
+   moviendose todo el tiempo. Y solo hacen falta cuando alguien esta lo bastante
+   cerca como para pegarte.
+
+   MODOS:
+     none   : no se crean. El arma golpea la capsula y el daño es global (sin
+              parte del cuerpo). Coste cero.
+     always : se crean y quedan siempre activos (comportamiento historico).
+     smart  : se crean pero solo se ACTIVAN en modo batalla. "Modo batalla" es
+              exactamente el ENCARE ya existente (attackSystem.faceNearbyCharacters):
+              el personaje tiene el encare BLOQUEADO sobre otro character, o sea
+              que hay alguien dentro del radio de encare. Se reutiliza esa señal
+              y no se inventa otra: ya tiene histeresis (se entra en R y se sale
+              en R*1.25), ya la calcula el planificador con presupuesto, y es
+              justo la condicion "hay alguien a distancia de golpearme".
+              Fuera de combate el personaje no le cuesta nada a la fisica. */
 Character.attributes.add("hitpointsoptions",
     {
         title: "hitpointsoptions",
         type: "json",
         schema: [
             {
-                name: "enabled",
-                type: "boolean",
-                default: true,
-                title: "enabled",
-                description: "enables hitpointsoptions"
+                name: "mode",
+                title: "mode",
+                type: "string",
+                enum: [
+                    { "none": "none" },
+                    { "always": "always" },
+                    { "smart": "smart" }
+                ],
+                default: "smart",
+                description: "none = no crear colliders (daño global contra la capsula). " +
+                    "always = colliders siempre activos. " +
+                    "smart = colliders activos SOLO en modo batalla (encare bloqueado sobre " +
+                    "otro character o atacando); fuera de combate se apagan y no cuestan fisica. " +
+                    "smart necesita attackSystem.faceNearbyCharacters encendido: sin esa señal " +
+                    "se comporta como always."
+            },
+            {
+                name: "smartHold",
+                title: "smart hold (s)",
+                type: "number",
+                default: 0.5,
+                min: 0,
+                max: 5,
+                precision: 2,
+                description: "Solo en modo smart: segundos que los colliders siguen activos tras salir " +
+                    "de combate. Evita que un golpe que ya venia en camino atraviese al enemigo porque " +
+                    "sus hitboxes se apagaron a mitad del swing, y evita encender/apagar en rafaga."
             }
         ]
     });
+
+/* Modo de hitpoints resuelto a numero (comparar numeros por frame es mas barato
+   que comparar textos, y no genera basura para el GC). */
+const CharacterHitpointModeEnum = Object.freeze({
+    NONE: 0,
+    ALWAYS: 1,
+    SMART: 2
+});
 
 
 /* ONAIR = modo de locomoción "en el aire" (salto). Va en el ÍNDICE 1, contiguo
@@ -365,14 +508,44 @@ Character.animation_modes = ["unarmed", "onair", "torch", "armed_2w"];
 Character.animation_idles = ["idle", "idle_searching", "idle_examine", "idle_resting", "idle_hit"];
 Character.animation_attack = ["attack1"];
 
+/* SENTIDO DE MARCHA (parametro "moveDir" del grafo). Solo se usa con el encare
+   BLOQUEADO sobre otro character: ahi la direccion de movimiento y la direccion
+   de mirada se desacoplan, y hay que elegir el clip que corresponde. Sin lock el
+   personaje gira hacia donde anda, asi que siempre es FORWARD.
+   Los VALORES son el contrato con el grafo (condiciones moveDir == n) y con los
+   nombres de estado: cambiar uno obliga a cambiar el otro. */
+const CharacterMoveDirEnum = Object.freeze({
+    FORWARD: 0,
+    BACKWARD: 1,
+    LEFT: 2,
+    RIGHT: 3
+});
+
+/* Sufijo de estado de cada sentido, INDEXADO por el valor del enum de arriba.
+   FORWARD no lleva sufijo (los estados historicos son "walking"/"running"). */
+const CharacterMoveDirSuffix = ["", "_backward", "_left", "_right"];
+
+/* solo para traza (tracerOptions.tracefacing) */
+const CharacterMoveDirNames = ["forward", "backward", "left", "right"];
+
+/* Margen que el sentido aspirante debe sacarle al vigente para destronarlo.
+   0.2 sobre proyecciones normalizadas = ~11 grados de banda muerta a cada lado
+   de las diagonales, que es donde dos componentes se igualan y el parpadeo
+   walking <-> walking_left seria continuo. */
+var MOVEDIR_HYSTERESIS = 0.2;
+
 Character.animation_states = [
     "death1",
     "death2",
     "walking",
     "walking_backward",
+    "walking_left",
+    "walking_right",
     "walking_turn_180",
     "running",
     "running_backward",
+    "running_left",
+    "running_right",
     "onair",
     "landing",
     "impact_block",
@@ -507,6 +680,208 @@ const CharacterAttackSystemStatusEnum = Object.freeze({
 
 
 
+/* =========================================================================
+   PLANIFICADOR DE ENCARE (compartido por TODOS los characters)
+   =========================================================================
+   Elegir "quien es el character mas cercano" es O(N) (recorrer la lista de
+   characters). Si cada personaje en pantalla lo hiciera cada frame seria
+   O(N^2) por frame. Este planificador reparte esos recorridos SIN que haya
+   nada que configurar:
+
+   1. QUIEN compite: solo los VISIBLES con el encare activo. Los NPCs fuera de
+      camara ni llegan a inscribirse (doMove ya hace early-return antes).
+
+   2. CUANDO escanea cada uno: lo dice la GEOMETRIA, no un reloj. Tras cada
+      escaneo el personaje calcula cuanto tiempo su respuesta es DEMOSTRABLE-
+      MENTE valida = margen hasta la frontera de decision / velocidad de
+      cierre pesimista. El que no tiene a nadie cerca casi no gasta; el que
+      esta en el instante decisivo escanea cada frame. Al ser tiempo/velocidad,
+      la latencia en SEGUNDOS DE JUEGO no depende de los fps: a 10 fps el mismo
+      personaje escanea cada 10 frames en vez de cada 65, y tarda lo mismo.
+      El "segundo" es el de SIMULACION (dt acumulado, ver hook), que es el
+      mismo en el que estan las velocidades del calculo. Si el motor clampea dt
+      —lo hace: app.maxDeltaTime— el mundo entra en camara lenta y los deadlines
+      entran con el, que es justo lo que los mantiene validos.
+
+   3. CUANTO cabe por frame: se MIDE (EWMA del coste real, igual que hace
+      GameManager con _avgMsPerChar) contra un presupuesto derivado del frame,
+      y un umbral de urgencia por realimentacion raciona cuando muchos
+      coinciden. Si los escaneos son tan baratos que ni se miden, el racionado
+      se desactiva solo: no estorba cuando no hace falta.
+
+   4. SI BAJAN LOS FPS hay DOS topes, porque el presupuesto por si solo se
+      comporta al reves de lo que uno querria:
+        - el frame usado para presupuestar se CLAMPEA (FACING_BUDGET_MAX_DT).
+          Un frame el doble de largo admite el doble de trabajo — eso es
+          correcto y mantiene constante la latencia en segundos — pero un
+          PICO (GC, carga de assets) no debe autorizar diez veces mas trabajo
+          justo en el frame que ya iba mal. Por debajo de 20 fps el
+          presupuesto se congela en 1 ms.
+        - el trabajo total (escaneos x characters) se acota a FACING_MAX_WORK.
+          Es el unico tope que sigue valiendo cuando el reloj no tiene
+          resolucion para medir un escaneo, que es el caso normal; sin el, la
+          unica cota era "N escaneos de coste N" = O(N^2) en un solo frame.
+      Ninguno de los dos hace nada en una escena chica: ahi manda el limite
+      por numero de candidatos.
+
+   5. El "frame" de este planificador es el de RENDER (app.on("update")), NO el
+      barrido de doMove: GameManager puede mover a los personajes desde tres
+      relojes distintos (update / internalTimer / requestAnimationFrame), en
+      lotes parciales y en orden variable. Si el barrido corre dos veces en un
+      frame, el segundo encuentra el presupuesto agotado; si no corre, no se
+      consume nada. El sistema es independiente de como GameManager llame.
+      Nota de orden: GameManager registra SU app.on("update") antes (esta en la
+      entidad ROOT, inicializa primero), asi que el barrido de doMove de un
+      frame consume el presupuesto que dejo el hook del frame ANTERIOR, y
+      _scanDemand que lee el hook es la demanda de ese mismo barrido. El lazo
+      cierra bien; lo unico desplazado un frame es _nowSec, y como TODOS los
+      deadlines se comparan contra el mismo reloj, las comparaciones no cambian.
+
+   6. Sin inanicion: el turno se gana por RETRASO respecto al deadline propio,
+      no por orden de llegada. Que el player corra siempre primero no le da
+      ninguna ventaja. Quien no reciba doMove un frame simplemente envejece y
+      entra antes en el reparto siguiente. En saturacion sostenida el liston de
+      urgencia sube hasta su techo (FACING_MAX_DEADLINE) y la peor latencia de
+      re-eleccion de objetivo es deadline + techo = ~4 s; el SEGUIMIENTO del
+      objetivo ya elegido no se raciona nunca y sigue siendo cada frame, que es
+      lo que se ve.
+   ========================================================================= */
+Character._frame = 0;
+Character._candidates = [];        // aspirantes vivos (registro persistente)
+Character._scansLeft = 1;          // presupuesto de escaneos del frame en curso
+Character._scanDemand = 0;         // escaneos PEDIDOS este frame (entrada del lazo)
+Character._urgencyCutoff = 0;      // s de retraso exigidos cuando hay que racionar
+Character._avgScanMs = 0.01;       // coste medio MEDIDO de un escaneo
+Character._scanSamples = 0;        // contador de muestreo de performance.now()
+Character._nowSec = 0;             // reloj de SIMULACION acumulado (ver hook)
+Character._fallbackList = null;    // lista de characters sin GameManager
+Character._fallbackFrame = -1e9;
+
+/* LOD DE ANIMACION — estado compartido.
+   _animPhaseSeq reparte la FASE de cada personaje (ver _updateAnimLod).
+   Los contadores son solo diagnostico (tracerOptions.traceanimlod): dicen
+   cuantos characters evaluaron animacion en el frame anterior sobre el total,
+   que es la forma directa de comprobar que el LOD esta haciendo su trabajo. */
+Character._animPhaseSeq = 0;
+Character._animLodRan = 0;         // animaron en el frame en curso
+Character._animLodTotal = 0;       // candidatos a animar (habilitados, con anim)
+
+var FACING_STALE_FRAMES = 6;       // frames sin pasar por doMove -> fuera del registro
+var FACING_MIN_SCAN_MS = 0.001;    // suelo del coste medido (evita divisiones absurdas)
+var FACING_BUDGET_RATIO = 0.02;    // parte del frame que puede ir a escaneos
+var FACING_MAX_DEADLINE = 2;       // s: tope de validez (cubre spawns y teleports)
+var FACING_SAMPLE_EVERY = 16;      // 1 de cada N escaneos se cronometra
+var FACING_HYSTERESIS = 1.25;      // se sale del lock a radio * este factor
+var FACING_BUDGET_MAX_DT = 0.05;   // s: frame mas largo que se acepta para presupuestar
+var FACING_MAX_WORK = 20000;       // iteraciones por frame (escaneos x characters)
+
+/* un unico listener por app: reparte el presupuesto del frame de render */
+Character._installFrameHook = function (app) {
+    if (app.__characterFrameHook) return;
+    app.__characterFrameHook = true;
+
+    app.on("update", function (dt) {
+        Character._frame++;
+
+        /* LOD DE ANIMACION (diagnostico): los contadores los llenan los
+           characters en la fase "update" (_updateAnimLod) y los lee el Trace en
+           postUpdate, ambas ANTES que este hook — app.on("update") va despues de
+           systems.fire de update / animationUpdate / postUpdate. Aqui solo se
+           reinician para el frame siguiente.
+           (Habia ademas un juego de variables ..._Last que copiaba estos
+           valores "por si alguien los inspecciona desde consola": no las leia
+           NADIE, asi que eran asignaciones por frame a cambio de nada.) */
+        Character._animLodRan = 0;
+        Character._animLodTotal = 0;
+
+        /* RELOJ DE SIMULACION, no de pared. Se acumula el MISMO dt que integra
+           el movimiento, por tres razones:
+
+           - Los deadlines se derivan de margen/velocidad, y esas velocidades son
+             m/s de tiempo de JUEGO. Medir contra performance.now() mezcla dos
+             relojes y solo funciona mientras ambos coinciden.
+           - El motor clampea dt a app.maxDeltaTime (0.2 s en gameManager). Con
+             el juego a 1 frame cada 5 s el mundo avanza 0.2 s mientras el reloj
+             de pared avanza 5 s: TODOS quedarian permanentemente 25x atrasados
+             respecto a un deadline que en tiempo de juego ni siquiera vencio, y
+             el liston de urgencia (que sube de a dt) jamas podria alcanzarlos,
+             asi que el racionado justo se apagaria y solo quedaria la cuota.
+           - Con el juego en pausa (timeScale 0) dt es 0 y nada caduca, en vez de
+             caducar todo y provocar una tormenta de escaneos al reanudar.
+
+           Sigue siendo UN solo instante por frame para todos, que es lo que hace
+           determinista el reparto dentro del frame. performance.now() se sigue
+           usando donde corresponde: para MEDIR el coste real de un escaneo. */
+        Character._nowSec += dt;
+
+        /* PURGA: el que lleva varios frames sin pasar por doMove (invisible,
+           deshabilitado, o al que GameManager no llego con su presupuesto) sale
+           del registro y se re-inscribe solo en cuanto vuelva a correr. Sin
+           esto, un candidato que ya no corre falsearia el reparto. */
+        const list = Character._candidates;
+        for (var i = list.length - 1; i >= 0; i--) {
+            const s = list[i];
+            if (!s || !s.entity || !s.entity.enabled ||
+                (Character._frame - s._eligibleFrame) > FACING_STALE_FRAMES) {
+                if (s) s._inCandidates = false;
+                list[i] = list[list.length - 1];
+                list.pop();
+            }
+        }
+
+        /* PRESUPUESTO: fraccion del frame / coste medido. A 60 fps son ~0.33 ms;
+           a 30 fps, ~0.67 ms (el frame lento dura mas, luego cabe mas trabajo
+           manteniendo la misma latencia en SEGUNDOS, que es lo que se percibe).
+
+           El frame usado se CLAMPEA a FACING_BUDGET_MAX_DT. Sin ese tope el
+           presupuesto es realimentacion POSITIVA: frames lentos -> mas escaneos
+           -> frames mas lentos. Justo en el pico (un GC, una carga de assets)
+           es cuando mas trabajo se autorizaba. Con el tope, por debajo de 20 fps
+           el presupuesto deja de crecer y se queda en 1 ms. */
+        const budgetDt = dt > FACING_BUDGET_MAX_DT ? FACING_BUDGET_MAX_DT : dt;
+        var quota = Math.floor((budgetDt * 1000 * FACING_BUDGET_RATIO) /
+            Math.max(Character._avgScanMs, FACING_MIN_SCAN_MS));
+        if (quota < 1) quota = 1;
+        if (quota > list.length && list.length > 0) quota = list.length;
+
+        /* TECHO DE TRABAJO: un escaneo recorre la lista ENTERA de characters, o
+           sea que el coste del frame es (escaneos x characters) — cuadratico.
+           Cuando el escaneo dura menos que la resolucion de performance.now()
+           (lo normal: ~1 us), el coste medido cae al suelo, la cuota se dispara
+           y la unica cota que queda es el numero de candidatos: N escaneos x N
+           characters. A 300 characters eso es asumible; a 1000 son 1e6
+           iteraciones en un frame. Este techo lo acota explicitamente y escala
+           solo: a mas personajes, menos escaneos por frame, mismo trabajo total.
+           En escenas chicas el limite por candidatos manda y esto no hace nada. */
+        const sceneCount = (typeof GameManager !== "undefined" && GameManager.sceneCharacters)
+            ? GameManager.sceneCharacters.length
+            : list.length;
+        var workCap = Math.floor(FACING_MAX_WORK / Math.max(sceneCount, 1));
+        if (workCap < 1) workCap = 1;
+        if (quota > workCap) quota = workCap;
+
+        /* LAZO CERRADO: si el frame anterior se pidio mas de lo que cabia, sube
+           el liston de urgencia (solo escanean los mas atrasados); si sobro, lo
+           baja al doble de rapido. Se calibra solo en la maquina del jugador. */
+        if (Character._scanDemand > quota) {
+            Character._urgencyCutoff += dt;
+            /* techo: un retraso mayor que la validez maxima ya significa que la
+               respuesta esta segura obsoleta. Subir mas el liston solo serviria
+               para bloquear a todo el mundo. */
+            if (Character._urgencyCutoff > FACING_MAX_DEADLINE) {
+                Character._urgencyCutoff = FACING_MAX_DEADLINE;
+            }
+        } else if (Character._urgencyCutoff > 0) {
+            Character._urgencyCutoff -= dt * 2;
+            if (Character._urgencyCutoff < 0) Character._urgencyCutoff = 0;
+        }
+
+        Character._scansLeft = quota;
+        Character._scanDemand = 0;
+    });
+};
+
+
 Character.prototype.initialize = function () {
     /* BLINDAJE de atributos json: si la escena guarda datos de una versión
        vieja del script (sin re-parsear en el editor), un grupo puede llegar
@@ -521,9 +896,74 @@ Character.prototype.initialize = function () {
     this.bones = this.bones || { autodetectFromMixamoArmature: true };
     this.carryWeapons = this.carryWeapons || {};
     this.attackSystem = this.attackSystem || { canAttack: true, walkAndAttack: false };
-    this.health = this.health || { max: 100 };
-    this.cullingOptions = this.cullingOptions || { physicsCulling: false, physicsCullDelay: 2 };
-    this.hitpointsoptions = this.hitpointsoptions || { enabled: false };
+    /* ENCARE: campos NUEVOS dentro de un grupo VIEJO. Si la escena guardó
+       attackSystem antes de que existieran, el grupo llega no-null y el || de
+       arriba NO dispara, pero los campos vienen undefined. Sin este default
+       explícito el encare quedaría apagado en todos los characters ya colocados
+       hasta re-parsear el script en el editor. */
+    if (this.attackSystem.faceNearbyCharacters === undefined) {
+        this.attackSystem.faceNearbyCharacters = true;
+    }
+    if (this.attackSystem.facingRadius === undefined) {
+        this.attackSystem.facingRadius = 0;
+    }
+    /* (health ya no es atributo: ver CHARACTER_DEFAULT_MAX_HEALTH y setMaxHealth) */
+    /* (cullingOptions ya no existe: el culling lo hace entity.enabled — ver la
+       cabecera del archivo. Una escena vieja puede seguir trayendo el grupo
+       guardado; se ignora sin más.) */
+    /* HITPOINTS: el grupo paso de un boolean `enabled` a un enum `mode` de tres
+       valores. Una escena guardada antes del cambio trae `enabled` y NO trae
+       `mode`, asi que se MIGRA aqui en vez de dejar el personaje sin hitboxes:
+         enabled: false -> "none"    (no queria hitpoints: se respeta)
+         enabled: true  -> "smart"   (los queria: los sigue teniendo, y ademas
+                                      solo encendidos cuando hacen falta)
+       El daño localizado sigue funcionando igual en smart: las hitboxes estan
+       activas siempre que haya alguien lo bastante cerca como para golpearte.
+       Quien quiera el comportamiento historico exacto pone "always" a mano.
+       Migra EN SILENCIO: no cambia nada observable del juego, asi que no vale
+       una linea de consola por sesion. Para ver el desplegable (none / always /
+       smart) hay que re-parsear el script en el editor. */
+    this.hitpointsoptions = this.hitpointsoptions || {};
+    if (this.hitpointsoptions.mode === undefined) {
+        this.hitpointsoptions.mode = (this.hitpointsoptions.enabled === false) ? "none" : "smart";
+    }
+    if (!(this.hitpointsoptions.smartHold >= 0)) this.hitpointsoptions.smartHold = 0.5;
+    /* LOD DE ANIMACIÓN: campos NUEVOS dentro de playerAnimationsOptions (antes
+       vivían en un grupo aparte, animationLod). El grupo llega no-null porque
+       `global` ya existía, así que el || de arriba NO dispara y los campos del
+       LOD vienen undefined. Sin estos defaults explícitos, lodRateHz llegaría
+       undefined -> el intervalo saldría NaN -> la comparación de la deuda daría
+       siempre false -> animación CONGELADA en todos los characters ya colocados
+       hasta re-parsear el script en el editor.
+
+       MIGRACIÓN del grupo viejo: si la escena todavía entrega animationLod
+       (script sin re-parsear), sus valores mandan, así lo que el usuario ya
+       había configurado no se pierde en silencio. Migra sin avisar por consola:
+       el resultado es idéntico a lo que ya estaba configurado. Para que el
+       grupo viejo desaparezca del inspector hay que re-parsear el script. */
+    var oldLod = this.animationLod;
+    if (oldLod && typeof oldLod === "object") {
+        if (this.playerAnimationsOptions.lodEnabled === undefined && oldLod.enabled !== undefined) {
+            this.playerAnimationsOptions.lodEnabled = oldLod.enabled;
+        }
+        if (this.playerAnimationsOptions.lodRateHz === undefined && oldLod.rateHz > 0) {
+            this.playerAnimationsOptions.lodRateHz = oldLod.rateHz;
+        }
+        if (this.playerAnimationsOptions.lodPlayerFullRate === undefined &&
+            oldLod.playerFullRate !== undefined) {
+            this.playerAnimationsOptions.lodPlayerFullRate = oldLod.playerFullRate;
+        }
+    }
+
+    if (this.playerAnimationsOptions.lodEnabled === undefined) {
+        this.playerAnimationsOptions.lodEnabled = true;
+    }
+    if (!(this.playerAnimationsOptions.lodRateHz > 0)) {
+        this.playerAnimationsOptions.lodRateHz = 30;
+    }
+    if (this.playerAnimationsOptions.lodPlayerFullRate === undefined) {
+        this.playerAnimationsOptions.lodPlayerFullRate = true;
+    }
 
     this.entity.isCharacter = true;
     if (this.entity.isCharacter) {
@@ -547,15 +987,11 @@ Character.prototype.initialize = function () {
 
 
 
-    this.pointCharacterEntity = new pc.Entity()
-    this.pointCharacterEntity.name = (this.entity.isPlayer ? "player-" : "") + "point-character-entity";
-    this.pointCharacterEntity.tags.add(this.pointCharacterEntity.name);
-    /* scene.root lo asigna el scene handler AL CARGAR la escena; si este script
-       inicializa antes (o la escena se instancia por código), sería null y
-       rompería todo el initialize -> fallback al root de la app */
-    (this.app.scene.root || this.app.root).addChild(this.pointCharacterEntity);
-
-
+    /* (aquí se creaba "point-character-entity": una entidad por personaje colgada
+       de scene.root a la que doMove le hacía setPosition CADA FRAME y que no
+       leía absolutamente nadie — ni este script, ni gameManager, ni la UI.
+       Eliminada: con 30 personajes eran 30 entidades de más en el grafo de
+       escena y 30 escrituras de transform por frame a cambio de nada.) */
 
     this._doMoveBusy = false;
 
@@ -564,20 +1000,14 @@ Character.prototype.initialize = function () {
 
 
 
-    this.renderCharacterComponent = this.entity.findComponent("render");
-
-    this.entity.renderCharacterComponent = this.renderCharacterComponent;
+    /* render + meshInstance para el culling por visibilidad. La misma resolución
+       Se resuelve UNA vez: ya no hay ningún sistema que espíe meshInstances por
+       frame, así que no hay nada que revalidar. Lo consumen
+       _resolveTemplateEntity y la asignación de rootBone. */
+    this._resolveRenderRefs();
     if (this.renderCharacterComponent) {
         this.renderCharacterComponent.entity.tags.add("uranus-instancing-exclude");
     }
-    /* meshInstance para el culling por visibilidad de doMove. Si todavía no hay
-       meshes (asset sin cargar o render desactivado), se usa un placeholder
-       VISIBLE y doMove adopta la mesh real cuando aparezca. El placeholder viejo
-       era { visibleThisFrame: false }: dejaba al personaje CONGELADO para
-       siempre (sin movimiento, sin animación, "sin agarrar armas"). */
-    this._characterMeshInstance =
-        (this.renderCharacterComponent && (this.renderCharacterComponent.meshInstances || [])[0]) ||
-        { visibleThisFrame: true, __placeholder: true };
 
 
 
@@ -606,11 +1036,16 @@ Character.prototype.initialize = function () {
     /* VIDA / DAÑO: el personaje es "damagable". El arma (weapon.js) le hace daño
        disparando el evento "damage" sobre esta entidad; _onReceiveDamage lo aplica. */
     this.entity.tags.add("is-damageable");
-    this.entity.health = {
-        max: this.health.max,
-        current: this.health.max,
-        alive: true
-    };
+    /* Si algo ya dejo un entity.health puesto (spawner, script de gameplay que
+       corrio antes), se RESPETA: pisarlo aqui resucitaria a un personaje que ya
+       venia herido o muerto. Si no, arranca con el maximo por defecto. */
+    if (!this.entity.health) {
+        this.entity.health = {
+            max: CHARACTER_DEFAULT_MAX_HEALTH,
+            current: CHARACTER_DEFAULT_MAX_HEALTH,
+            alive: true
+        };
+    }
     this.entity.on("damage", this._onReceiveDamage, this);
 
 
@@ -665,12 +1100,18 @@ Character.prototype.initialize = function () {
 
     if (!this.entity.collision) {
         this.entity.tags.add("uranus-instancing-exclude");
+        /* NOTA: "sides" y "heightSegments" NO son opciones del componente
+           collision (son de las primitivas de MALLA). El engine las ignoraba y
+           avisaba por consola: "addComponent: ignoring unknown option 'sides'
+           passed to the 'collision' component". La forma física de una cápsula
+           de Bullet es analítica —no tiene tesela— así que quitarlas no cambia
+           absolutamente nada de la colisión. Propiedades válidas: type, radius,
+           height, axis, halfExtents, linearOffset, angularOffset, asset,
+           renderAsset, model, convexHull, checkVertexDuplicates. */
         this.entity.addComponent("collision", {
             type: "capsule",
             radius: this.characterRadius,
-            height: this.characterHeight,
-            sides: 4,
-            heightSegments: 1
+            height: this.characterHeight
         });
     }
     /* SIEMPRE registrar los eventos (aunque la collision venga creada desde el editor):
@@ -699,11 +1140,6 @@ Character.prototype.initialize = function () {
        como suelo mientras durase el contacto y el salto quedaba muerto. */
     this._groundContactSeen = false; // hubo contacto de base en el último paso de física
     this._coyoteTime = 0;            // gracia anti-parpadeo de manifolds de Bullet
-
-    /* CULLING FÍSICO (ver cullingOptions): tiempo acumulado fuera de cámara y si
-       la física ya está apagada. Solo se usan en NPCs con physicsCulling activo. */
-    this._invisibleTime = 0;
-    this._physicsCulled = false;
 
     /* contacto de PARED más reciente (lo consume CharacterIA): dirección
        horizontal de escape + timestamp en ms */
@@ -786,11 +1222,77 @@ Character.prototype.initialize = function () {
        characterHeight (calculado arriba) y los huesos ya automapeados.
        Visualización: AmmoDebugDrawer del gameManager (en amarillo). */
     this._hitpoints = [];
-    if (this.hitpointsoptions.enabled) {
+
+    /* modo resuelto a número una sola vez (ver CharacterHitpointModeEnum) */
+    var hpMode = this.hitpointsoptions.mode;
+    this._hitpointMode = (hpMode === "none") ? CharacterHitpointModeEnum.NONE
+        : (hpMode === "always") ? CharacterHitpointModeEnum.ALWAYS
+            : CharacterHitpointModeEnum.SMART;
+
+    /* SMART sin la señal de encare no tiene con qué decidir: degradar a ALWAYS
+       en vez de dejar al personaje sin hitboxes para siempre (perder daño
+       localizado en silencio es mucho peor que perder la optimización). */
+    if (this._hitpointMode === CharacterHitpointModeEnum.SMART &&
+        !this.attackSystem.faceNearbyCharacters) {
+        this._hitpointMode = CharacterHitpointModeEnum.ALWAYS;
+        if (!Character.__hitpointSmartWarned) {
+            Character.__hitpointSmartWarned = true;
+            console.warn('[character] hitpointsoptions.mode = "smart" necesita ' +
+                'attackSystem.faceNearbyCharacters encendido (es la señal de "modo batalla"). ' +
+                'Sin él se comporta como "always".');
+        }
+    }
+
+    /* estado de la política (ver _applyHitpointPolicy). Se declara ANTES del
+       setup: éste crea las collisions habilitadas y la política decide acto
+       seguido si corresponde apagarlas. */
+    this._hitpointsActive = false;   // último estado ESCRITO en los componentes
+    this._hitpointHold = 0;          // s de gracia restantes al salir de combate
+
+    if (this._hitpointMode !== CharacterHitpointModeEnum.NONE) {
         this._setupHitpoints();
+        /* addComponent("collision") las crea HABILITADAS: registrar ese estado
+           real y dejar que la política lo corrija (en smart, apagarlas ya). */
+        this._hitpointsActive = true;
+        this._applyHitpointPolicy(0);
+    }
+
+    /* CARRILES por modo de arma: _modeLanes[m][dir] = ese modo tiene al menos un
+       clip (walking o running) para ese sentido de marcha. Se declara AQUI, antes
+       de prepareAnimComponent, porque es esa quien lo rellena mientras arma el
+       grafo (unica fuente de verdad: si no hay clip, no hay transicion, y el
+       runtime no debe emitir ese moveDir). El default deja vivo solo FORWARD. */
+    this._modeLanes = [];
+    for (var ml = 0; ml < Character.animation_modes.length; ml++) {
+        this._modeLanes.push([true, false, false, false]);
     }
 
     this.prepareAnimComponent();
+
+    /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+     *  L O D   D E   A N I M A C I Ó N  — estado por instancia.
+     *  Va DESPUÉS de prepareAnimComponent porque necesita el anim component ya
+     *  creado para leer su velocidad base. Ver _updateAnimLod.
+     * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+    /* velocidad "de gameplay" del personaje (1 = normal). El LOD ESCRIBE
+       anim.speed cada frame para compensar los frames salteados, así que este
+       es el valor sobre el que compone; para cambiarlo desde fuera hay que usar
+       setAnimBaseSpeed, no anim.speed (se perdería al frame siguiente). */
+    this._animBaseSpeed = (this.entity.anim && this.entity.anim.speed) || 1;
+    this._animDtApplied = 0;                 // dt EFECTIVO de animación del frame en curso
+    this._animSpeedApplied = this._animBaseSpeed;
+
+    /* FASE. Si todos los characters saltearan LOS MISMOS frames, un frame haría
+       el trabajo de animación de los 30 y el siguiente ninguno: un serrucho de
+       frame time PEOR que no tener LOD (el pico manda, no la media). La deuda
+       inicial se siembra con una secuencia de baja discrepancia (razón áurea),
+       que reparte los instantes de actualización de forma uniforme para
+       CUALQUIER número de personajes, sin coordinación entre ellos y sin tener
+       que saber cuántos hay. Es O(1) y no necesita mantenimiento al spawnear
+       o destruir. */
+    Character._animPhaseSeq = (Character._animPhaseSeq + ANIM_LOD_PHASE_STEP) % 1;
+    this._animDebt = Character._animPhaseSeq /
+        Math.max(ANIM_LOD_MIN_HZ, this.playerAnimationsOptions.lodRateHz);
 
 
 
@@ -881,6 +1383,33 @@ Character.prototype.initialize = function () {
            la cápsula rota en Y. */
         this.entity.rigidbody.angularFactor = new pc.Vec3(0, 1, 0);
     }
+
+    /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+     *  ENCARE (facing lock) — estado por instancia. Ver el planificador
+     *  compartido al principio del archivo.
+     * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+    Character._installFrameHook(this.app);
+
+    /* identidad estable del character. El getter `guid` lo CREA si la entidad se
+       instancio por codigo (get guid() { if (!this._guid) this.guid = guid.create(); }),
+       igual que hacia el viejo getGuid(); leer entity._guid crudo puede dar null
+       y dos nulls se compararian como iguales. Solo se usa para traza: la
+       exclusion de si mismo en el escaneo se hace por referencia (mas barato y
+       exacto).
+       getGuid() quedo DEPRECADO en el engine 2.x ("Entity#getGuid is deprecated.
+       Use Entity#guid instead") — el getter tiene exactamente la misma semantica
+       de creacion perezosa, asi que el cambio es puramente de nombre. */
+    this._charId = (this.entity.guid !== undefined) ? this.entity.guid : (this.entity._guid || null);
+
+    this._inCandidates = false;
+    this._eligibleFrame = -1e9;      // ultimo frame en que paso por doMove siendo visible
+    this._nextScanAt = 0;            // s (performance.now()*0.001) del proximo escaneo util
+    this._facingTarget = null;       // character mas cercano conocido
+    this._facingTargetDistSq = Infinity;
+    this._lockActive = false;        // encare bloqueado sobre el objetivo
+    this._lockRadius = 0;            // 0 = sin resolver (se deriva en el 1er doMove)
+    this._moveDir = CharacterMoveDirEnum.FORWARD;   // sentido de marcha (parametro moveDir)
+    this._vMoveDirScore = [0, 0, 0, 0];             // scratch: puntuacion por sentido (sin GC)
 
     this.entity.mode = CharacterLocomotionModeEnum.UNARMED;
 
@@ -1098,6 +1627,149 @@ Character.prototype._applyTemplateRotation = function () {
 
 
 
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ *  E N C A R E  (facing lock)
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+/* Lista de characters de la escena. Devuelve el ARRAY COMPARTIDO por referencia:
+   NO retenerlo ni mutarlo (GameManager lo reutiliza). Coste O(1) en el caso
+   normal, porque la lista ya la mantiene GameManager; el findByTag es solo el
+   fallback para escenas sin GameManager, y ademas va cacheado. */
+Character.prototype.getCharacters = function () {
+    const list = (typeof GameManager !== "undefined") ? GameManager.sceneCharacters : null;
+    if (list && list.length) return list;
+
+    if (!Character._fallbackList || (Character._frame - Character._fallbackFrame) > 30) {
+        Character._fallbackList = this.app.root.findByTag("is-character");
+        Character._fallbackFrame = Character._frame;
+    }
+    return Character._fallbackList;
+};
+
+/* Radio de encare. Con attackSystem.facingRadius = 0 (por defecto) se DERIVA de
+   datos que ya existen: el rango de ataque de la IA si la entidad la lleva, y si
+   no la altura del personaje. Con los defaults del proyecto ambos caminos
+   aterrizan en ~3.4-3.6 m. Se resuelve tarde (1er doMove) porque el initialize
+   de characterIA puede correr despues del nuestro. */
+Character.prototype._resolveLockRadius = function () {
+    const r = this.attackSystem.facingRadius || 0;
+    if (r > 0) return r;
+
+    const ia = (this.entity.script && this.entity.script.characterIA) || null;
+    if (ia) {
+        const range = ia._attackRange || (ia.ai && ia.ai.attackRange) || 0;
+        if (range > 0) return range * 2;
+    }
+
+    return (this.characterHeight || 2) * 2;
+};
+
+/* ELEGIR objetivo: recorre getCharacters() y se queda con el mas cercano en
+   plano XZ (d1), midiendo de paso la distancia al segundo (d2). Es el unico
+   O(N) del sistema y por eso va racionado por el planificador.
+   Excluye: a si mismo, deshabilitados, muertos y los que esten demasiado por
+   encima o por debajo. Sin asignaciones.
+   Con d1 y d2 se auto-programa el siguiente escaneo: la respuesta solo puede
+   volverse falsa si alguien cruza el radio o si el segundo adelanta al primero,
+   y ambas cosas necesitan recorrer una distancia conocida a una velocidad
+   acotada. Eso da un deadline que es una COTA, no una estimacion. */
+Character.prototype._updateNearestCharacter = function (nowSec) {
+    const list = this.getCharacters();
+    const pos = this._curPosition;
+    const R = this._lockRadius;
+    const maxDY = R * 2;
+
+    let best = null, bestSq = Infinity, secondSq = Infinity;
+
+    for (var i = 0; i < list.length; i++) {
+        const e = list[i];
+        if (!e || e === this.entity || !e.enabled) continue;
+        if (e.health && e.health.alive === false) continue;   // muertos fuera
+        if (!e.getPosition) continue;
+
+        const p = e.getPosition();
+        const dy = p.y - pos.y;
+        if (dy > maxDY || dy < -maxDY) continue;
+
+        const dx = p.x - pos.x, dz = p.z - pos.z;
+        const d2 = dx * dx + dz * dz;
+
+        if (d2 < bestSq) {
+            secondSq = bestSq;
+            bestSq = d2;
+            best = e;
+        } else if (d2 < secondSq) {
+            secondSq = d2;
+        }
+    }
+
+    this._facingTarget = best;
+    this._facingTargetDistSq = bestSq;
+
+    /* MARGEN hasta la frontera de decision */
+    let margin;
+    if (!best) {
+        margin = Infinity;                       // no hay nadie: solo un spawn invalidaria esto
+    } else {
+        const d1 = Math.sqrt(bestSq);
+        margin = Math.abs(d1 - R);               // cruzar el radio
+        if (secondSq < Infinity) {
+            const gap = (Math.sqrt(secondSq) - d1) * 0.5;   // ser adelantado
+            if (gap < margin) margin = gap;
+        }
+    }
+
+    /* VELOCIDAD DE CIERRE pesimista: los dos moviendose uno hacia el otro.
+       speed*2 es el techo de doMove (defaultrun/sprint duplican), pero si algo
+       mueve la capsula por fuera (root motion en teleport, empujones de fisica)
+       la velocidad REAL manda: asi la cota no se queda corta. */
+    let vSelf = this.speed * 2;
+    const rb = this.entity.rigidbody;
+    if (rb) {
+        const v = rb.linearVelocity;
+        const vReal = Math.sqrt(v.x * v.x + v.z * v.z);
+        if (vReal > vSelf) vSelf = vReal;
+    }
+    const vClose = vSelf * 2;
+
+    let valid = (margin === Infinity || vClose <= 0.0001)
+        ? FACING_MAX_DEADLINE
+        : (margin / vClose);
+    if (valid > FACING_MAX_DEADLINE) valid = FACING_MAX_DEADLINE;
+    if (valid < 0) valid = 0;
+
+    this._nextScanAt = nowSec + valid;
+};
+
+/* SEGUIR al objetivo ya elegido: O(1) y CADA frame, para que salir del radio se
+   note al instante aunque el proximo escaneo tarde. Histeresis: se entra al
+   lock en el radio y se sale a radio*FACING_HYSTERESIS, para que un objetivo
+   oscilando en el borde no produzca giros de 180 grados en bucle. */
+Character.prototype._updateFacingLock = function () {
+    const t = this._facingTarget;
+    if (!t || !t.enabled || (t.health && t.health.alive === false)) {
+        this._facingTarget = null;
+        this._facingTargetDistSq = Infinity;
+        this._lockActive = false;
+        return;
+    }
+
+    const p = t.getPosition();
+    const dx = p.x - this._curPosition.x;
+    const dz = p.z - this._curPosition.z;
+    const d2 = dx * dx + dz * dz;
+    this._facingTargetDistSq = d2;
+
+    const R = this._lockRadius;
+    if (this._lockActive) {
+        const exit = R * FACING_HYSTERESIS;
+        if (d2 > exit * exit) this._lockActive = false;
+    } else if (d2 <= R * R) {
+        this._lockActive = true;
+    }
+};
+
+
 Character.prototype.doMove = function () {
     if (!this.entity || !this.entity.rigidbody) {
         return;
@@ -1114,54 +1786,14 @@ Character.prototype.doMove = function () {
 
     this._curPosition.copy(this.entity.getPosition());
 
-    if (this.pointCharacterEntity) {
-        this.pointCharacterEntity.setPosition(this._curPosition);
-    }
-
     /* si initialize arrancó sin meshes (placeholder), adoptar la mesh real en
-       cuanto exista para que el culling vuelva a funcionar en NPCs */
-    if (this._characterMeshInstance && this._characterMeshInstance.__placeholder &&
-        this.renderCharacterComponent && (this.renderCharacterComponent.meshInstances || [])[0]) {
-        this._characterMeshInstance = this.renderCharacterComponent.meshInstances[0];
-    }
-
-    /* CULLING por visibilidad (optimización para multitudes): un NPC fuera de
-       cámara no simula movimiento. Reglas para no "matar" a un personaje:
-       - el PLAYER NUNCA se congela (aunque su render esté desactivado/oculto)
-       - visibleThisFrame solo es fiable si el render está de verdad activo
-         (componente y entidad habilitados); con el render DESACTIVADO ese flag
-         queda false para siempre y congelaba TODO: movimiento, animación... */
-    if (!this.entity.isPlayer &&
-        this.renderCharacterComponent &&
-        this.renderCharacterComponent.enabled &&
-        this.renderCharacterComponent.entity.enabled &&
-        this._characterMeshInstance &&
-        typeof this._characterMeshInstance.visibleThisFrame === "boolean" &&
-        !this._characterMeshInstance.visibleThisFrame) {
-        /* NPC fuera de cámara: no mover, no física */
-        if (this.entity.anim) this.entity.anim.enabled = false;
-        if (this.cullingOptions && this.cullingOptions.physicsCulling) {
-            this._invisibleTime += dt;
-            const inCombat = this._isInCombat();
-            if (!inCombat && this._invisibleTime >= (this.cullingOptions.physicsCullDelay || 0)) {
-                this._cullPhysics();
-            }
-        }
-        this._doMoveBusy = false;
-        return;
-    }
-
-    if (this.entity.anim) {
-        this.entity.anim.enabled = true;
-    }
-
-    if (!this.entity.isPlayer && this.cullingOptions && this.cullingOptions.physicsCulling) {
-        if (this._physicsCulled) {
-            const inCombat = this._isInCombat();
-            if (inCombat) this._restorePhysics();
-        }
-        this._invisibleTime = 0;
-    }
+    /* (aquí estaba el CULLING por visibilidad: un early-return que espiaba
+       meshInstance.visibleThisFrame para no mover ni simular al NPC fuera de
+       cámara, más el apagado diferido de rigidbody/collision.
+       Ya no hace falta: si el personaje tiene que dejar de simular, se apaga su
+       ENTIDAD y el motor lo apaga entero — este doMove no llega a ejecutarse
+       siquiera, porque GameManager.updateCharactersMovement saltea las entidades
+       deshabilitadas. Ver la cabecera del archivo.) */
 
     this._updateGroundedState();
 
@@ -1291,8 +1923,8 @@ Character.prototype.doMove = function () {
                 camRight.y = 0;
                 if (camRight.lengthSq() > 0.000001) camRight.normalize();
 
-                camForward.scale(input.z);
-                camRight.scale(input.x);
+                camForward.mulScalar(input.z);
+                camRight.mulScalar(input.x);
                 direction.copy(camForward).add(camRight);
 
                 /* VUELO: Espacio (input.jump) NO hace nada en este modo; el
@@ -1310,8 +1942,8 @@ Character.prototype.doMove = function () {
                 camRight.y = 0;
                 if (camRight.lengthSq() > 0.000001) camRight.normalize();
 
-                camForward.scale(input.z);
-                camRight.scale(input.x);
+                camForward.mulScalar(input.z);
+                camRight.mulScalar(input.x);
                 direction.copy(camForward).add(camRight);
 
                 if (direction.lengthSq() > 0.000001) {
@@ -1347,7 +1979,7 @@ Character.prototype.doMove = function () {
 
     if (this._isMoving && direction.lengthSq() > 0.000001) {
         /* OPTIMIZACION (GC): vectores reutilizables en vez de .clone() */
-        const desiredVelocity = this._vDesired.copy(direction).scale(this._charSpeed);
+        const desiredVelocity = this._vDesired.copy(direction).mulScalar(this._charSpeed);
 
         if (useFlight) {
             /* VUELO: aceleración suave hacia la velocidad deseada
@@ -1361,7 +1993,7 @@ Character.prototype.doMove = function () {
             desiredVelocity.y = 0;
 
             const accel = this._vAccel.copy(desiredVelocity).sub(currentVelocity);
-            const force = accel.scale(rb.mass * 8);
+            const force = accel.mulScalar(rb.mass * 8);
             force.y = 0;
 
             rb.applyForce(force);
@@ -1459,10 +2091,84 @@ Character.prototype.doMove = function () {
         this._jumpKeyHeld = !!input.jump;
     }
 
+    /* * * * * * * * * * * * * */
+    /* E N C A R E  (facing)   */
+    /* * * * * * * * * * * * * */
+    /* Solo compiten en el planificador de encare los personajes que estan
+       CORRIENDO. No hace falta ningun test de visibilidad: si la entidad esta
+       apagada, doMove ni se llama (updateCharactersMovement saltea las
+       deshabilitadas) y ademas onDisable ya limpio el lock. */
+    if (this.attackSystem.faceNearbyCharacters) {
+        if (this._lockRadius <= 0) this._lockRadius = this._resolveLockRadius();
+
+        this._eligibleFrame = Character._frame;
+        if (!this._inCandidates) {
+            Character._candidates.push(this);
+            this._inCandidates = true;
+        }
+
+        /* ELEGIR objetivo: lo pide el deadline propio (geometria); el
+           presupuesto compartido solo raciona cuando muchos coinciden. */
+        const nowSec = Character._nowSec;
+        const overdue = nowSec - this._nextScanAt;
+        if (overdue >= 0) {
+            Character._scanDemand++;
+            if (Character._scansLeft > 0 && overdue >= Character._urgencyCutoff) {
+                Character._scansLeft--;
+
+                /* el coste se mide por MUESTREO: performance.now() cuesta mas
+                   que el propio escaneo, cronometrarlos todos falsearia la
+                   medida y pagaria mas de lo que ahorra */
+                if ((Character._scanSamples++ % FACING_SAMPLE_EVERY) === 0) {
+                    const t0 = performance.now();
+                    this._updateNearestCharacter(nowSec);
+                    Character._avgScanMs = Character._avgScanMs * 0.88 +
+                        (performance.now() - t0) * 0.12;
+                } else {
+                    this._updateNearestCharacter(nowSec);
+                }
+            }
+        }
+
+        /* SEGUIR al objetivo: siempre, cada frame, O(1) */
+        this._updateFacingLock();
+
+        if (this.tracerOptions.tracefacing && (this.entity.isPlayer || this.entity.selected)) {
+            Trace("facing", {
+                id: this._charId,
+                target: this._facingTarget ? this._facingTarget.name : "",
+                dist: this._facingTarget ? Math.sqrt(this._facingTargetDistSq).toFixed(2) : "",
+                radius: this._lockRadius.toFixed(2),
+                lock: this._lockActive,
+                moveDir: CharacterMoveDirNames[this._moveDir],
+                nextScanIn: (this._nextScanAt - nowSec).toFixed(3),
+                candidates: Character._candidates.length,
+                scansLeft: Character._scansLeft,
+                cutoff: Character._urgencyCutoff.toFixed(3),
+                avgScanMs: Character._avgScanMs.toFixed(4)
+            });
+        }
+    } else {
+        this._lockActive = false;
+    }
+
     let hasFaceDir = false;
     const faceDir = this._vFaceDir;
 
-    if (this.entity.isPlayer) {
+    /* ENCARE BLOQUEADO: dentro del radio, mirar al character mas cercano MANDA
+       sobre la direccion de movimiento (asi se camina hacia atras sin darle la
+       espalda). Excepciones: strafe y FirstPerson, donde la camara ya dicta el
+       encare. Se exige player o template para no cambiar el comportamiento de
+       los NPCs sin template, que hoy no giran (ver ramas de abajo). */
+    if (this._lockActive && this._facingTarget && !shouldFaceCamera &&
+        (this.entity.isPlayer || this._templateEntity)) {
+        faceDir.copy(this._facingTarget.getPosition()).sub(this._curPosition);
+        faceDir.y = 0;
+        if (faceDir.lengthSq() > 0.000001) {
+            faceDir.normalize();
+            hasFaceDir = true;
+        }
+    } else if (this.entity.isPlayer) {
         if (shouldFaceCamera) {
             if (targetDirection && targetDirection.forward) {
                 faceDir.copy(targetDirection.forward);
@@ -1546,6 +2252,89 @@ Character.prototype.doMove = function () {
         }
     }
 
+    /* SENTIDO DE MARCHA para la animacion (parametro "moveDir"): se proyecta la
+       direccion de movimiento sobre el forward YA APLICADO (el yaw actual del
+       template, no el objetivo: durante el giro son distintos) y sobre su
+       perpendicular, y gana la componente mas grande de las cuatro.
+       Solo se evalua con el encare BLOQUEADO. Sin lock el personaje gira hacia
+       donde anda, asi que siempre va de frente — y mientras completa un giro
+       normal las proyecciones pasan por valores que dispararian retroceso o
+       strafe sin motivo. */
+    if (this._lockActive && this._isMoving && direction.lengthSq() > 0.000001) {
+        let fx, fz;
+        if (this._templateEntity) {
+            /* el giro converge a atan2(faceDir.x, faceDir.z) = refYaw + yaw,
+               luego el forward encarado es (sin(a), 0, cos(a)) */
+            const a = this._templateRefYaw + this._templateYaw;
+            fx = Math.sin(a);
+            fz = Math.cos(a);
+        } else {
+            /* fallback sin template: la rama de giro por fisica converge
+               entity.forward hacia faceDir, asi que ESE vector es el encare.
+               ADELANTE/ATRAS salen bien con cualquier convencion (se compara el
+               vector consigo mismo); IZQUIERDA/DERECHA pueden salir espejadas si
+               el modelo no tiene su forward visual en +Z. Solo afecta al montaje
+               legacy "render en la propia capsula": con template (lo normal) la
+               convencion es la misma que usa el giro, +Z. */
+            const f = this.entity.forward;
+            fx = f.x;
+            fz = f.z;
+        }
+
+        /* forward = (fx, 0, fz)  ->  right = up x forward = (fz, 0, -fx).
+           direction ya viene normalizada en las dos ramas que la calculan, asi
+           que las dos proyecciones estan en [-1, 1] y son comparables. */
+        const dotF = direction.x * fx + direction.z * fz;
+        const dotR = direction.x * fz - direction.z * fx;
+
+        /* CARRILES DISPONIBLES del modo de arma. Emitir un moveDir cuyo carril
+           no tiene NINGUN clip asignado deja al grafo sin transicion valida y el
+           personaje se queda clavado en idle deslizandose (o en walking haciendo
+           moonwalk). Por eso el sentido cae siempre al mejor carril que EXISTE:
+           lateral -> el que haya, y si no hay, adelante. */
+        const lanes = this._modeLanes[+(input.mode || 0)] || this._modeLanes[0];
+
+        /* PUNTUACION por sentido, indexada por CharacterMoveDirEnum. El ganador
+           es el maximo; el empate exacto lo rompe el orden (adelante primero). */
+        const score = this._vMoveDirScore;
+        score[CharacterMoveDirEnum.FORWARD] = dotF;
+        score[CharacterMoveDirEnum.BACKWARD] = -dotF;
+        score[CharacterMoveDirEnum.LEFT] = -dotR;
+        score[CharacterMoveDirEnum.RIGHT] = dotR;
+
+        let bestDir = CharacterMoveDirEnum.FORWARD;
+        let bestScore = -Infinity;
+        for (var md = 0; md < 4; md++) {
+            if (!lanes[md]) continue;             // carril sin clips: no compite
+            if (score[md] > bestScore) {
+                bestScore = score[md];
+                bestDir = md;
+            }
+        }
+
+        /* HISTERESIS por MARGEN: para destronar al sentido actual hay que
+           ganarle por MOVEDIR_HYSTERESIS, no por un pelo. Sin esto, un
+           desplazamiento justo en la diagonal (dos componentes casi iguales)
+           haria parpadear walking <-> walking_left en cada frame.
+           Sustituye a la banda -0.35/-0.15 de la version de solo dos carriles y
+           se comporta igual en el limite: con solo FORWARD y BACKWARD vivos, el
+           cambio ocurre cuando |dotF| supera el margen. */
+        if (bestScore === -Infinity) {
+            /* el modo no tiene NINGUN clip de locomocion: no hay nada que elegir
+               y quedarse con el sentido anterior lo dejaria pegado para siempre */
+            this._moveDir = CharacterMoveDirEnum.FORWARD;
+        } else if (bestDir !== this._moveDir) {
+            /* si el sentido vigente perdio su carril (cambio de modo de arma) su
+               puntuacion es -Infinity y el aspirante entra sin margen que batir */
+            const cur = lanes[this._moveDir] ? score[this._moveDir] : -Infinity;
+            if (bestScore > cur + MOVEDIR_HYSTERESIS) {
+                this._moveDir = bestDir;
+            }
+        }
+    } else {
+        this._moveDir = CharacterMoveDirEnum.FORWARD;
+    }
+
     if (this.entity.anim) {
         /* MODO EN EL AIRE: durante un SALTO deliberado (no caídas por bordes) y
            NO en vuelo se fuerza el modo ONAIR para reproducir la pose de aire en
@@ -1559,6 +2348,7 @@ Character.prototype.doMove = function () {
         this.entity.anim.setInteger("mode", animMode);
         this.entity.anim.setFloat("speed", this._speedAnimBlend);
         this.entity.anim.setInteger("onair", +(this.entity.isonair));
+        this.entity.anim.setInteger("moveDir", this._moveDir);
         this.entity.anim.setInteger("impact", input.impact ? Math.floor(Math.random() * 2) + 1 : 0);
         this.entity.anim.setInteger("death", input.death ? Math.floor(Math.random() * 2) + 1 : 0);
 
@@ -1694,6 +2484,28 @@ Character.prototype._onReceiveDamage = function (amount, attacker, weaponEntity)
     this.applyDamage(amount, attacker);
 };
 
+/* Vida maxima en RUNTIME. Es el reemplazo del viejo atributo health.max: la
+   vida es un valor de gameplay, no de montaje de escena (ver
+   CHARACTER_DEFAULT_MAX_HEALTH).
+     refill = true  -> deja la vida a tope.
+     refill = false -> conserva la PROPORCION de vida actual, que es lo que uno
+                       espera: subir el maximo no cura de golpe y bajarlo no
+                       mata a un personaje que estaba entero.
+   Uso:  entity.script.character.setMaxHealth(250);            */
+Character.prototype.setMaxHealth = function (value, refill) {
+    const h = this.entity.health;
+    if (!h) return;
+
+    const max = Math.max(1, +value || 0);
+    /* la proporcion se toma ANTES de pisar h.max; con h.max invalido se asume
+       personaje entero en vez de dividir por cero */
+    const ratio = (h.max > 0) ? (h.current / h.max) : 1;
+
+    h.max = max;
+    h.current = refill ? max : Math.min(max, Math.max(0, max * ratio));
+    h.alive = h.current > 0;
+};
+
 /* Aplica daño a la vida y dispara la reaccion (impact / death). */
 Character.prototype.applyDamage = function (amount, attacker) {
     const h = this.entity.health;
@@ -1709,11 +2521,85 @@ Character.prototype.applyDamage = function (amount, attacker) {
     }
 };
 
+/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ *  C I C L O   D E   V I D A  —  el ÚNICO punto de reacción al culling
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+ *  Todo el culling del personaje pasa por habilitar/deshabilitar su ENTIDAD
+ *  (ver la cabecera del archivo). Estos dos métodos son, entonces, los únicos
+ *  que tienen que ordenar el estado interno al salir y al volver: mientras está
+ *  apagado no corre absolutamente nada de este script.
+ * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+
+/* Devuelve el anim component a un estado NEUTRO.
+   El LOD de tasa deja anim.playing en false durante los frames que saltea. Si el
+   personaje se deshabilita justo en uno de esos frames, ese false queda
+   CONGELADO: al volver a habilitarlo el componente estaría perfectamente
+   enabled, la entidad también, y aun así el personaje se quedaría clavado en una
+   pose para siempre sin un solo error en consola — el peor tipo de bug.
+   También se limpia el speed: si quedó en x2 por una compensación a medias, al
+   revivir daría un tirón. */
+Character.prototype._animLodRelease = function () {
+    const anim = this.entity && this.entity.anim;
+    if (!anim) return;
+    anim.playing = true;
+    anim.speed = this._animBaseSpeed || 1;
+};
+
+Character.prototype.onDisable = function () {
+    this._animLodRelease();
+
+    /* ENCARE: apagado no se encara a nadie. Sin esto, _lockActive quedaría con
+       el valor que traía y la política de hitpoints lo tomaría por "en batalla"
+       al reaparecer, encendiendo las 9 collisions de hueso sin motivo. */
+    this._lockActive = false;
+    this._facingTarget = null;
+    this._facingTargetDistSq = Infinity;
+};
+
+Character.prototype.onEnable = function () {
+    /* La deuda de animación acumulada mientras estuvo apagado no significa nada:
+       se ACOTA a un intervalo para no disparar un fast-forward al reaparecer. Se
+       acota en vez de ponerse a cero a propósito: cero borraría la fase con la
+       que initialize reparte a los personajes entre frames (ver _updateAnimLod),
+       y el sistema de scripts puede llamar a onEnable DESPUÉS de initialize —
+       todos los characters quedarían en fase 0 y volverían a sincronizarse en el
+       mismo frame, que es justo lo que la fase evita. El guard de undefined
+       cubre el orden inverso (onEnable antes de initialize). */
+    if (this._animDebt !== undefined) {
+        const interval = 1 / Math.max(ANIM_LOD_MIN_HZ,
+            (this.playerAnimationsOptions && this.playerAnimationsOptions.lodRateHz) || 30);
+        if (this._animDebt > interval) this._animDebt = interval;
+        this._animDtApplied = 0;
+        this._animSpeedApplied = this._animBaseSpeed || 1;
+    }
+    this._animLodRelease();
+
+    /* ROOT MOTION: el muestreo compara la pose de hips contra la del "frame
+       anterior", que puede ser de hace mucho rato. Re-anclar la referencia o el
+       primer delta valdría por todo el tiempo que estuvo apagado y mandaría a la
+       cápsula de un tirón. Lo mismo con la posición previa de la cápsula, que la
+       física pudo haber movido. */
+    this._rootMotionPrimed = false;
+    if (this._vCapsulePrevPos && this.entity) {
+        this._vCapsulePrevPos.copy(this.entity.getPosition());
+    }
+
+    /* SUELO: los manifolds de contacto se reconstruyen desde cero al volver a la
+       simulación, así que el estado de apoyo previo no vale. */
+    this._groundContactSeen = false;
+    this._coyoteTime = 0;
+    this._jumpRestTime = 0;
+};
+
 /* LIMPIEZA. Cubre los dos casos: destruir la cápsula (entidad) o quitar solo el
    script. Todo lo que este script crea/engancha debe soltarse aquí para no dejar
    entidades huérfanas ni callbacks colgando que referencien un script muerto. */
 Character.prototype._onDestroy = function () {
     var entity = this.entity;
+
+    /* LOD de animación: si la entidad sobrevive al script, dejarla animando a
+       velocidad normal en vez de congelada en el último frame salteado */
+    this._animLodRelease();
 
     /* listener del evento de daño (weapon.js) */
     if (entity) entity.off("damage", this._onReceiveDamage, this);
@@ -1756,12 +2642,19 @@ Character.prototype._onDestroy = function () {
         this._hitpoints.length = 0;
     }
 
-    /* entidad auxiliar colgada de scene.root (NO es hija de la cápsula): hay que
-       destruirla a mano o queda huérfana en la escena */
-    if (this.pointCharacterEntity) {
-        this.pointCharacterEntity.destroy();
-        this.pointCharacterEntity = null;
+    /* ENCARE: salir del registro compartido del planificador y soltar el
+       objetivo. Sin esto quedaria una referencia a un script muerto en
+       Character._candidates (la purga por frescura lo acabaria echando, pero
+       aqui es inmediato y no depende de que el hook siga corriendo). */
+    if (this._inCandidates) {
+        var ci = Character._candidates.indexOf(this);
+        if (ci !== -1) {
+            Character._candidates[ci] = Character._candidates[Character._candidates.length - 1];
+            Character._candidates.pop();
+        }
+        this._inCandidates = false;
     }
+    this._facingTarget = null;
 };
 
 /* * * * * * * * * * * * * * * * */
@@ -1770,7 +2663,15 @@ Character.prototype._onDestroy = function () {
 Character.prototype.doAttackSystem = function (input) {
     if (!this.entity.attackSystem.canAttack) return;
 
-    this.entity.attackSystem.attackInput = input.attack || input.mousePrimaryButton;
+    /* input.attack      = tecla de ataque (F) para el player, o la orden de
+                           characterIA para los NPCs. Vale en TODAS las camaras.
+       input.attackMouse = el boton izquierdo YA INTERPRETADO por gameManager
+                           segun el tipo de camara (ver leftClickIsAttack).
+       NO se lee mousePrimaryButton crudo: en ThirdPersonPointMove ese boton es
+       la orden de MOVERSE a un punto, y leerlo aqui hacia que el personaje
+       lanzara un ataque en CADA orden de movimiento. Los NPCs no tienen
+       attackMouse (undefined) y no les afecta. */
+    this.entity.attackSystem.attackInput = !!(input.attack || input.attackMouse);
     if (this.entity.attackSystem.attackInput === this.entity.attackSystem.attackInputOld) {
         /*if is playing attack animation*/
         if (this.entity.attackSystem.status !== CharacterAttackSystemStatusEnum.NONE) {
@@ -1964,38 +2865,86 @@ Character.prototype._updateGroundedState = function () {
     this.entity.isonair = !grounded;
 }
 
-/* CULLING FÍSICO — helpers (solo NPCs, opt-in por cullingOptions.physicsCulling).
-   "en combate" = atacando o con objetivo/punto de destino activo: nunca se apaga
-   la física en ese caso para no romper persecuciones ni golpes fuera de cámara. */
-Character.prototype._isInCombat = function () {
-    var as = this.entity.attackSystem;
-    if (as && as.status !== CharacterAttackSystemStatusEnum.NONE) return true;
-    var input = this.entity.input;
-    if (input && (input.targetEntity || input.targetPoint)) return true;
-    return false;
+/* Resuelve las referencias al render del personaje. findComponent BAJA por el
+   subarbol, asi que sirve tanto para el montaje normal (render en el template)
+   como si el Auto LOD lo movio a un hijo <nombre>_LOD0.
+   Solo se llama en initialize: no hay ningun sistema que espie meshInstances por
+   frame, asi que no hay nada que revalidar despues (ver la cabecera del
+   archivo). Lo usan _resolveTemplateEntity y la asignacion de rootBone. */
+Character.prototype._resolveRenderRefs = function () {
+    var rc = this.entity.findComponent("render");
+    this.renderCharacterComponent = rc;
+    this.entity.renderCharacterComponent = rc;
+    return rc;
 };
 
-/* Apaga rigidbody+collision: el cuerpo sale de la simulación de Ammo.js y deja de
-   generar contactos/integración. Incluye los triggers de hitpoint de los huesos. */
-Character.prototype._cullPhysics = function () {
-    this._physicsCulled = true;
-    if (this.entity.rigidbody) this.entity.rigidbody.enabled = false;
-    if (this.entity.collision) this.entity.collision.enabled = false;
-    this._setHitpointCollisionsEnabled(false);
-};
 
-/* Reactiva la física: collision primero (recrea la shape) y luego rigidbody
-   (re-crea el body). La detección de suelo por contactos parte de cero: los
-   manifolds se reconstruyen con los próximos collisionstart. */
-Character.prototype._restorePhysics = function () {
-    this._physicsCulled = false;
-    this._invisibleTime = 0;
-    if (this.entity.collision) this.entity.collision.enabled = true;
-    if (this.entity.rigidbody) this.entity.rigidbody.enabled = true;
-    this._setHitpointCollisionsEnabled(true);
-    this._groundContactSeen = false;
-    this._coyoteTime = 0;
-    this._jumpRestTime = 0;
+/* =========================================================================
+   POLITICA DE HITPOINTS  (hitpointsoptions.mode)
+   =========================================================================
+   UNICO lugar que decide si las hitboxes de hueso estan activas: nadie mas
+   escribe collision.enabled sobre ellas.
+
+   NO hace falta contemplar el personaje "apagado": si la entidad se deshabilita,
+   el motor saca del mundo fisico TODAS sus collisions —hitpoints incluidos— y
+   ademas este script deja de correr, asi que esta funcion ni se llama. Ver la
+   cabecera del archivo.
+
+   POR QUE SE APOYA EN EL ENCARE
+   El ENCARE (_lockActive) significa literalmente "hay otro character dentro del
+   radio de encare", que es la misma condicion que "alguien esta lo bastante
+   cerca como para golpearme". Ademas ya viene con histeresis (entra en R, sale
+   en R*1.25), asi que no parpadea en el borde, y ya la calcula el planificador
+   de encare con su presupuesto: coste adicional CERO, solo se lee un booleano.
+   La alternativa evidente —mirar si hay objetivo o punto de destino— no sirve:
+   characterIA le pone un targetPoint a cada NPC en patrulla permanentemente,
+   asi que seria true SIEMPRE y el modo smart no ahorraria nada.
+
+   POR QUE ES POR FLANCO Y NO POR FRAME
+   Escribir collision.enabled DESTRUYE y RECREA el ghost object en Ammo. Hacerlo
+   cada frame seria mucho peor que no optimizar nada. Se compara contra el
+   ultimo estado escrito (_hitpointsActive) y solo se toca cuando cambia.
+
+   POR QUE HAY UN HOLD
+   Al salir de combate las hitboxes no se apagan de golpe: se sostienen
+   smartHold segundos. Cubre el swing que ya estaba en el aire (la ventana de
+   daño va del 25% al 75% del clip) y amortigua cualquier ida y vuelta rapida,
+   que es justo lo que no queremos que llegue al broadphase.
+   ========================================================================= */
+Character.prototype._applyHitpointPolicy = function (dt) {
+    if (this._hitpointMode === CharacterHitpointModeEnum.NONE) return;
+    if (!this._hitpoints || this._hitpoints.length === 0) return;
+
+    var want;
+
+    if (this._hitpointMode === CharacterHitpointModeEnum.ALWAYS) {
+        want = true;
+    } else {
+        /* MODO BATALLA = encare bloqueado sobre otro character, o el propio
+           personaje en plena animacion de ataque (cubre el caso de golpear a
+           algo que no dispara encare). */
+        var as = this.entity.attackSystem;
+        var inBattle = !!this._lockActive ||
+            (as && as.status !== CharacterAttackSystemStatusEnum.NONE);
+
+        if (inBattle) {
+            this._hitpointHold = this.hitpointsoptions.smartHold;
+        } else if (this._hitpointHold > 0) {
+            this._hitpointHold -= dt;
+            if (this._hitpointHold < 0) this._hitpointHold = 0;
+        }
+
+        /* "inBattle ||" y no solo el hold: smartHold acepta 0, y mirando solo el
+           hold un 0 dejaba las hitboxes apagadas SIEMPRE — se perdía el daño
+           localizado en silencio, sin error ni aviso. Con esto, smartHold = 0
+           significa lo que uno espera: se apagan en cuanto termina el combate,
+           sin gracia. El hold sólo extiende, nunca habilita por sí solo. */
+        want = inBattle || this._hitpointHold > 0;
+    }
+
+    if (want === this._hitpointsActive) return;   /* sin cambios: no tocar Ammo */
+    this._hitpointsActive = want;
+    this._setHitpointCollisionsEnabled(want);
 };
 
 
@@ -2140,9 +3089,253 @@ Character.prototype._setHitpointCollisionsEnabled = function (on) {
 /*                             */
 /*******************************/
 /*-----------------------------------------------------------------------------------------*/
+/* =========================================================================
+   L O D   D E   A N I M A C I O N
+   =========================================================================
+   QUE HACE
+   La animacion no tiene por que evaluarse a la tasa del render. Este LOD la
+   corre a una tasa FIJA en Hz (playerAnimationsOptions.lodRateHz, 30 por
+   defecto). El PLAYER va exento por defecto (lodPlayerFullRate):
+
+       render 120 fps       -> 1 de cada 4 frames    (30 Hz)
+       render  60 fps       -> 1 de cada 2 frames    (30 Hz)   <- el caso normal
+       render  30 fps       -> TODOS los frames      (30 Hz)
+       render   5 fps       -> TODOS los frames      ( 5 Hz)
+       render 1 frame / 5 s -> TODOS los frames
+
+   Es UNA sola regla, y las cinco filas salen de ella: se anima cuando el tiempo
+   de juego acumulado sin animar alcanza 1/rateHz. Si el frame YA dura mas que
+   ese intervalo, la condicion se cumple en cada frame y el LOD se apaga solo.
+   Esa es la garantia para maquinas lentas: el sistema NO PUEDE saltear un
+   frame cuando el render ya va por debajo de rateHz, asi que nunca empeora lo
+   que habia — en el peor caso se comporta exactamente como antes.
+
+   POR QUE NO SE VE EN CAMARA LENTA
+   El frame que si anima avanza TODO el tiempo acumulado, no un frame: la
+   compensacion va por anim.speed, que el sistema de animacion multiplica por el
+   dt (AnimComponent.update: layers[i].update(dt * this.speed)). A 60 fps son
+   speed = 2 en uno de cada dos frames: misma velocidad media, la mitad de
+   muestras. La animacion no se ralentiza ni se desincroniza del gameplay.
+
+   POR QUE LA CONTABILIDAD ES EN TIEMPO Y NO EN FRAMES
+   Contar frames ("frame % 2") se rompe en cuanto el frame time varia: con
+   frames alternados de 8 y 40 ms, "1 de cada 2" da dos tasas de animacion
+   completamente distintas segun con cual arranque. Aca se lleva una DEUDA en
+   segundos de juego, se le suma el dt de cada frame y se descarga ENTERA en el
+   frame que anima. La tasa efectiva se adapta sola a los fps reales.
+
+   DONDE SE ENGANCHA — Y POR QUE ESTO ES LO QUE LO HACE EXACTO
+   En update(), es decir en la fase systems.fire("update"), que en app-base va
+   JUSTO ANTES de systems.fire("animationUpdate"). Eso significa que cuando se
+   escribe anim.speed ya se conoce el dt EXACTO con el que el sistema de
+   animacion va a correr un instante despues, en este mismo frame:
+
+       avance real = dt * speed = dt * (deuda / dt) = deuda      <- exacto
+
+   No hay estimacion de por medio y la deuda queda en cero. Es la diferencia
+   entre que funcione y que no: la version anterior decidia en postUpdate (o
+   sea, para el frame SIGUIENTE) y tenia que ESTIMAR su duracion con la del
+   frame actual. Como el avance es dt_real * (deuda / dt_estimado), el error de
+   estimacion se multiplica; simulando frames alternados de 8 y 40 ms la
+   animacion terminaba avanzando el DOBLE del tiempo de juego (+104 % de
+   desfase, comprobado). Con el enganche en update ese escenario da 0 % de
+   desfase. Cualquier LOD que programe "para el proximo frame" tiene este
+   problema, y en una maquina lenta —donde el frame time salta— es constante.
+
+   QUE RELOJ USA
+   El dt de update(), que es EL MISMO que va a recibir el sistema de animacion
+   (app-base pasa el mismo valor a las tres fases). Ya viene clampeado por
+   app.maxDeltaTime (0.2 s, lo fija gameManager) y multiplicado por
+   app.timeScale, asi que la pausa y la camara lenta del tracer entran solas:
+   con dt = 0 la deuda no crece y la animacion no avanza, que es lo correcto.
+   No se usa performance.now(): mezclar el reloj de pared con el de simulacion
+   es justo lo que rompe el sistema cuando el motor clampea dt.
+
+   POR QUE update() Y NO doMove()
+   doMove no corre necesariamente todos los frames para todos: GameManager lo
+   llama por lotes con presupuesto, y desde tres relojes distintos segun
+   characterController.interv (update / internalTimer / requestAnimationFrame).
+   Un NPC que se quede fuera del lote perderia frames de contabilidad y su
+   animacion se atrasaria. update() lo llama el sistema de scripts para toda
+   instancia habilitada, un frame es un frame, y ademas corre en la fase
+   correcta. El LOD queda por completo independiente de como GameManager reparta
+   el movimiento.
+
+   POR QUE LA DEUDA NO NECESITA TOPE
+   Solo crece mientras se saltea, y solo se saltea mientras deuda < intervalo.
+   O sea que al entrar a un frame siempre vale menos que un intervalo, se le
+   suma un dt (acotado por app.maxDeltaTime) y se descarga entera. Cota dura:
+   deuda < intervalo + maxDeltaTime, siempre, sin necesidad de clamps. Y el
+   multiplicador de velocidad sale de ahi: deuda/dt, que en regimen es
+   exactamente intervalo/dt (2 a 60 fps, 4 a 120, 1 a 30 o menos).
+
+   EVENTOS DE ANIMACION (ventanas de daño)
+   No se pierde ninguno: AnimClip evalua los eventos por RANGO
+   (activeEventsForFrame(time, time + speed*dt), con un while que dispara todos
+   los del tramo), asi que attack-start-damage-animation y compañia siguen
+   disparando aunque el paso los cruce de largo.
+
+   CULLING TOTAL (personaje apagado)
+   No lo hace este metodo ni ninguno: lo hace el MOTOR. Con la entidad
+   deshabilitada este metodo no llega a correr —el sistema de scripts no
+   actualiza entidades apagadas— y el de animacion tampoco evalua nada, porque
+   exige component.entity.enabled. Ver la cabecera del archivo.
+   Ningun camino de este script escribe anim.enabled: el componente queda como lo
+   dejo el editor y el unico dueño del "¿anima o no?" es anim.playing, que se
+   decide aca y solo para repartir la TASA.
+
+   INTERACCION CON EL ROOT MOTION
+   En los frames salteados hips NO se movio. rootMotionFix (postUpdate) no debe
+   muestrear ahi: daria delta 0 -> velocidad 0 -> la capsula avanzaria a
+   tirones. Por eso este metodo publica _animDtApplied: el dt de ANIMACION de
+   este frame, 0 si no corrio. Como update() va antes que animationUpdate y
+   postUpdate despues, el valor que lee rootMotionFix describe exactamente el
+   paso que el sistema de animacion acaba de dar. Ver _applyTeleportFollow.
+   ========================================================================= */
+Character.prototype._updateAnimLod = function (dt) {
+    const anim = this.entity.anim;
+    if (!anim) {
+        /* sin anim component no hay nada que muestrear ni que atrasar: hips no
+           se mueve solo, asi que rootMotionFix debe seguir viendo el dt real */
+        this._animDtApplied = dt;
+        return;
+    }
+
+    /* dt no positivo (primer frame, pausa por timeScale 0, pestaña en segundo
+       plano): no hay nada que contabilizar, y mas abajo se divide por el. Se
+       deja el estado intacto — el anim component conserva lo que se le dejo. */
+    if (!(dt > 0)) {
+        this._animDtApplied = 0;
+        return;
+    }
+
+    /* COMPONENTE APAGADO desde FUERA de este script (el editor, o gameplay).
+       Este script ya NO toca anim.enabled: el culling por visibilidad se hace
+       mas abajo con anim.playing, para tener un unico dueño del estado. El
+       sistema de animacion ni mira un componente deshabilitado (exige enabled &&
+       entity.enabled && playing), asi que no hay nada que compensar y la deuda
+       se descarta. Se deja playing en true para que quede en estado NEUTRO: si
+       algo lo reactiva por fuera, anima; ningun camino puede dejarlo congelado. */
+    if (!anim.enabled) {
+        anim.playing = true;
+        anim.speed = this._animBaseSpeed;   /* que no reviva con un x2 pegado */
+        this._animDtApplied = 0;
+        this._animSpeedApplied = this._animBaseSpeed;
+        this._animDebt = 0;
+        return;
+    }
+
+    /* (aquí estaba el corte de animación FUERA DE CÁMARA, que espiaba
+       meshInstance.visibleThisFrame. Ya no hace falta ni sería alcanzable: con
+       la entidad deshabilitada este método no corre —el sistema de scripts no
+       actualiza entidades apagadas— y el de animación tampoco evalúa nada,
+       porque exige component.entity.enabled. Ver la cabecera del archivo.) */
+
+    const lod = this.playerAnimationsOptions;
+    Character._animLodTotal++;
+
+    /* SIN LOD (apagado por atributo, o player eximido): a pleno y sin deuda. */
+    if (!lod.lodEnabled || (this.entity.isPlayer && lod.lodPlayerFullRate)) {
+        anim.playing = true;
+        if (anim.speed !== this._animBaseSpeed) anim.speed = this._animBaseSpeed;
+        this._animDtApplied = dt;
+        this._animSpeedApplied = this._animBaseSpeed;
+        this._animDebt = 0;
+        Character._animLodRan++;
+        return;
+    }
+
+    /* Este frame aporta su dt al tiempo de juego todavia no animado. */
+    this._animDebt += dt;
+
+    const interval = 1 / Math.max(ANIM_LOD_MIN_HZ, lod.lodRateHz);
+
+    /* Todavia no se junto un intervalo: saltear. El sistema de animacion exige
+       playing (ver AnimComponentSystem.onAnimationUpdate), asi que con esto se
+       salta ENTERO — controller, evaluador de curvas y escritura de huesos.
+
+       EL UMBRAL LLEVA UNA TOLERANCIA (no es "< interval" a secas) y es
+       importante. Solo se puede animar en frontera de frame, asi que la tasa
+       lograda es 1/(k*dt) con k el menor entero que junta un intervalo. Con el
+       umbral exacto, un dt apenas POR DEBAJO del intervalo necesita k=2 y la
+       tasa se DERRUMBA A LA MITAD:
+           30.0 fps -> dt 0.03333 -> k=1 -> 30 Hz
+           30.3 fps -> dt 0.03300 -> k=2 -> 15 Hz   <- escalon absurdo
+       Y en el caso peor, un juego corriendo JUSTO a lodRateHz quedaba a merced
+       del ruido de coma flotante: dt oscila un ULP alrededor del intervalo y la
+       tasa de animacion salta entre 30 y 15 Hz de un frame a otro.
+       Con el 5% de tolerancia, un frame que llega "casi" al intervalo cuenta:
+       desaparece el escalon y el techo real queda en lodRateHz * 1.05, o sea
+       que sigue sin hacer mas trabajo del pedido. No introduce deriva: se anime
+       cuando se anime, el paso descarga la deuda COMPLETA (ver abajo). */
+    if (this._animDebt < interval * ANIM_LOD_FIRE_TOLERANCE) {
+        anim.playing = false;
+        this._animDtApplied = 0;
+        this._animSpeedApplied = 0;
+        return;
+    }
+
+    /* ANIMAR, descargando la deuda COMPLETA en este paso. El sistema de
+       animacion corre en la fase siguiente de ESTE MISMO frame (animationUpdate)
+       y con ESTE MISMO dt, asi que el avance es dt * speed = deuda: exacto, sin
+       estimar nada, y la deuda queda saldada en cero. Ver la cabecera. */
+    anim.playing = true;
+    this._animSpeedApplied = this._animBaseSpeed * (this._animDebt / dt);
+    anim.speed = this._animSpeedApplied;
+    this._animDtApplied = this._animDebt;
+    this._animDebt = 0;
+    Character._animLodRan++;
+};
+
+/* Fase "update" del sistema de scripts: va ANTES de animationUpdate, que es la
+   unica posicion desde la que el LOD puede fijar anim.speed conociendo el dt
+   real con el que la animacion va a correr. Todo lo demas del personaje sigue
+   moviendose desde doMove (GameManager) y postUpdate. */
+Character.prototype.update = function (dt) {
+    this._updateAnimLod(dt);
+};
+
+/* Velocidad base de animacion de ESTE personaje (1 = normal). El LOD reescribe
+   anim.speed cada frame para compensar los frames salteados, asi que asignar
+   entity.anim.speed desde fuera se pierde al frame siguiente: hay que pasar por
+   aca. Sirve para slow-motion / aceleracion por gameplay sin pelear con el LOD. */
+Character.prototype.setAnimBaseSpeed = function (speed) {
+    const s = +speed;
+    this._animBaseSpeed = (isFinite(s) && s > 0) ? s : 1;
+    if (this.entity.anim) this.entity.anim.speed = this._animBaseSpeed;
+};
+
+
 Character.prototype.postUpdate = function (dt) {
+    /* Si el personaje llega hasta acá es que su entidad está habilitada: el
+       sistema de scripts no actualiza entidades apagadas. No hay ningún test de
+       visibilidad que hacer. */
+
+    /* rootMotionFix lee _animDtApplied, que dejó _updateAnimLod en la fase
+       update de ESTE frame y describe el paso que el sistema de animación acaba
+       de dar (0 si el LOD de tasa lo salteó). */
     this.rootMotionFix(dt);
     this.doCarryWeapons();
+
+    /* HITBOXES por hueso: acá y no en doMove porque doMove puede no correrle a
+       un NPC en un frame dado (updateCharactersMovement reparte por lotes con
+       presupuesto) y el hold necesita un dt continuo. */
+    this._applyHitpointPolicy(dt);
+
+    if (this.tracerOptions.traceanimlod && (this.entity.isPlayer || this.entity.selected)) {
+        Trace("animLod", {
+            renderFps: (1 / Math.max(dt, 1e-6)).toFixed(0),
+            rateHz: this.playerAnimationsOptions.lodRateHz,
+            /* contadores VIVOS: se llenan en la fase update y este Trace corre
+               en postUpdate, o sea que ya estan completos para ESTE frame */
+            animando: Character._animLodRan + "/" + Character._animLodTotal,
+            animoEsteFrame: this._animDtApplied > 0
+                ? ("si  paso " + (this._animDtApplied * 1000).toFixed(1) + "ms  x" +
+                    (this._animSpeedApplied / this._animBaseSpeed).toFixed(2))
+                : "no",
+            deuda: (this._animDebt * 1000).toFixed(1) + "ms"
+        });
+    }
 }
 
 /* ============================================================================
@@ -2186,6 +3379,13 @@ const CharacterMotionKindEnum = Object.freeze({
 Character.prototype.rootMotionFix = function (dt) {
     const hips = this.bones.hips;
     if (!hips || !(dt > 0)) return;
+
+    /* dt de ANIMACIÓN de este frame (lo publica _updateAnimLod, que ya corrió).
+       Con el LOD activo hay frames en los que la animación NO avanzó: ahí vale
+       0, hips está exactamente donde quedó y no hay nada nuevo que muestrear ni
+       que clavar. Todo lo que dependa del movimiento de hips tiene que mirar
+       este valor, NO el dt del frame. */
+    const animDt = this._animDtApplied;
 
     /* --- 1. ¿QUÉ ANIMACIÓN SUENA? (p.ej. "unarmed_attack1") --- */
     const stateName = (this.entity.anim && this.entity.anim.baseLayer)
@@ -2273,15 +3473,18 @@ Character.prototype.rootMotionFix = function (dt) {
 
     switch (this._motionKind) {
         case CharacterMotionKindEnum.TELEPORT:
-            this._applyTeleportFollow(hips, dt);
+            this._applyTeleportFollow(hips, animDt);
             return;
 
         case CharacterMotionKindEnum.AXES: {
             /* place-in-<ejes>: clavar el modelo en esos ejes y NADA MÁS (el
                desplazamiento que la animación trae se descarta; los ejes no
                elegidos conservan la pose animada). La cápsula se mueve solo
-               por input/física: cero interferencia = cero trabas al caminar. */
-            const restPos = this.playerAnimationsOptions.startPosition;
+               por input/física: cero interferencia = cero trabas al caminar.
+               LOD: si la animación no avanzó, hips sigue clavado donde lo
+               dejamos y re-escribirlo sólo ensuciaría toda la jerarquía del
+               esqueleto para nada. */
+            const restPos = (animDt > 0) ? this.playerAnimationsOptions.startPosition : null;
             if (restPos) {
                 const hipsPos = hips.getLocalPosition();
                 this._vHipsPinnedPos.set(
@@ -2297,8 +3500,9 @@ Character.prototype.rootMotionFix = function (dt) {
         }
 
         case CharacterMotionKindEnum.IN_PLACE_ALL: {
-            /* legacy: clavar el modelo en TODOS los ejes */
-            const restPos = this.playerAnimationsOptions.startPosition;
+            /* legacy: clavar el modelo en TODOS los ejes (mismo criterio de LOD
+               que la rama AXES: sin avance de animación no hay nada que clavar) */
+            const restPos = (animDt > 0) ? this.playerAnimationsOptions.startPosition : null;
             if (restPos) hips.setLocalPosition(restPos);
             this._rootMotionPrimed = false;
             this._rootMotionDriving = false;
@@ -2321,7 +3525,7 @@ Character.prototype.rootMotionFix = function (dt) {
    queda clavado a la animación aunque la física se frene contra una pared.
    Al terminar/loopear el clip, hips vuelve a su origen y la compensación se
    restaura: el personaje queda físicamente donde el visual terminó. */
-Character.prototype._applyTeleportFollow = function (hips, dt) {
+Character.prototype._applyTeleportFollow = function (hips, animDt) {
     const template = this._templateEntity;
     const body = this.entity.rigidbody;
     if (!template || !body) {
@@ -2331,51 +3535,13 @@ Character.prototype._applyTeleportFollow = function (hips, dt) {
         return;
     }
 
-    const capsulePos = this.entity.getPosition();
-
-    /* --- MUESTREO: cuánto se movió hips desde el frame anterior --- */
-    let sampleOk = false;
-    const hipsLocalPos = hips.getLocalPosition();
-    if (!this._rootMotionPrimed) {
-        /* primer frame de la animación: aún no hay "frame anterior" */
-        this._vHipsPrevLocal.copy(hipsLocalPos);
-        this._rootMotionPrimed = true;
-    } else {
-        this._vHipsDeltaLocal.set(
-            hipsLocalPos.x - this._vHipsPrevLocal.x,
-            hipsLocalPos.y - this._vHipsPrevLocal.y,
-            hipsLocalPos.z - this._vHipsPrevLocal.z
-        );
-        this._vHipsPrevLocal.copy(hipsLocalPos);
-
-        /* local -> mundo con el transform del PADRE de hips (incluye el giro de
-           encare del template y la escala del rig, p.ej. 0.01 de Mixamo) */
-        const hipsParent = hips.parent || this.entity;
-        hipsParent.getWorldTransform().transformVector(this._vHipsDeltaLocal, this._vHipsDeltaWorld);
-
-        /* guard de wrap: al reiniciarse el clip, hips salta al inicio en un solo
-           frame. Se detecta porque el delta supera lo que un personaje podría
-           moverse de verdad en un frame (15 m/s, suelo de 0.25 m para dt chicos). */
-        const wrapLimit = (dt * 15 > 0.25) ? dt * 15 : 0.25;
-        sampleOk = Math.abs(this._vHipsDeltaWorld.x) <= wrapLimit &&
-            Math.abs(this._vHipsDeltaWorld.y) <= wrapLimit &&
-            Math.abs(this._vHipsDeltaWorld.z) <= wrapLimit;
-    }
-
-    if (!sampleOk) {
-        /* wrap del loop o primer frame: hips volvió a su origen -> el visual ya
-           vuelve solo a la cápsula (que absorbió el recorrido); restaurar la
-           compensación y re-anclar la referencia de posición. */
-        this._restoreTemplateOffset();
-        this._vCapsulePrevPos.copy(capsulePos);
-        this._vRootMotionVelAvg.set(0, 0, 0);
-        this._rootMotionDriving = false;
-        return;
-    }
-
-    /* --- 1) compensar el template por el movimiento REAL de la cápsula desde
+    /* --- 0) COMPENSAR el template por el movimiento REAL de la cápsula desde
        el frame anterior (solo mientras conducimos nosotros; si conduce el
-       input, el visual debe viajar con la cápsula como siempre) --- */
+       input, el visual debe viajar con la cápsula como siempre).
+       Va SIEMPRE, TODOS los frames, incluidos los que el LOD saltea: la cápsula
+       la mueve la física en cada frame, y si no se compensa en los salteados el
+       visual se despega y vuelve de un tirón en el siguiente muestreo. --- */
+    const capsulePos = this.entity.getPosition();
     const capsuleMovedX = capsulePos.x - this._vCapsulePrevPos.x;
     const capsuleMovedZ = capsulePos.z - this._vCapsulePrevPos.z;
     this._vCapsulePrevPos.copy(capsulePos);
@@ -2386,16 +3552,79 @@ Character.prototype._applyTeleportFollow = function (hips, dt) {
         this._teleportShifted = true;
     }
 
-    /* --- 2) velocidad de persecución (solo plano horizontal: la Y de la
-       cápsula la gobierna la gravedad) con tope de seguridad --- */
-    this._vRootMotionVel.set(this._vHipsDeltaWorld.x / dt, 0, this._vHipsDeltaWorld.z / dt);
+    /* --- 1) FRAME SIN AVANCE DE ANIMACIÓN (LOD): hips está exactamente donde
+       quedó. Volver a muestrear daría delta 0 -> velocidad 0 -> la cápsula
+       avanzaría a tirones (un frame a tope, el siguiente frenada). Se conserva
+       la velocidad del último muestreo —que es justamente la MEDIA de todo el
+       intervalo— y se sigue aplicando. --- */
+    if (!(animDt > 0)) {
+        if (this._rootMotionDriving) this._applyRootMotionVelocity(body);
+        return;
+    }
+
+    /* --- 2) MUESTREO: cuánto se movió hips desde la última vez que la
+       animación AVANZÓ (no desde el frame anterior) --- */
+    const hipsLocalPos = hips.getLocalPosition();
+    if (!this._rootMotionPrimed) {
+        /* primer paso de la animación: aún no hay muestra previa con la que
+           medir un delta */
+        this._vHipsPrevLocal.copy(hipsLocalPos);
+        this._rootMotionPrimed = true;
+        this._restoreTemplateOffset();
+        this._vRootMotionVelAvg.set(0, 0, 0);
+        this._rootMotionDriving = false;
+        return;
+    }
+
+    this._vHipsDeltaLocal.set(
+        hipsLocalPos.x - this._vHipsPrevLocal.x,
+        hipsLocalPos.y - this._vHipsPrevLocal.y,
+        hipsLocalPos.z - this._vHipsPrevLocal.z
+    );
+    this._vHipsPrevLocal.copy(hipsLocalPos);
+
+    /* local -> mundo con el transform del PADRE de hips (incluye el giro de
+       encare del template y la escala del rig, p.ej. 0.01 de Mixamo) */
+    const hipsParent = hips.parent || this.entity;
+    hipsParent.getWorldTransform().transformVector(this._vHipsDeltaLocal, this._vHipsDeltaWorld);
+
+    /* guard de wrap: al reiniciarse el clip, hips salta al inicio en un solo
+       paso. Se detecta porque el delta supera lo que un personaje podría
+       moverse de verdad en ESE paso (15 m/s, suelo de 0.25 m para pasos
+       chicos). El umbral se mide contra animDt —el tiempo de animación que
+       cubrió el paso—, NO contra el dt del frame: con el LOD un paso vale
+       varios frames, y con el umbral del frame cada muestra legítima parecería
+       un wrap y el root motion quedaría muerto. */
+    const wrapLimit = (animDt * 15 > 0.25) ? animDt * 15 : 0.25;
+    const sampleOk = Math.abs(this._vHipsDeltaWorld.x) <= wrapLimit &&
+        Math.abs(this._vHipsDeltaWorld.y) <= wrapLimit &&
+        Math.abs(this._vHipsDeltaWorld.z) <= wrapLimit;
+
+    if (!sampleOk) {
+        /* wrap del loop: hips volvió a su origen -> el visual ya vuelve solo a
+           la cápsula (que absorbió el recorrido); restaurar la compensación. */
+        this._restoreTemplateOffset();
+        this._vRootMotionVelAvg.set(0, 0, 0);
+        this._rootMotionDriving = false;
+        return;
+    }
+
+    /* --- 3) velocidad de persecución (solo plano horizontal: la Y de la
+       cápsula la gobierna la gravedad) con tope de seguridad. Se divide por
+       animDt: ese delta de hips corresponde a animDt segundos de animación, y
+       la cápsula tiene que cubrirlo en ese mismo tiempo real. Dividir por el dt
+       del frame daría una velocidad inflada por el factor de LOD. --- */
+    this._vRootMotionVel.set(this._vHipsDeltaWorld.x / animDt, 0, this._vHipsDeltaWorld.z / animDt);
     const speedSq = this._vRootMotionVel.lengthSq();
-    if (speedSq > 225) this._vRootMotionVel.scale(15 / Math.sqrt(speedSq));   /* max 15 m/s */
+    if (speedSq > 225) this._vRootMotionVel.mulScalar(15 / Math.sqrt(speedSq));   /* max 15 m/s */
 
     /* media + histéresis: el vaivén de un idle no debe poner a la cápsula a
        perseguir; un desplazamiento real (>0.2 m/s sostenido) sí. Suelta por
-       debajo de 0.1 m/s (sin parpadeo en el umbral). */
-    this._vRootMotionVelAvg.lerp(this._vRootMotionVelAvg, this._vRootMotionVel, Math.min(1, dt * 5));
+       debajo de 0.1 m/s (sin parpadeo en el umbral). El suavizado usa animDt
+       porque ese es el tiempo transcurrido ENTRE MUESTRAS: con el dt del frame
+       la media se movería más lento de lo pedido en cuanto hubiera frames
+       salteados, y la histéresis tardaría el doble en enganchar. */
+    this._vRootMotionVelAvg.lerp(this._vRootMotionVelAvg, this._vRootMotionVel, Math.min(1, animDt * 5));
     const avgSpeedSq = this._vRootMotionVelAvg.lengthSq();
     if (this._rootMotionDriving) {
         if (avgSpeedSq < 0.01) this._rootMotionDriving = false;
@@ -2403,12 +3632,18 @@ Character.prototype._applyTeleportFollow = function (hips, dt) {
         this._rootMotionDriving = true;
     }
 
-    if (this._rootMotionDriving) {
-        const newVelocity = this._vCurrent.copy(body.linearVelocity);
-        newVelocity.x = this._vRootMotionVel.x;
-        newVelocity.z = this._vRootMotionVel.z;
-        body.linearVelocity = newVelocity;
-    }
+    if (this._rootMotionDriving) this._applyRootMotionVelocity(body);
+}
+
+/* Fija la velocidad horizontal de la cápsula a la que pide la animación (root
+   motion en modo teleport). Se llama también en los frames que el LOD saltea,
+   con la velocidad del último muestreo: así la cápsula avanza de forma continua
+   aunque la animación se muestree a 30 Hz. */
+Character.prototype._applyRootMotionVelocity = function (body) {
+    const newVelocity = this._vCurrent.copy(body.linearVelocity);
+    newVelocity.x = this._vRootMotionVel.x;
+    newVelocity.z = this._vRootMotionVel.z;
+    body.linearVelocity = newVelocity;
 }
 
 /* Devuelve el template a su posición local de reposo (deshace la compensación
@@ -2564,6 +3799,18 @@ Character.prototype.prepareAnimComponent = function () {
                 type: pc.ANIM_PARAMETER_INTEGER,
                 value: 0
             },
+            /* SENTIDO DE MARCHA (CharacterMoveDirEnum): 0 adelante, 1 atras,
+               2 izquierda, 3 derecha. Solo sale de 0 con el encare bloqueado
+               (ver attackSystem.faceNearbyCharacters): sin lock el personaje gira
+               hacia donde anda, asi que siempre va de frente. Separa el sub-grafo
+               de locomocion en cuatro carriles mutuamente excluyentes
+               (idle<->walking<->running y sus espejos _backward/_left/_right)
+               enlazados entre si por cruces sin condicion de velocidad. */
+            moveDir: {
+                name: "moveDir",
+                type: pc.ANIM_PARAMETER_INTEGER,
+                value: 0
+            },
             impact: {
                 name: "impact",
                 type: pc.ANIM_PARAMETER_INTEGER,
@@ -2674,7 +3921,8 @@ Character.prototype.prepareAnimComponent = function () {
                             priority: 0,
                             conditions: [
                                 { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
-                                { parameterName: "speed", predicate: pc.ANIM_GREATER_THAN, value: 0 }
+                                { parameterName: "speed", predicate: pc.ANIM_GREATER_THAN, value: 0 },
+                                { parameterName: "moveDir", predicate: pc.ANIM_EQUAL_TO, value: 0 }
                             ]
                         },
                         {
@@ -2751,7 +3999,8 @@ Character.prototype.prepareAnimComponent = function () {
                         priority: 0,
                         conditions: [
                             { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
-                            { parameterName: "speed", predicate: pc.ANIM_GREATER_THAN, value: 0.99 }
+                            { parameterName: "speed", predicate: pc.ANIM_GREATER_THAN, value: 0.99 },
+                            { parameterName: "moveDir", predicate: pc.ANIM_EQUAL_TO, value: 0 }
                         ]
                     },
                     {
@@ -2761,7 +4010,8 @@ Character.prototype.prepareAnimComponent = function () {
                         priority: 0,
                         conditions: [
                             { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
-                            { parameterName: "speed", predicate: pc.ANIM_LESS_THAN, value: 1 }
+                            { parameterName: "speed", predicate: pc.ANIM_LESS_THAN, value: 1 },
+                            { parameterName: "moveDir", predicate: pc.ANIM_EQUAL_TO, value: 0 }
                         ]
                     }
                 );
@@ -2781,6 +4031,7 @@ Character.prototype.prepareAnimComponent = function () {
                             conditions: [
                                 { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
                                 { parameterName: "speed", predicate: pc.ANIM_GREATER_THAN_EQUAL_TO, value: 1 },
+                                { parameterName: "moveDir", predicate: pc.ANIM_EQUAL_TO, value: 0 }
                             ]
                         },
                         {
@@ -2796,6 +4047,200 @@ Character.prototype.prepareAnimComponent = function () {
                         }
 
                     );
+                }
+            }
+        }
+
+
+        /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+         *  C A R R I L E S   D I R E C C I O N A L E S
+         * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+         *  Un carril por sentido de marcha (parametro moveDir), espejo del de
+         *  adelante. Se usan cuando el encare esta bloqueado sobre otro
+         *  character y el movimiento deja de coincidir con la mirada: el
+         *  personaje lo sigue mirando y camina hacia atras o de lado en vez de
+         *  girarse (y en vez de hacer moonwalk, que es lo que pasaba antes
+         *  porque estos estados existian como slot pero sin transiciones).
+         *
+         *  Topologia: cuatro carriles paralelos colgando del mismo idle.
+         *      idle <-> walking          <-> running           (moveDir 0)
+         *      idle <-> walking_backward <-> running_backward  (moveDir 1)
+         *      idle <-> walking_left     <-> running_left      (moveDir 2)
+         *      idle <-> walking_right    <-> running_right     (moveDir 3)
+         *              \______ cruces por moveDir, todos con todos ______/
+         *
+         *  Los CRUCES no llevan condicion de speed a proposito: si la llevaran,
+         *  cambiar de sentido y de velocidad en el mismo frame podria dejar al
+         *  grafo sin ninguna transicion valida (p.ej. en running, moveDir pasa
+         *  a 1 y speed cae a 0.5: ni running->walking, que exige moveDir 0, ni
+         *  running->running_backward, que exigiria speed alta). Sin ella el
+         *  cambio siempre resuelve, como mucho en dos saltos.
+         *
+         *  Un cruce aterriza en el clip del MISMO tier (walk->walk, run->run) y
+         *  si ese no existe CAE al otro tier del carril destino: con solo
+         *  walking_left asignado, running tambien sabe salir hacia el. Sin esa
+         *  caida, correr y strafear a la vez dejaba al personaje clavado en
+         *  running (ningun cruce valido) hasta soltar el movimiento.
+         *
+         *  Cada transicion se crea solo si SUS DOS extremos tienen clip
+         *  asignado: sin clips laterales ni de retroceso, nada de esto existe y
+         *  el grafo queda exactamente como estaba. El runtime consulta esa
+         *  misma disponibilidad en _modeLanes y NO emite un moveDir cuyo carril
+         *  no exista, que es lo que dejaba al personaje deslizandose en idle.
+         * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+        const laneT = this._animStateGraphData.layers[0].transitions;
+        const laneStates = this._animStateGraphData.layers[0].states;
+
+        const lanes = [];
+        for (var dirI = 0; dirI < CharacterMoveDirSuffix.length; dirI++) {
+            const wName = modeName + "_walking" + CharacterMoveDirSuffix[dirI];
+            const rName = modeName + "_running" + CharacterMoveDirSuffix[dirI];
+            const hasW = !!this["animations_" + modeName][wName];
+            const hasR = !!this["animations_" + modeName][rName];
+            lanes.push({
+                walk: hasW ? wName : null,
+                run: hasR ? rName : null,
+                /* destino de un cruce segun el tier de origen, con caida al otro */
+                inWalk: hasW ? wName : (hasR ? rName : null),
+                inRun: hasR ? rName : (hasW ? wName : null)
+            });
+            this._modeLanes[m][dirI] = hasW || hasR;
+        }
+
+        /* 1. IDLE <-> carril y walk <-> run DENTRO del carril. El carril FORWARD
+              (dir 0) ya lo armaron los bloques WALKING/RUNNING de arriba, asi
+              que aqui se empieza en 1. */
+        for (var laneI = 1; laneI < lanes.length; laneI++) {
+            const lane = lanes[laneI];
+            if (!lane.walk && !lane.run) continue;
+
+            for (var idleI = 0; idleI < idles.length; idleI++) {
+                const idleName = modeName + "_" + idles[idleI];
+                const idleExists = laneStates.find(function (s) {
+                    return s.name === idleName;
+                });
+                if (!idleExists) continue;
+
+                if (lane.walk) {
+                    laneT.push(
+                        {
+                            from: idleName,
+                            to: lane.walk,
+                            time: 0.2,
+                            priority: 0,
+                            conditions: [
+                                { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                                { parameterName: "speed", predicate: pc.ANIM_GREATER_THAN, value: 0 },
+                                { parameterName: "moveDir", predicate: pc.ANIM_EQUAL_TO, value: laneI }
+                            ]
+                        },
+                        {
+                            /* el retorno a idle NO filtra por moveDir: pararse
+                               debe funcionar se venga del sentido que se venga */
+                            from: lane.walk,
+                            to: idleName,
+                            time: 0.1,
+                            priority: 0,
+                            conditions: [
+                                { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                                { parameterName: "idle", predicate: pc.ANIM_EQUAL_TO, value: idleI },
+                                { parameterName: "speed", predicate: pc.ANIM_LESS_THAN, value: 0.01 }
+                            ]
+                        }
+                    );
+                }
+
+                if (lane.run) {
+                    laneT.push(
+                        {
+                            from: idleName,
+                            to: lane.run,
+                            time: 0.2,
+                            priority: 0,
+                            conditions: [
+                                { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                                { parameterName: "speed", predicate: pc.ANIM_GREATER_THAN_EQUAL_TO, value: 1 },
+                                { parameterName: "moveDir", predicate: pc.ANIM_EQUAL_TO, value: laneI }
+                            ]
+                        },
+                        {
+                            from: lane.run,
+                            to: idleName,
+                            time: 0.1,
+                            priority: 0,
+                            conditions: [
+                                { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                                { parameterName: "idle", predicate: pc.ANIM_EQUAL_TO, value: idleI },
+                                { parameterName: "speed", predicate: pc.ANIM_LESS_THAN, value: 0.01 }
+                            ]
+                        }
+                    );
+                }
+            }
+
+            /* walk <-> run del MISMO carril: por speed, con moveDir constante */
+            if (lane.walk && lane.run) {
+                laneT.push(
+                    {
+                        from: lane.walk,
+                        to: lane.run,
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [
+                            { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: "speed", predicate: pc.ANIM_GREATER_THAN, value: 0.99 },
+                            { parameterName: "moveDir", predicate: pc.ANIM_EQUAL_TO, value: laneI }
+                        ]
+                    },
+                    {
+                        from: lane.run,
+                        to: lane.walk,
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [
+                            { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: "speed", predicate: pc.ANIM_LESS_THAN, value: 1 },
+                            { parameterName: "moveDir", predicate: pc.ANIM_EQUAL_TO, value: laneI }
+                        ]
+                    }
+                );
+            }
+        }
+
+        /* 2. CRUCES entre carriles distintos, todos con todos y SIN condicion de
+              speed (ver cabecera). La condicion es solo el moveDir DESTINO, que
+              al ser mutuamente excluyente hace que nunca haya dos cruces validos
+              a la vez desde el mismo estado. */
+        for (var srcI = 0; srcI < lanes.length; srcI++) {
+            for (var dstI = 0; dstI < lanes.length; dstI++) {
+                if (srcI === dstI) continue;
+                const src = lanes[srcI];
+                const dst = lanes[dstI];
+
+                if (src.walk && dst.inWalk) {
+                    laneT.push({
+                        from: src.walk,
+                        to: dst.inWalk,
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [
+                            { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: "moveDir", predicate: pc.ANIM_EQUAL_TO, value: dstI }
+                        ]
+                    });
+                }
+
+                if (src.run && dst.inRun) {
+                    laneT.push({
+                        from: src.run,
+                        to: dst.inRun,
+                        time: 0.2,
+                        priority: 0,
+                        conditions: [
+                            { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: m },
+                            { parameterName: "moveDir", predicate: pc.ANIM_EQUAL_TO, value: dstI }
+                        ]
+                    });
                 }
             }
         }
@@ -3062,7 +4507,8 @@ Character.prototype.prepareAnimComponent = function () {
                     conditions: [
                         { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: wm },
                         { parameterName: "speed", predicate: pc.ANIM_GREATER_THAN_EQUAL_TO, value: 0.01 },
-                        { parameterName: "speed", predicate: pc.ANIM_LESS_THAN_EQUAL_TO, value: 0.99 }
+                        { parameterName: "speed", predicate: pc.ANIM_LESS_THAN_EQUAL_TO, value: 0.99 },
+                        { parameterName: "moveDir", predicate: pc.ANIM_EQUAL_TO, value: 0 }
                     ]
                 });
             }
@@ -3074,9 +4520,47 @@ Character.prototype.prepareAnimComponent = function () {
                     priority: 0,
                     conditions: [
                         { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: wm },
-                        { parameterName: "speed", predicate: pc.ANIM_GREATER_THAN, value: 0.99 }
+                        { parameterName: "speed", predicate: pc.ANIM_GREATER_THAN, value: 0.99 },
+                        { parameterName: "moveDir", predicate: pc.ANIM_EQUAL_TO, value: 0 }
                     ]
                 });
+            }
+            /* aterrizar retrocediendo o de lado: mismos rangos de speed, un
+               carril por moveDir. Sin esto, tocar suelo con el encare bloqueado
+               y moviendose en cualquier sentido que no sea adelante dejaria la
+               pose de aire pegada (ninguna transicion valida). Empieza en 1: el
+               carril FORWARD son las dos transiciones de aqui arriba. */
+            for (var landDir = 1; landDir < CharacterMoveDirSuffix.length; landDir++) {
+                const landWalk = wModeName + "_walking" + CharacterMoveDirSuffix[landDir];
+                const landRun = wModeName + "_running" + CharacterMoveDirSuffix[landDir];
+
+                if (graphStateSet.has(landWalk)) {
+                    this._animStateGraphData.layers[0].transitions.push({
+                        from: airIdleState,
+                        to: landWalk,
+                        time: 0.15,
+                        priority: 0,
+                        conditions: [
+                            { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: wm },
+                            { parameterName: "speed", predicate: pc.ANIM_GREATER_THAN_EQUAL_TO, value: 0.01 },
+                            { parameterName: "speed", predicate: pc.ANIM_LESS_THAN_EQUAL_TO, value: 0.99 },
+                            { parameterName: "moveDir", predicate: pc.ANIM_EQUAL_TO, value: landDir }
+                        ]
+                    });
+                }
+                if (graphStateSet.has(landRun)) {
+                    this._animStateGraphData.layers[0].transitions.push({
+                        from: airIdleState,
+                        to: landRun,
+                        time: 0.15,
+                        priority: 0,
+                        conditions: [
+                            { parameterName: "mode", predicate: pc.ANIM_EQUAL_TO, value: wm },
+                            { parameterName: "speed", predicate: pc.ANIM_GREATER_THAN, value: 0.99 },
+                            { parameterName: "moveDir", predicate: pc.ANIM_EQUAL_TO, value: landDir }
+                        ]
+                    });
+                }
             }
         }
     }

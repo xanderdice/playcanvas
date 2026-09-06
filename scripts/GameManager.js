@@ -202,6 +202,123 @@ TracerScript.divValues = null;
 TracerScript.timer = null;
 TracerScript.__tracer_busy = false;
 
+
+/* =========================================================================
+   MIGRACION DE NOMBRES DE PROPIEDAD EN LOS DATOS DE ESCENA
+   =========================================================================
+   SINTOMA (consola, al cargar la escena):
+     addComponent: ignoring unknown option 'castShadowsLightMap' passed to the
+     'render' component - check for a typo.       (idem lightMapped y
+     lightMapSizeMultiplier)
+
+   CAUSA: no esta en ningun script del proyecto — viene de los DATOS de una o
+   varias entidades de la escena (template/GLB guardado con una version vieja).
+   Los nombres reales del componente render llevan "lightmap" como UNA sola
+   palabra (doc del engine v2.21.1):
+
+       lightMapped            ->  lightmapped
+       castShadowsLightMap    ->  castShadowsLightmap
+       lightMapSizeMultiplier ->  lightmapSizeMultiplier
+
+   LO IMPORTANTE: no es solo ruido en consola. El engine DESCARTA esas claves,
+   asi que esas entidades hoy NO tienen aplicada la configuracion de lightmap
+   que dice el editor. Renombrarlas no es silenciar el aviso: es hacer que la
+   opcion finalmente se aplique. (Las tres solo tienen efecto si se hornea con
+   app.lightmapper.bake(), asi que el riesgo visual de corregirlas es nulo.)
+
+   DONDE SE ENGANCHA Y POR QUE ACA: el parser de escena NO llama a
+   entity.addComponent(type, data) sino a system.addComponent(entity, data)
+   (scene parser: `system.addComponent(entity, componentData)`), y el aviso lo
+   emite ComponentSystem.addComponent al validar las claves. RenderComponentSystem
+   NO redefine addComponent —solo initializeComponentData— asi que parchear el
+   prototipo base de ComponentSystem cubre render y model de una vez.
+   Va en el ambito de MODULO, no en initialize(): los scripts se ejecutan al
+   cargarse el asset, ANTES de que se instancie la escena. Desde initialize()
+   llegaria tarde (los componentes ya estarian creados).
+
+   NO MUTA los datos del engine: si detecta una clave vieja clona el objeto
+   (copia superficial) y pasa el clon. En el caso normal —sin claves viejas— no
+   clona nada y el coste es una comparacion por componente.
+
+   TRABAJA EN SILENCIO: no imprime nada. Lleva la cuenta en GM_KEY_FIXUP_RECORD
+   por si alguna vez hace falta saber QUE entidades vienen con los nombres
+   viejos; se consulta desde la consola del navegador y no ensucia el log:
+
+       GM_KEY_FIXUP_RECORD        // { total, keys: {clave: veces}, entities: [...] }
+
+   ESTO ES UN PARCHE, NO LA CURA. Lo correcto es arreglar esas entidades en el
+   editor (son templates/GLB guardados con nombres viejos) y despues borrar este
+   bloque entero.
+   ========================================================================= */
+var GM_COMPONENT_KEY_FIXUPS = {
+    render: {
+        lightMapped: "lightmapped",
+        castShadowsLightMap: "castShadowsLightmap",
+        lightMapSizeMultiplier: "lightmapSizeMultiplier"
+    },
+    model: {
+        lightMapped: "lightmapped",
+        castShadowsLightMap: "castShadowsLightmap",
+        lightMapSizeMultiplier: "lightmapSizeMultiplier"
+    }
+};
+
+/* Cuenta SILENCIOSA de lo corregido, para poder inspeccionarla desde la consola
+   sin que el script imprima nada por su cuenta (ver la cabecera).
+   Es un var suelto y NO una propiedad de GameManager a proposito: este bloque
+   corre ANTES de `var GameManager = pc.createScript(...)`, y por hoisting ahi
+   GameManager todavia vale undefined — asignarle una propiedad tiraria
+   TypeError y se caeria la carga del script entero. */
+var GM_KEY_FIXUP_RECORD = { total: 0, entities: [], keys: {} };
+
+(function installComponentKeyFixups() {
+    if (typeof pc === "undefined" || !pc.ComponentSystem || !pc.ComponentSystem.prototype) return;
+
+    var proto = pc.ComponentSystem.prototype;
+    if (proto.__gmKeyFixupsInstalled) return;
+
+    var original = proto.addComponent;
+    if (typeof original !== "function") return;   // build distinto: no tocar nada
+
+    proto.__gmKeyFixupsInstalled = true;
+
+    proto.addComponent = function (entity, data) {
+        var map = GM_COMPONENT_KEY_FIXUPS[this.id];
+        if (!map || !data || typeof data !== "object") {
+            return original.apply(this, arguments);
+        }
+
+        /* 1a pasada: ¿hay alguna clave vieja? (sin clonar ni asignar nada) */
+        var found = null;
+        for (var probe in map) {
+            if (data[probe] !== undefined) { found = true; break; }
+        }
+        if (!found) return original.apply(this, arguments);
+
+        /* 2a pasada: clon superficial + renombre. Se clona para NO mutar el
+           objeto de datos del engine, que puede reutilizarse al re-instanciar
+           la escena o un template. */
+        var fixed = {};
+        for (var k in data) fixed[k] = data[k];
+
+        var rec = GM_KEY_FIXUP_RECORD;
+        for (var wrong in map) {
+            if (fixed[wrong] === undefined) continue;
+            var right = map[wrong];
+            if (fixed[right] === undefined) fixed[right] = fixed[wrong];
+            delete fixed[wrong];
+            rec.keys[wrong] = (rec.keys[wrong] || 0) + 1;
+        }
+        rec.total++;
+        if (rec.entities.length < 30) {
+            rec.entities.push((entity && entity.name) || "(sin nombre)");
+        }
+
+        return original.call(this, entity, fixed);
+    };
+})();
+
+
 /**************************************************/
 /*             G A M E   M A N A G E R            */
 /**************************************************/
@@ -414,6 +531,84 @@ GameManager.attributes.add("characterController", {
         }
     ]
 });
+
+
+/* =========================================================================
+   AUTO LOD — generacion de niveles de detalle EN CARGA, sin assets extra
+   =========================================================================
+   Al terminar de cargar la escena se recorren todos los render/model, se
+   simplifican las mallas y se guardan los niveles. Despues, por distancia a
+   camara, cada meshInstance conmuta a la malla que le toca.
+
+   POR QUE ES BARATO: se simplifica por MALLA UNICA, no por instancia. 30 clones
+   del mismo personaje comparten UNA sola pc.Mesh, asi que son 1 simplificacion
+   por nivel y no 30. El escaneo deduplica por identidad de mi.mesh.
+
+   POR QUE NO DUPLICA MEMORIA DE VERTICES: simplificar solo genera INDICES. Las
+   mallas de cada nivel COMPARTEN el vertexBuffer del original, con posiciones,
+   normales, UVs y —lo que importa aca— JOINTS_0 / WEIGHTS_0 intactos: el
+   skinning de los personajes sigue funcionando sin tocar nada. Lo unico que se
+   duplica son los indices (2 bytes por indice).
+
+   DEFAULT APAGADO a proposito: cambia lo que se ve en pantalla y no hay forma
+   de validarlo sin correr el juego. Se enciende con un check y se revisa el
+   resultado en GameManager.lodStats desde la consola. */
+GameManager.attributes.add("autoLod", {
+    title: "Auto LOD",
+    type: "json",
+    schema: [
+        {
+            name: "enabled",
+            type: "boolean",
+            default: false,
+            title: "enabled",
+            description: "Genera LODs de todas las mallas al cargar la escena y conmuta por distancia."
+        },
+        {
+            name: "levels",
+            type: "number",
+            default: 2,
+            min: 1,
+            max: 4,
+            precision: 0,
+            title: "levels",
+            description: "Niveles simplificados ADEMAS del original. 2 = original + LOD1 + LOD2."
+        },
+        {
+            name: "ratio",
+            type: "number",
+            default: 0.5,
+            min: 0.1,
+            max: 0.9,
+            precision: 2,
+            title: "ratio por nivel",
+            description: "Fraccion de triangulos que conserva cada nivel respecto al anterior. " +
+                "0.5 = cada LOD tiene la mitad de triangulos que el nivel de arriba."
+        },
+        {
+            name: "minTriangles",
+            type: "number",
+            default: 300,
+            min: 0,
+            precision: 0,
+            title: "min triangulos",
+            description: "Las mallas con menos triangulos que esto no se simplifican: el ahorro no " +
+                "paga el trabajo ni el riesgo visual."
+        }
+    ]
+});
+
+/* Cuantos ms como maximo puede bloquear la generacion de LODs en un frame.
+   Simplificar es SINCRONO: mientras corre, el juego no dibuja. Si se hicieran
+   todas las mallas de un saque, una escena con muchas mallas unicas daria un
+   tiron de varias decimas de segundo justo al empezar a jugar (el bloque de
+   generacion arranca en el primer frame DESPUES de cargar la escena, cuando la
+   pantalla de carga ya se fue). Con este tope se hacen las mallas que entren en
+   4 ms y el resto espera al frame siguiente: la generacion tarda mas frames en
+   completarse, pero no se nota ningun tiron.
+   Es una constante y no un atributo a proposito: no es una decision de montaje
+   de escena, es un detalle interno de como se reparte el trabajo. */
+var AUTOLOD_BUDGET_MS = 4;
 
 
 GameManager.attributes.add("scenesConfig", {
@@ -670,9 +865,36 @@ GameManager.attributes.add("tracer", {
         },
 
     ]
+
 });
 
-
+GameManager.attributes.add("sceneEditor", {
+    title: "Scene Editor",
+    type: "json",
+    schema: [
+        {
+            name: "autoStart",
+            type: "boolean",
+            default: false,
+            title: "Auto Start",
+            description: "Start the scene editor automatically"
+        },
+        {
+            name: "toggleKey",
+            type: "string",
+            enum: [
+                { "F2": "F2" },
+                { "F3": "F3" },
+                { "F4": "F4" },
+                { "F5": "F5" },
+                { "F6": "F6" }
+            ],
+            default: "F2",
+            title: "Toggle Key",
+            description: "Key to toggle scene editor on/off"
+        }
+    ]
+});
 
 GameManager._app = null;
 GameManager.showMenuOnEnabledPointer = true;
@@ -705,6 +927,11 @@ GameManager.input = {
     mouseDx: 0,
     mouseDy: 0,
     mousePrimaryButton: false,
+    /* mousePrimaryButton YA INTERPRETADO como ataque segun la camara (ver
+       GameManager.leftClickIsAttack). Lo consume character.doAttackSystem. En
+       point & click vale siempre false: ahi el click izquierdo es "moverse a
+       este punto", no "atacar". */
+    attackMouse: false,
     mouseSecondaryButton: false,
     mouseXButton: 0,
     mouseYButton: 0,
@@ -713,7 +940,13 @@ GameManager.input = {
     lookLastDeltaY: 0,
     dt: 0,
     mode: 0,
-    targetPoint: pc.Vec3.ZERO,
+    /* null, NO pc.Vec3.ZERO. doMove trata targetPoint por VERDAD, y un Vec3 en
+       el origen es truthy: el personaje arrancaba caminando hacia (0,0,0) e
+       ignoraba WASD hasta llegar (la rama de targetPoint tiene prioridad sobre
+       la de input.x/z). Se auto-corregia al llegar —doMove lo pone en null—,
+       pero era un arranque erratico gratis. Ademas pc.Vec3.ZERO es un objeto
+       COMPARTIDO del engine: dejarlo como destino invita a que alguien lo mute. */
+    targetPoint: null,
     mouseRaycast: null
 };
 GameManager.sceneCharacters = [];
@@ -763,6 +996,18 @@ GameManager.prototype.initialize = function () {
         yaw: 0
     };
 
+
+    /* AUTO LOD: blindaje del grupo (escena vieja sin re-parsear) + arranque del
+       backend bueno. MeshoptSimplifier compila WASM de forma asíncrona y hasta
+       que su promesa `ready` resuelve cualquier llamada es insegura; si la
+       escena carga antes, scanSceneForLods usa el fallback por clustering. */
+    this.autoLod = this.autoLod || {};
+    if (this.autoLod.enabled === undefined) this.autoLod.enabled = false;
+    if (!(this.autoLod.levels > 0)) this.autoLod.levels = 2;
+    if (!(this.autoLod.ratio > 0)) this.autoLod.ratio = 0.5;
+    if (!(this.autoLod.minTriangles >= 0)) this.autoLod.minTriangles = 300;
+    GameManager.autoLod = this.autoLod;
+    GameManager._lodInitMeshopt();
 
     GameManager.enableCharacterController = this.characterController.enabled;
     GameManager.characterControllerInterv = this.characterController.interv;
@@ -967,8 +1212,6 @@ GameManager.prototype.initialize = function () {
     this._ewmaAlpha = 0.12;         // sensibilidad EWMA
     this._globalFrame = 0;          // contador global de frames
     this._instancerCells = null;    // cache de instancer cells
-    this._players = null;           // cache de references a players
-    this._lastCharactersCount = -1; // para detectar cambios en la lista
     // parámetros ajustables
     this.targetBudgetMs = 8;        // ms objetivo para NPCs por frame
     this.minBudgetMs = 2;
@@ -1004,11 +1247,35 @@ GameManager.prototype.initialize = function () {
     /* ************* */
     this.app.on("update", GameManager.updateGameManager, this);
 
+    this._initSceneEditor();
+
     if (GameManager.currentScene === GameManager.mainScene) {
         this.app.fire("showmenu");
     }
 
 
+};
+
+GameManager.prototype._initSceneEditor = function () {
+    var opts = this.sceneEditor || {};
+    if (!opts.autoStart) return;
+
+    var root = this.app.root;
+    var editorEntity = root.findByName("__SceneEditor");
+    if (!editorEntity) {
+        editorEntity = new pc.Entity("__SceneEditor");
+        editorEntity.addComponent("script");
+        root.addChild(editorEntity);
+    }
+
+    if (!editorEntity.script.sceneEditor) {
+        editorEntity.script.create("sceneEditor", {
+            attributes: {
+                autoStart: true,
+                editorKey: pc.KEY_F2
+            }
+        });
+    }
 };
 
 
@@ -1158,6 +1425,41 @@ GameManager._onMouseUp = function (event) {
     GameManager._onMouseDownUp("up", event);
 }
 
+/* =========================================================================
+   SEMANTICA DEL BOTON IZQUIERDO DEL MOUSE, POR TIPO DE CAMARA
+   =========================================================================
+   El click izquierdo NO significa lo mismo en todas las camaras, y tratarlo
+   como una sola cosa era la causa de que en point & click el personaje lanzara
+   un ataque al aire cada vez que le dabas una orden de movimiento:
+
+     FirstPerson / ThirdPerson : ATACAR. La mira esta fija al centro de la
+                                 pantalla y el click no tiene otro significado.
+     ThirdPersonPointMove      : MOVERSE al punto clickeado. Atacar se hace con
+                                 la tecla de ataque (F) o desde la IA/gameplay,
+                                 nunca con este click.
+     FlyCamera                 : ninguna de las dos (camara libre de debug).
+
+   OJO al comparar: "ThirdPersonPointMove" EMPIEZA con "ThirdPerson", asi que un
+   indexOf/startsWith daria true para las dos. Se compara por IGUALDAD exacta a
+   proposito.
+
+   Esta es la UNICA fuente de verdad del tema: character.js no vuelve a decidir
+   por su cuenta, lee input.attackMouse, que se deriva de aca (ver
+   updateGameManager).
+   ========================================================================= */
+GameManager.leftClickIsAttack = function () {
+    /* con el menu abierto el click es de UI: sin esto, cada boton del menu que
+       tocaras en primera/tercera persona lanzaba un ataque por detras */
+    if (GameManager._app && GameManager._app.isMenuMode) return false;
+    var t = GameManager.input.cameratype;
+    return t === "FirstPerson" || t === "ThirdPerson";
+};
+
+GameManager.leftClickIsMoveTo = function () {
+    return GameManager.input.cameratype === "ThirdPersonPointMove";
+};
+
+
 GameManager._onMouseDownUp = function (type, event) {
     if (event.button === pc.MOUSEBUTTON_RIGHT && event.event) {
         event.event.preventDefault();
@@ -1170,8 +1472,15 @@ GameManager._onMouseDownUp = function (type, event) {
     GameManager.input.mousePrimaryButton = (event.buttons[pc.MOUSEBUTTON_LEFT]);
     GameManager.input.mouseSecondaryButton = (event.buttons[pc.MOUSEBUTTON_RIGHT]);
 
-    // botón izquierdo al pulsar
-    if (GameManager.input.mousePrimaryButton && type === "down") {
+    /* ATAQUE por mouse: se deriva aca ademas de por frame, para no perder un
+       click corto que empiece y termine entre dos frames. */
+    GameManager.input.attackMouse = !!(GameManager.input.mousePrimaryButton &&
+        GameManager.leftClickIsAttack());
+
+    /* MOVERSE AL PUNTO: solo en point & click. Antes esto corria en CUALQUIER
+       camara, asi que en primera/tercera persona un click con raycast valido
+       tambien mandaba al personaje a caminar hasta ahi. */
+    if (GameManager.input.mousePrimaryButton && type === "down" && GameManager.leftClickIsMoveTo()) {
         const point = GameManager.input.mouseRaycast?.point;
         if (point) {
             if (GameManager.input.targetPoint !== point) {
@@ -1572,7 +1881,7 @@ GameManager.updateCameraPosition = function (dt) {
 
     /* entity.forward devuelve una referencia interna (_forward): escalarla
        directamente la muta. Se clona antes de escalar. */
-    let cameraPosition = targetPosition.clone().add(GameManager.currentCamera.entity.forward.clone().scale(-GameManager.followCamera.orbitRadius));
+    let cameraPosition = targetPosition.clone().add(GameManager.currentCamera.entity.forward.clone().mulScalar(-GameManager.followCamera.orbitRadius));
     cameraPosition.y = pc.math.clamp(cameraPosition.y, 0.5, Number.POSITIVE_INFINITY);
 
     const hit = GameManager._app.systems.rigidbody.raycastFirst(targetPosition, cameraPosition);
@@ -1581,7 +1890,7 @@ GameManager.updateCameraPosition = function (dt) {
         /* getPosition() devuelve la referencia interna (_position) de la entidad
            objetivo: .sub() la mutaría y desplazaría al player. Se clona antes. */
         const direction = GameManager.followCamera.target.getPosition().clone().sub(hit.point).normalize();
-        cameraPosition = hit.point.clone().add(direction.scale(0.1));
+        cameraPosition = hit.point.clone().add(direction.mulScalar(0.1));
     }
 
     const deltaTimeAdjustment = dt / (1.0 / 60);
@@ -1615,6 +1924,473 @@ GameManager.sleep = function (ms) {
 /********************************************** */
 /*       U P D A T E                            */
 /********************************************** */
+/* =========================================================================
+   A U T O   L O D   —  implementacion
+   =========================================================================
+   QUE PRODUCE: cada entidad con render se convierte en un GRUPO de hijos, uno
+   por nivel, y la entidad original se queda sin render:
+
+       Entidad                      Entidad            (ya sin render)
+       └── render        ---->      ├── Entidad_LOD0   (render, malla original)
+                                    ├── Entidad_LOD1   (render, simplificada)
+                                    └── Entidad_LOD2   (render, mas simplificada)
+
+   Sale con el _LOD0 habilitado y el resto apagados, asi que lo que se ve en
+   pantalla queda EXACTAMENTE igual que antes de correr esto.
+
+   ALCANCE: gameManager SOLO GENERA la estructura. NO la gestiona en runtime —
+   elegir que nivel mostrar segun la distancia a camara es un sistema aparte que
+   todavia no existe. Cuando exista, conmutar es alternar el .enabled de los
+   hijos. Al terminar la generacion queda:
+
+       entity.__lodGroup     ->  { entity, levels: [Entidad_LOD0, _LOD1, ...] }
+       GameManager.lodGroups ->  lista de todos los grupos
+
+   Dos partes:
+     1. scanSceneForLods()  : junta los render a reestructurar
+     2. processLodQueue()   : los reestructura con presupuesto por frame
+
+   BACKEND DE SIMPLIFICACION — dos, y el bueno es opcional:
+     a) meshoptimizer (MIT), si el global MeshoptSimplifier existe. Es el
+        estandar de la industria y respeta las costuras de atributos (UV,
+        normales), asi que la textura no se deforma. Para tenerlo: subir
+        meshopt_simplifier.js como asset de script del proyecto, ordenado ANTES
+        que este archivo. Es un unico .js autocontenido, sin bundler.
+     b) si no esta, cae al decimador por CLUSTERING incluido aca abajo. No
+        necesita nada, no puede generar topologia invalida, y es notablemente
+        peor en las costuras. Sirve para NPCs de fondo; para heroes, usar (a).
+
+   Los dos backends respetan la regla que hace viable todo esto: devuelven
+   INDICES que apuntan a vertices del buffer ORIGINAL. Nunca se toca el
+   vertexBuffer, asi que el skinning no se entera de nada.
+   ========================================================================= */
+
+GameManager._lodQueue = null;          // render components pendientes de reestructurar
+GameManager._lodMeshCache = null;      // pc.Mesh -> [original, LOD1, ...] (dedupe)
+GameManager._meshoptReady = false;
+
+/* SALIDA del sistema: un grupo por entidad reestructurada.
+       [{ entity, levels: [Entidad_LOD0, Entidad_LOD1, ...] }, ...]
+   Tambien queda accesible desde la propia entidad en entity.__lodGroup.
+   Es el punto de enganche del futuro gestor de runtime. */
+GameManager.lodGroups = null;
+
+/* Resumen inspeccionable desde consola (no imprime nada por su cuenta):
+       GameManager.lodStats                                                   */
+GameManager.lodStats = {
+    backend: "none",      // "meshoptimizer" | "clustering (fallback)"
+    entidades: 0,         // render candidatos (habilitados)
+    omitidasApagadas: 0,  // render que se dejaron INTACTOS por estar apagados
+    grupos: 0,            // entidades efectivamente reestructuradas
+    mallas: 0,            // mallas UNICAS simplificadas (lo que costo de verdad)
+    pendientes: 0,
+    trisOriginal: 0, trisNivel: [], ms: 0
+};
+
+
+/* ---- backend (a): meshoptimizer, si esta cargado ---------------------- */
+GameManager._lodInitMeshopt = function () {
+    if (typeof MeshoptSimplifier === "undefined" || !MeshoptSimplifier) return;
+    /* la API exige esperar a que compile el WASM: hasta entonces cualquier
+       llamada es insegura. Si la escena carga antes, se usa el fallback. */
+    if (MeshoptSimplifier.ready && MeshoptSimplifier.ready.then) {
+        MeshoptSimplifier.ready.then(function () { GameManager._meshoptReady = true; });
+    } else if (typeof MeshoptSimplifier.simplify === "function") {
+        GameManager._meshoptReady = true;
+    }
+};
+
+
+/* ---- backend (b): decimador por clustering ----------------------------
+   Divide el espacio en una grilla, elige UN vertice representante por celda
+   (el mas cercano al centro) y remapea los triangulos a los representantes;
+   los que colapsan a menos de 3 vertices distintos se descartan.
+
+   Propiedad clave: el representante es SIEMPRE un vertice original, asi que
+   los indices resultantes son validos contra el vertexBuffer original y los
+   pesos de hueso viajan intactos.
+
+   LIMITACION HONESTA: agrupa por POSICION, asi que fusiona vertices que
+   compartian sitio pero tenian UV o normal distinta (costuras). El
+   representante impone su UV y en las costuras la textura se corre. A ratios
+   suaves (0.5) casi no se ve; a ratios agresivos, si. meshoptimizer no tiene
+   este problema — por eso es el backend preferido.
+
+   La resolucion de grilla se busca por biseccion para acercarse al numero de
+   triangulos pedido (la relacion resolucion -> triangulos es monotona). */
+GameManager._lodSimplifyCluster = function (indices, positions, vertexCount, targetCount) {
+    var minX = Infinity, minY = Infinity, minZ = Infinity;
+    var maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (var i = 0; i < vertexCount; i++) {
+        var x = positions[i * 3], y = positions[i * 3 + 1], z = positions[i * 3 + 2];
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+        if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+    }
+    var ext = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
+    if (!(ext > 0)) return null;
+
+    var remap = new Uint32Array(vertexCount);
+    var bestD = new Float32Array(vertexCount);
+    var rep = new Map();          // clave entera de celda -> indice de vertice
+    var tri = indices.length / 3;
+
+    /* Construye el remapeo para una resolucion y devuelve los indices
+       resultantes. Clave entera (no string): con res <= 256 entra en un
+       double sin perdida y el Map va mucho mas rapido. */
+    function pasada(res) {
+        rep.clear();
+        var cs = ext / res;
+        var v, cx, cy, cz, key, dx, dy, dz, d2, cur;
+
+        for (v = 0; v < vertexCount; v++) {
+            cx = (positions[v * 3] - minX) / cs | 0;
+            cy = (positions[v * 3 + 1] - minY) / cs | 0;
+            cz = (positions[v * 3 + 2] - minZ) / cs | 0;
+            if (cx >= res) cx = res - 1;
+            if (cy >= res) cy = res - 1;
+            if (cz >= res) cz = res - 1;
+            key = (cx * res + cy) * res + cz;
+
+            dx = positions[v * 3] - (minX + (cx + 0.5) * cs);
+            dy = positions[v * 3 + 1] - (minY + (cy + 0.5) * cs);
+            dz = positions[v * 3 + 2] - (minZ + (cz + 0.5) * cs);
+            d2 = dx * dx + dy * dy + dz * dz;
+            bestD[v] = d2;
+
+            cur = rep.get(key);
+            if (cur === undefined || d2 < bestD[cur]) rep.set(key, v);
+        }
+
+        for (v = 0; v < vertexCount; v++) {
+            cx = (positions[v * 3] - minX) / cs | 0;
+            cy = (positions[v * 3 + 1] - minY) / cs | 0;
+            cz = (positions[v * 3 + 2] - minZ) / cs | 0;
+            if (cx >= res) cx = res - 1;
+            if (cy >= res) cy = res - 1;
+            if (cz >= res) cz = res - 1;
+            remap[v] = rep.get((cx * res + cy) * res + cz);
+        }
+
+        var out = [];
+        for (var t = 0; t < indices.length; t += 3) {
+            var a = remap[indices[t]], b = remap[indices[t + 1]], c = remap[indices[t + 2]];
+            if (a === b || b === c || a === c) continue;   // triangulo colapsado
+            out.push(a, b, c);
+        }
+        return out;
+    }
+
+    /* biseccion sobre la resolucion; se queda con el resultado mas chico que
+       todavia supere el objetivo (mejor pasarse de detalle que quedarse corto) */
+    var lo = 2, hi = 256, mejor = null;
+    for (var it = 0; it < 8; it++) {
+        var mid = (lo + hi) >> 1;
+        var res = pasada(mid);
+        if (res.length / 3 > targetCount / 3) {
+            mejor = res;      // todavia sobran triangulos: se puede bajar la grilla
+            hi = mid;
+        } else {
+            if (!mejor) mejor = res;
+            lo = mid;
+        }
+        if (hi - lo <= 1) break;
+    }
+
+    if (!mejor || mejor.length === 0 || mejor.length / 3 >= tri) return null;
+    return new Uint32Array(mejor);
+};
+
+
+/* Despachador: meshopt si esta listo, si no el clustering. */
+GameManager._lodSimplify = function (indices, positions, vertexCount, targetCount) {
+    if (GameManager._meshoptReady) {
+        try {
+            /* error relativo generoso: en un LOD lejano importa el conteo, no la
+               fidelidad. Devuelve [indices, error]. */
+            var r = MeshoptSimplifier.simplify(indices, positions, 3, targetCount, 0.05);
+            if (r && r[0] && r[0].length >= 3 && r[0].length < indices.length) return r[0];
+            return null;
+        } catch (e) {
+            /* si meshopt falla con esta malla, seguir con el fallback en vez de
+               tumbar la carga de la escena entera */
+            GameManager._meshoptReady = false;
+        }
+    }
+    return GameManager._lodSimplifyCluster(indices, positions, vertexCount, targetCount);
+};
+
+
+/* Crea una pc.Mesh de nivel que COMPARTE el vertexBuffer del original. */
+GameManager._lodBuildMesh = function (src, indices, device) {
+    var nv = src.vertexBuffer.getNumVertices();
+    var u16 = nv <= 65535;
+    /* el IndexBuffer guarda initialData POR REFERENCIA (no copia): este array
+       no se puede reciclar despues */
+    var data = u16 ? new Uint16Array(indices) : new Uint32Array(indices);
+
+    var ib = new pc.IndexBuffer(device,
+        u16 ? pc.INDEXFORMAT_UINT16 : pc.INDEXFORMAT_UINT32,
+        data.length, pc.BUFFER_STATIC, data);
+
+    var m = new pc.Mesh(device);
+    m.vertexBuffer = src.vertexBuffer;      // COMPARTIDO: cero vertices duplicados
+    m.indexBuffer = [ib];
+    m.primitive = [{ type: pc.PRIMITIVE_TRIANGLES, base: 0, count: data.length, indexed: true }];
+    m.aabb = src.aabb;                      // un simplificado nunca es mas grande
+    /* sin copiar el skin, un personaje conmutado a LOD sale en T-pose */
+    if (src.skin) m.skin = src.skin;
+    if (src.morph) m.morph = src.morph;
+    return m;
+};
+
+
+/* CADENA DE MALLAS de un mesh, CACHEADA por malla.
+   Aca esta el ahorro real: los 30 clones de un personaje comparten UNA sola
+   pc.Mesh, asi que se simplifica una vez y las 30 entidades reusan el resultado.
+   Devuelve [original, LOD1, LOD2, ...] o null si no se pudo simplificar. */
+GameManager._lodMeshesFor = function (mesh, device, opts) {
+    var cache = GameManager._lodMeshCache;
+    if (cache.has(mesh)) return cache.get(mesh);
+
+    var res = null;
+    var prim = mesh.primitive && mesh.primitive[0];
+
+    if (prim && prim.indexed && prim.type === pc.PRIMITIVE_TRIANGLES &&
+        mesh.vertexBuffer && (prim.count / 3) >= (opts.minTriangles || 0)) {
+
+        var nv = mesh.vertexBuffer.getNumVertices();
+        var positions = new Float32Array(nv * 3);
+        var indices = new Uint32Array(prim.count);
+
+        if (mesh.getPositions(positions) && mesh.getIndices(indices)) {
+            var st = GameManager.lodStats;
+            st.trisOriginal += prim.count / 3;
+
+            var lods = [mesh];                 // nivel 0 = la malla ORIGINAL
+            var src = indices;
+            var niveles = Math.max(1, opts.levels || 2);
+            var ratio = Math.min(0.9, Math.max(0.1, opts.ratio || 0.5));
+
+            for (var n = 0; n < niveles; n++) {
+                /* encadenar desde el nivel anterior y no desde el original:
+                   transiciones mas suaves entre niveles y menos deriva */
+                var target = Math.max(3, Math.floor(src.length * ratio / 3) * 3);
+                var out = GameManager._lodSimplify(src, positions, nv, target);
+                if (!out) break;               // no reduce mas: cortar la cadena
+                lods.push(GameManager._lodBuildMesh(mesh, out, device));
+                st.trisNivel[n] = (st.trisNivel[n] || 0) + out.length / 3;
+                src = out;
+            }
+
+            if (lods.length >= 2) res = lods;
+        }
+    }
+
+    cache.set(mesh, res);
+    return res;
+};
+
+
+/* REESTRUCTURA una entidad con render en un grupo de LODs:
+
+       Entidad                      Entidad
+       └── render        ---->      ├── Entidad_LOD0  (render, malla original)
+                                    ├── Entidad_LOD1  (render, simplificada)
+                                    └── Entidad_LOD2  (render, mas simplificada)
+
+   La entidad original queda SIN render: su geometria vive ahora en el hijo
+   _LOD0. Los hijos van en transform local identidad, asi que heredan
+   exactamente la posicion/rotacion/escala que tenia el padre.
+
+   ORDEN OBLIGATORIO — primero crear los hijos, DESPUES quitar el render del
+   padre. Al quitar el componente, PlayCanvas destruye sus meshInstances
+   (onBeforeRemove -> destroyMeshInstances), y MeshInstance.destroy() destruye
+   TAMBIEN la malla si su refCount cae por debajo de 1. Los meshInstance nuevos
+   del _LOD0 incrementan ese contador al construirse, asi que cuando el padre
+   destruye el suyo la malla sobrevive. Al reves, se perderia la geometria.
+
+   SKINNING: no se copian SkinInstance a mano — se destruirian junto al
+   componente viejo. Se le pasa el mismo rootBone a cada hijo y es el propio
+   RenderComponent quien crea los suyos (_cloneSkinInstances, al habilitarse o
+   al asignar rootBone) para cada malla que tenga mesh.skin. Por eso
+   _lodBuildMesh copia src.skin a las mallas simplificadas. */
+GameManager._lodBuildGroup = function (rc, device, opts) {
+    var entity = rc.entity;
+    var src = rc.meshInstances || [];
+    if (src.length === 0) return null;
+
+    /* una cadena por meshInstance; el grupo llega hasta donde llegue la MAS
+       CORTA (si el pelo no pudo simplificarse, no tiene sentido un nivel del
+       cuerpo sin pelo) */
+    var cadenas = [];
+    var niveles = Infinity;
+    for (var i = 0; i < src.length; i++) {
+        var chain = src[i].mesh ? GameManager._lodMeshesFor(src[i].mesh, device, opts) : null;
+        if (!chain) return null;
+        cadenas.push(chain);
+        if (chain.length < niveles) niveles = chain.length;
+    }
+    if (!(niveles >= 2)) return null;
+
+    /* propiedades del render a replicar en cada hijo */
+    var rootBone = rc.rootBone;
+    var castShadows = rc.castShadows;
+    var receiveShadows = rc.receiveShadows;
+    var batchGroupId = rc.batchGroupId;
+    var layers = rc.layers ? rc.layers.slice() : null;
+    var excluir = entity.tags && entity.tags.has("uranus-instancing-exclude");
+
+    /* VISIBILIDAD DEL ORIGEN — lo que estaba apagado tiene que seguir apagado.
+       rc.enabled es el flag PROPIO del componente (Component#enabled), distinto
+       de entity.enabled. Si el render venia deshabilitado desde el editor y no
+       se replica, los hijos nacen con render habilitado (que es el default de
+       addComponent) y aparece en pantalla algo que el usuario habia apagado. */
+    var renderEnabled = rc.enabled;
+
+    var grupo = { entity: entity, levels: [] };
+
+    for (var n = 0; n < niveles; n++) {
+        var child = new pc.Entity(entity.name + "_LOD" + n);
+        entity.addChild(child);
+        child.setLocalPosition(0, 0, 0);
+        child.setLocalEulerAngles(0, 0, 0);
+        child.setLocalScale(1, 1, 1);
+        if (excluir) child.tags.add("uranus-instancing-exclude");
+
+        var mis = [];
+        for (var k = 0; k < src.length; k++) {
+            var mi = new pc.MeshInstance(cadenas[k][n], src[k].material, child);
+            mi.castShadow = src[k].castShadow;
+            mi.receiveShadow = src[k].receiveShadow;
+            mis.push(mi);
+        }
+
+        child.addComponent("render", {
+            castShadows: castShadows,
+            receiveShadows: receiveShadows,
+            batchGroupId: batchGroupId
+        });
+        /* meshInstances ANTES que rootBone: al asignar rootBone el componente
+           recorre las mallas creando SkinInstances, y necesita tenerlas ya */
+        child.render.meshInstances = mis;
+        if (layers) child.render.layers = layers;
+        if (rootBone) child.render.rootBone = rootBone;
+
+        /* si el render de origen estaba apagado, los niveles nacen apagados */
+        child.render.enabled = renderEnabled;
+
+        /* solo el LOD0 activo: lo que se ve en pantalla queda IDENTICO a antes.
+           El gestor de runtime (todavia no existe) sera quien alterne. */
+        child.enabled = (n === 0);
+        grupo.levels.push(child);
+    }
+
+    /* el padre ya no dibuja: su geometria esta en _LOD0 */
+    entity.removeComponent("render");
+    entity.__lodGroup = grupo;
+
+    return grupo;
+};
+
+
+/* 1. ESCANEO: junta los render que hay que reestructurar. */
+GameManager.scanSceneForLods = function () {
+    var app = GameManager._app;
+    if (!app || !GameManager.autoLod || !GameManager.autoLod.enabled) return;
+
+    var comps = app.root.findComponents("render");
+    var cola = [];
+
+    var omitidasApagadas = 0;
+
+    for (var i = 0; i < comps.length; i++) {
+        var rc = comps[i];
+        var e = rc.entity;
+        if (!e) continue;
+
+        /* APAGADO EN EL EDITOR: no se toca. Nada. findComponents recorre TODA la
+           jerarquia, tambien los nodos deshabilitados, asi que sin este filtro
+           una entidad que el usuario apago a proposito acabaria reestructurada:
+           se le quitaria el render y se le colgarian hijos _LODn nuevos.
+
+           entity.enabled ya es `_enabled && _enabledInHierarchy` (GraphNode), o
+           sea que cubre los dos casos de una: apagada ella misma, o colgando de
+           un padre apagado.
+
+           Se omite en vez de "procesar preservando el estado" a proposito: lo
+           que esta apagado se queda EXACTAMENTE como estaba, con su render
+           intacto. Es la unica forma de garantizar cero cambio visual. El coste
+           es que si el juego la enciende mas tarde no tendra LODs — aceptable,
+           porque no hay manera de saber si eso va a pasar. */
+        if (!e.enabled) { omitidasApagadas++; continue; }
+
+        /* no re-procesar: ni un grupo ya armado, ni los hijos _LODn que este
+           mismo sistema creo (si no, cada recarga anidaria un nivel mas) */
+        if (e.__lodGroup) continue;
+        if (/_LOD\d+$/.test(e.name || "")) continue;
+        if (!rc.meshInstances || rc.meshInstances.length === 0) continue;
+        cola.push(rc);
+    }
+
+    GameManager._lodQueue = cola;
+    GameManager._lodMeshCache = new Map();
+    GameManager.lodGroups = [];
+
+    var st = GameManager.lodStats;
+    st.backend = GameManager._meshoptReady ? "meshoptimizer" : "clustering (fallback)";
+    st.entidades = cola.length;
+    st.omitidasApagadas = omitidasApagadas;
+    st.grupos = 0;
+    st.mallas = 0;
+    st.pendientes = cola.length;
+    st.trisOriginal = 0;
+    st.trisNivel = [];
+    st.ms = 0;
+};
+
+
+/* 2. DRENAJE con presupuesto. Simplificar es sincrono y bloquea: en vez de
+      congelar el juego se hacen las entidades que entren en AUTOLOD_BUDGET_MS y
+      el resto espera al frame siguiente. */
+GameManager.processLodQueue = function () {
+    var q = GameManager._lodQueue;
+    if (!q || q.length === 0) return;
+
+    var opts = GameManager.autoLod;
+    var device = GameManager._app.graphicsDevice;
+    var t0 = performance.now();
+    var st = GameManager.lodStats;
+
+    while (q.length > 0 && (performance.now() - t0) < AUTOLOD_BUDGET_MS) {
+        var rc = q.shift();
+        /* la entidad pudo destruirse entre el escaneo y ahora */
+        if (!rc || !rc.entity || !rc.entity.parent) continue;
+
+        var grupo = GameManager._lodBuildGroup(rc, device, opts);
+        if (grupo) {
+            GameManager.lodGroups.push(grupo);
+            st.grupos++;
+        }
+    }
+
+    st.mallas = GameManager._lodMeshCache ? GameManager._lodMeshCache.size : 0;
+    st.pendientes = q.length;
+    st.ms += performance.now() - t0;
+
+    if (q.length === 0) {
+        GameManager._lodQueue = null;
+        GameManager._lodMeshCache = null;   // las mallas ya viven en los hijos
+    }
+};
+
+
+/* (aca iria la CONMUTACION por distancia a camara. A proposito NO esta: por
+   ahora gameManager solo GENERA la estructura y deja el _LOD0 activo y el resto
+   apagado. El gestor de runtime es un sistema aparte y se hace despues; cuando
+   exista, conmutar es alternar el .enabled de los hijos de cada grupo. */
+
+
 // update code called every frame
 GameManager.updateGameManager = function (dt) {
     if (GameManager.checkForPlayerAndTargetEntities) {
@@ -1644,10 +2420,20 @@ GameManager.updateGameManager = function (dt) {
             return (char.isCharacter || char.tags.has("is-character"))
         });
 
-
+        /* AUTO LOD: acá la escena ya está completa (este bloque corre una sola
+           vez, en el primer frame tras cargarla). Sólo se ARMA la cola de mallas
+           únicas; simplificar se hace repartido entre frames más abajo, para no
+           congelar el juego en el primer frame. */
+        GameManager.scanSceneForLods();
 
         GameManager.checkForPlayerAndTargetEntities = false;
     }
+
+    /* AUTO LOD: drenar la cola de generación con presupuesto. Cuando termina,
+       _lodQueue queda en null y esto no vuelve a costar nada. No hay gestión en
+       runtime: los niveles quedan en meshInstance.lodMeshes esperando al sistema
+       que los use. */
+    if (GameManager._lodQueue) GameManager.processLodQueue();
 
     GameManager._app.dt = dt;
     GameManager.input.dt = dt;
@@ -1656,6 +2442,15 @@ GameManager.updateGameManager = function (dt) {
     GameManager.readKeyboardInput();
     GameManager.handleEscToggle();
     GameManager.updateMouseState();
+
+    /* ATAQUE por mouse, re-derivado CADA frame además de en el evento de mouse:
+       el botón se mantiene pulsado ENTRE eventos (mousedown no se repite), y
+       tanto el tipo de cámara como el modo menú pueden cambiar en caliente.
+       Va DESPUÉS de handleEscToggle/updateMouseState —para que el estado del
+       menú del frame ya esté aplicado— y ANTES de updateCharactersMovement, que
+       es quien acaba llamando a doAttackSystem. Ver leftClickIsAttack. */
+    GameManager.input.attackMouse = !!(GameManager.input.mousePrimaryButton &&
+        GameManager.leftClickIsAttack());
 
 
     ///MOVE CHARACTERS
@@ -1743,21 +2538,6 @@ GameManager.setInterval = function () {
 };
 
 
-// Helper: reconstruye cache de players si cambió la cantidad de entidades
-GameManager.prototype._rebuildPlayerCacheIfNeeded = function (characters) {
-    const total = characters.length;
-    if (this._lastCharactersCount === total && Array.isArray(this._players)) return;
-    // rebuild
-    this._players = [];
-    for (let i = 0; i < total; i++) {
-        const c = characters[i];
-        if (!c) continue;
-        if (c.isPlayer) this._players.push(c);
-    }
-    this._lastCharactersCount = total;
-};
-
-
 
 
 // Public API: llama cada frame (dt en segundos)
@@ -1815,16 +2595,32 @@ GameManager.updateCharactersMovement = function () {
 
     const startTime = performance.now();
 
+    /* DOS contadores, y no es redundancia:
+         processed = cuantos characters se MOVIERON de verdad -> gobierna el
+                     presupuesto (batchSize), que es trabajo real medido.
+         visited   = cuantas ENTRADAS de la lista se miraron -> gobierna el fin
+                     del barrido.
+       Con un solo contador (el de exitos) contra `total`, los `continue` de mas
+       abajo (player, deshabilitados, sin script) no avanzaban nada: el indice
+       daba la vuelta y el bucle rellenaba el cupo REPITIENDO a los elegibles
+       -> doMove dos veces por frame al mismo NPC (movimiento y cooldowns de
+       ataque al doble). Y si NINGUNA entrada era elegible (escena con solo el
+       player, o todos los NPCs deshabilitados) no terminaba nunca: while
+       infinito en el hilo principal. `visited` crece SIEMPRE y esta acotado por
+       `total`, asi que el barrido siempre termina y cada character se visita
+       como mucho una vez. */
     let processed = 0;
+    let visited = 0;
     let index = this._movementIndex;
     if (index >= total) index = 0;
 
-    while (processed < batchSize && processed < total) {
+    while (processed < batchSize && visited < total) {
 
         const character = characters[index];
 
         index++;
         if (index >= total) index = 0;
+        visited++;
 
         if (!character || !character.enabled) continue;
         if (character.isPlayer) continue;

@@ -59,6 +59,17 @@ CartoonMaterial.attributes.add('pencilWidth', {
     description: 'Grosor del trazo de las aristas (0 = sin trazo, 1 = grueso).'
 });
 
+CartoonMaterial.attributes.add('debugInfo', {
+    type: 'boolean',
+    default: false,
+    title: 'Debug Info',
+    description: 'Loguea en consola qué material/textura/UVs ve el script (para diagnosticar por qué no se ve una textura).'
+});
+
+/* subir este marcador en cada iteración: el log de initialize permite detectar
+   si el editor está ejecutando una copia VIEJA del archivo */
+CartoonMaterial.VERSION = 'v4-texturas-tiling';
+
 
 /* =========================================================
    SHADERS (GLSL para WebGL2, WGSL para WebGPU)
@@ -107,6 +118,7 @@ CartoonMaterial._fragmentGLSL = [
     'uniform float uBoxMinHalf;',
     'uniform sampler2D uDiffuseMap;',
     'uniform float uTexEncode;',
+    'uniform vec4 uUvTransform;',   /* tiling.xy, offset.xy del material original */
     '',
     'varying vec3 vWorldNormal;',
     'varying vec3 vWorldPos;',
@@ -129,7 +141,7 @@ CartoonMaterial._fragmentGLSL = [
        salida directa se vería oscuro). */
     '    float ndl = max(dot(N, L), 0.0);',
     '    float shade = 0.55 + 0.25 * step(0.3, ndl) + 0.2 * step(0.65, ndl);',
-    '    vec3 texCol = texture2D(uDiffuseMap, vUv0).rgb;',
+    '    vec3 texCol = texture2D(uDiffuseMap, vUv0 * uUvTransform.xy + uUvTransform.zw).rgb;',
     '    texCol = mix(texCol, sqrt(texCol), uTexEncode);',
     '    vec3 col = uBaseColor * texCol * shade;',
     '',
@@ -200,6 +212,7 @@ CartoonMaterial._fragmentWGSL = [
     'uniform uBoxHalf: vec3f;',
     'uniform uBoxMinHalf: f32;',
     'uniform uTexEncode: f32;',
+    'uniform uUvTransform: vec4f;',
     '',
     'var uDiffuseMap: texture_2d<f32>;',
     'var uDiffuseMapSampler: sampler;',
@@ -217,7 +230,7 @@ CartoonMaterial._fragmentWGSL = [
     '',
     '    let ndl: f32 = max(dot(N, L), 0.0);',
     '    let shade: f32 = 0.55 + 0.25 * step(0.3, ndl) + 0.2 * step(0.65, ndl);',
-    '    var texCol: vec3f = textureSample(uDiffuseMap, uDiffuseMapSampler, input.vUv0).rgb;',
+    '    var texCol: vec3f = textureSample(uDiffuseMap, uDiffuseMapSampler, input.vUv0 * uniform.uUvTransform.xy + uniform.uUvTransform.zw).rgb;',
     '    texCol = mix(texCol, sqrt(texCol), uniform.uTexEncode);',
     '    var col: vec3f = uniform.uBaseColor * texCol * shade;',
     '',
@@ -293,6 +306,7 @@ CartoonMaterial._acquireMaterial = function (device, key, pencil, width) {
         mat.setParameter('uBoxMinHalf', 1);
         mat.setParameter('uDiffuseMap', CartoonMaterial._getWhiteTexture(device));
         mat.setParameter('uTexEncode', 0);
+        mat.setParameter('uUvTransform', [1, 1, 0, 0]);
         mat.update();
         entry = { mat: mat, refs: 0 };
         CartoonMaterial._cache[key] = entry;
@@ -317,6 +331,14 @@ CartoonMaterial._releaseMaterial = function (key) {
    ========================================================= */
 
 CartoonMaterial.prototype.initialize = function () {
+    /* La versión NO se imprime: arrancar el juego no es motivo para escribir en
+       la consola. Sigue disponible para comprobar que el editor no está
+       ejecutando una copia vieja de este archivo, consultándola a mano:
+
+           CartoonMaterial.VERSION
+
+       (y sale también en cada línea del atributo debugInfo). */
+
     this._matKey = null;
     this._material = null;
     this._applied = false;
@@ -358,10 +380,16 @@ CartoonMaterial.prototype.update = function () {
             if (!(mi.material && mi.material.__isCartoon)) mi.__cartoonOriginal = mi.material;
             mi.material = this._material;
             this._setInstanceParams(mi);
-        } else if (mi.__cartoonOriginal &&
-            ((mi.__cartoonOriginal.diffuseMap || null) !== (mi.__cartoonLastTex || null))) {
-            /* la textura del original apareció (o cambió) tarde */
-            this._setInstanceParams(mi);
+        } else if (mi.__cartoonOriginal) {
+            /* textura O color diffuse del original cambiados tarde/en vivo */
+            var o = mi.__cartoonOriginal;
+            var tNow = o.diffuseMap || null;
+            var dNow = o.diffuse
+                ? ((((o.diffuse.r * 255) | 0) << 16) | (((o.diffuse.g * 255) | 0) << 8) | ((o.diffuse.b * 255) | 0))
+                : -1;
+            if (tNow !== (mi.__cartoonLastTex || null) || dNow !== mi.__cartoonLastDiff) {
+                this._setInstanceParams(mi);
+            }
         }
     }
 };
@@ -441,9 +469,13 @@ CartoonMaterial.prototype._setInstanceParams = function (mi) {
         ? mi.__cartoonOriginal
         : null;
 
-    /* color base = diffuse del material original (blanco si no hay) */
+    /* color base = diffuse del material original (blanco si no hay);
+       se guarda empaquetado para que la vigilancia detecte cambios en vivo */
     var d = (orig && orig.diffuse) ? orig.diffuse : null;
     mi.setParameter('uBaseColor', d ? [d.r, d.g, d.b] : [1, 1, 1]);
+    mi.__cartoonLastDiff = d
+        ? ((((d.r * 255) | 0) << 16) | (((d.g * 255) | 0) << 8) | ((d.b * 255) | 0))
+        : -1;
 
     /* textura difusa del original; sin ella caen los del material (blanco).
        sRGB: el sample llega LINEAL -> uTexEncode=1 lo re-codifica (sqrt). */
@@ -453,9 +485,41 @@ CartoonMaterial.prototype._setInstanceParams = function (mi) {
         mi.setParameter('uDiffuseMap', tex);
         var f = tex.format;
         mi.setParameter('uTexEncode', (f === pc.PIXELFORMAT_SRGBA8 || f === pc.PIXELFORMAT_SRGB8) ? 1 : 0);
+        /* tiling/offset del material original (editor los usa seguido) */
+        var til = orig.diffuseMapTiling;
+        var off = orig.diffuseMapOffset;
+        mi.setParameter('uUvTransform', [
+            til ? til.x : 1, til ? til.y : 1,
+            off ? off.x : 0, off ? off.y : 0
+        ]);
     } else {
         mi.deleteParameter('uDiffuseMap');
         mi.deleteParameter('uTexEncode');
+        mi.deleteParameter('uUvTransform');
+    }
+
+    /* DIAGNÓSTICO: una línea por mesh con TODO lo que el script ve. Si una
+       textura "no se ve", acá está el porqué (sin material, sin diffuseMap,
+       mesh sin UV0, textura en UV1...). */
+    if (this.debugInfo) {
+        var hasUv0 = false;
+        var fmt = mi.mesh && mi.mesh.vertexBuffer && mi.mesh.vertexBuffer.format;
+        if (fmt && fmt.elements) {
+            for (var fe = 0; fe < fmt.elements.length; fe++) {
+                if (fmt.elements[fe].name === pc.SEMANTIC_TEXCOORD0) { hasUv0 = true; break; }
+            }
+        }
+        console.log('[cartoonMaterial ' + CartoonMaterial.VERSION + ']', this.entity.name,
+            '| original =', orig ? (orig.name || '(sin nombre)') : 'SIN MATERIAL (base blanca)',
+            '| diffuseMap =', tex ? (tex.name + ' fmt=' + tex.format) : 'NINGUNA',
+            '| meshUV0 =', hasUv0 ? 'si' : 'NO (la textura no puede verse)',
+            '| diffuseMapUv =', orig ? orig.diffuseMapUv : '-');
+        if (orig && orig.diffuseMapUv === 1) {
+            console.warn('[cartoonMaterial] esta textura usa el set UV1: no soportado, se muestrea UV0');
+        }
+        if (!hasUv0 && tex) {
+            console.warn('[cartoonMaterial] el mesh NO tiene UV0: la textura se vera como color plano');
+        }
     }
 };
 
