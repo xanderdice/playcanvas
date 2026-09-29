@@ -2160,6 +2160,7 @@ OrganicCells.prototype._makeHaze = function () {
     material.update();
 
     var holder = new pc.Entity('organicCells_neblina');
+    OrganicCells._keepAwayFromInstancers(holder);
     this._holder.addChild(holder);
 
     var mi = new pc.MeshInstance(OrganicCells._getHazeMesh(this.app.graphicsDevice), material, holder);
@@ -2175,6 +2176,22 @@ OrganicCells.prototype._makeHaze = function () {
     OrganicCells._neverCull(mi);
 
     return { material: material, holder: holder, meshInstance: mi };
+};
+
+/* Estas células ya se dibujan con hardware instancing PROPIO: su shader declara
+   aCellA/aCellB/aCellC en los slots 12/13/14 y su VertexFormat son 3 vec4 por
+   célula. Un instancer genérico (uranusInstancer, gpuInstancer) que capture
+   estas mesh instances les cambia el búfer por el formato de matrices por
+   defecto —que desde el engine 2.10 ni siquiera usa el slot 13, porque choca
+   con SEMANTIC_TANGENT— y el shader queda pidiendo un atributo que no existe:
+   en WebGL2 se dibuja basura y en WebGPU la validación tira el pipeline entero
+   ("Vertex attribute [aCellB] at location 13 ... is not present").
+
+   El tag va en ESTA entidad, no en el padre: uranusInstancer resuelve el tag
+   sobre la entidad dueña de la mesh instance y NO sube por la jerarquía. */
+OrganicCells._keepAwayFromInstancers = function (entity) {
+    entity.tags.add('uranus-instancing-exclude');   // uranusInstancer
+    entity.tags.add('no-instancing');               // gpuInstancer
 };
 
 OrganicCells.prototype._makeLayer = function (name, mesh) {
@@ -2194,6 +2211,7 @@ OrganicCells.prototype._makeLayer = function (name, mesh) {
     material.name = 'OrganicCells_' + name;
 
     var holder = new pc.Entity('organicCells_' + name);
+    OrganicCells._keepAwayFromInstancers(holder);
     this._holder.addChild(holder);
 
     var mi = new pc.MeshInstance(mesh, material, holder);
