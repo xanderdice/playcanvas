@@ -1,10 +1,104 @@
 var BakePathTracing = pc.createScript('bakePathTracing'); BakePathTracing.attributes.add('quality', { type: 'string', default: 'maximum', title: 'Calidad', enum: [{ 'Minima': 'minimum' }, { 'Media': 'medium' }, { 'Maxima': 'maximum' }, { 'Ultrarealista': 'ultra' }] }); BakePathTracing.attributes.add('aoStrength', { type: 'number', default: 50, min: 0, max: 100, precision: 0, title: 'AO Horneado (%)' }); (function () {
-    'use strict'; var G = globalThis; var VERSION = '2.22.6-PT-6.0.2-STANDALONE-RUNTIME-UV-FIX-DATA-MAPS'; var STATE_KEY = '__bakePathTracingPT602State'; var GPUBufferUsageRef = G.GPUBufferUsage || { MAP_READ: 0x0001, MAP_WRITE: 0x0002, COPY_SRC: 0x0004, COPY_DST: 0x0008, INDEX: 0x0010, VERTEX: 0x0020, UNIFORM: 0x0040, STORAGE: 0x0080 }; var GPUShaderStageRef = G.GPUShaderStage || { COMPUTE: 0x4 }; var GPUMapModeRef = G.GPUMapMode || { READ: 0x0001, WRITE: 0x0002 }; var DEVICE_CACHE = new WeakMap(); var AO_DEVICE_CACHE = new WeakMap(); var QUALITY = { minimum: { label: 'Minima', adaptive: true, maxSamples: 128, minSamples: 64, perDispatch: 32, noiseThreshold: 0.08, adaptiveLumaFloor: 0.04, adaptiveCheckInterval: 32, adaptiveConfirmations: 1, bounces: 2, leaf: 8, denoise: 2, dilation: 2, maxRadiance: 32, normalPower: 96, positionScale: 1.5, colorScale: 0.45, envResolution: 64, materialResolution: 64, aoSamples: 64, aoBatch: 32, giBudgetInitial: 32768, giBudgetMin: 8192, giBudgetMax: 131072, aoBudgetInitial: 131072, aoBudgetMin: 32768, aoBudgetMax: 262144, targetGpuSliceMs: 12, yieldBudgetMs: 30, aoContactRadiusFraction: 0.015, aoCavityRadiusFraction: 0.045, aoIndirectStrength: 0.72, aoContactStrength: 0.12 }, medium: { label: 'Media', adaptive: true, maxSamples: 512, minSamples: 128, perDispatch: 32, noiseThreshold: 0.04, adaptiveLumaFloor: 0.04, adaptiveCheckInterval: 64, adaptiveConfirmations: 1, bounces: 3, leaf: 6, denoise: 2, dilation: 3, maxRadiance: 64, normalPower: 128, positionScale: 1.25, colorScale: 0.35, envResolution: 128, materialResolution: 128, aoSamples: 128, aoBatch: 32, giBudgetInitial: 16384, giBudgetMin: 4096, giBudgetMax: 65536, aoBudgetInitial: 98304, aoBudgetMin: 24576, aoBudgetMax: 196608, targetGpuSliceMs: 12, yieldBudgetMs: 30, aoContactRadiusFraction: 0.015, aoCavityRadiusFraction: 0.045, aoIndirectStrength: 0.72, aoContactStrength: 0.12 }, maximum: { label: 'Maxima', adaptive: true, maxSamples: 2048, minSamples: 256, perDispatch: 16, noiseThreshold: 0.015, adaptiveLumaFloor: 0.04, adaptiveCheckInterval: 128, adaptiveConfirmations: 2, bounces: 5, leaf: 4, denoise: 1, dilation: 4, maxRadiance: 128, normalPower: 160, positionScale: 1.0, colorScale: 0.25, envResolution: 256, materialResolution: 256, aoSamples: 512, aoBatch: 64, giBudgetInitial: 4096, giBudgetMin: 1024, giBudgetMax: 16384, aoBudgetInitial: 65536, aoBudgetMin: 16384, aoBudgetMax: 131072, targetGpuSliceMs: 12, yieldBudgetMs: 28, aoContactRadiusFraction: 0.015, aoCavityRadiusFraction: 0.045, aoIndirectStrength: 0.72, aoContactStrength: 0.12 }, ultra: { label: 'Ultrarealista', adaptive: true, maxSamples: 4096, minSamples: 1024, perDispatch: 8, noiseThreshold: 0.02, adaptiveLumaFloor: 0.05, adaptiveCheckInterval: 128, adaptiveConfirmations: 2, bounces: 8, leaf: 4, denoise: 1, dilation: 4, maxRadiance: 256, normalPower: 192, positionScale: 0.8, colorScale: 0.18, envResolution: 256, materialResolution: 512, aoSamples: 1024, aoBatch: 64, giBudgetInitial: 4096, giBudgetMin: 1024, giBudgetMax: 16384, aoBudgetInitial: 65536, aoBudgetMin: 16384, aoBudgetMax: 131072, targetGpuSliceMs: 12, yieldBudgetMs: 26, aoContactRadiusFraction: 0.015, aoCavityRadiusFraction: 0.045, aoIndirectStrength: 0.72, aoContactStrength: 0.12 } };
-    function preset(owner) { return QUALITY[owner && owner.quality] || QUALITY.maximum; } function getState() { var s = G[STATE_KEY]; if (!s) { s = { installed: false, owner: null, epoch: 0, nativeBake: null, nativePost: null, patchedBake: null, patchedPost: null }; G[STATE_KEY] = s; } return s; } function log() { var a = Array.prototype.slice.call(arguments); a.unshift('[BakePT6.0.2]'); console.log.apply(console, a); } function warn() { var a = Array.prototype.slice.call(arguments); a.unshift('[BakePT6.0.2]'); console.warn.apply(console, a); } function fail() { var a = Array.prototype.slice.call(arguments); a.unshift('[BakePT6.0.2]'); console.error.apply(console, a); } function now() { return G.performance && typeof G.performance.now === 'function' ? G.performance.now() : Date.now(); } function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); } function isNum(v) { return typeof v === 'number' && Number.isFinite(v); } function srgbToLinear1(v) { v = Math.max(0, v); return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); } function linearToSrgb1(v) { v = clamp(v, 0, 1); return v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055; } function luminance(r, g, b) { return r * 0.2126 + g * 0.7152 + b * 0.0722; } function fmt(a, d) {
-        d = d === undefined ? 3 : d; return '[' + Array.prototype.map.call(a, function (v) {
-            return Number(v).toFixed(d);
-        }).join(', ') + ']';
-    } function active(owner, epoch) { var s = getState(); return !!(s.installed && s.owner === owner && owner && owner.enabled && s.epoch === epoch); } function nativeGPUDevice(gd) { if (!gd) return null; var c = [gd.wgpu, gd._wgpu, gd.impl && gd.impl.wgpu, gd.impl && gd.impl._wgpu, gd.device, gd._device, gd.impl && gd.impl.device, gd.impl && gd.impl._device]; for (var i = 0; i < c.length; i++) { var d = c[i]; if (d && typeof d.createCommandEncoder === 'function' && typeof d.createShaderModule === 'function' && typeof d.createBuffer === 'function') return d; } return null; } function webgpuOK(gd) { return !!(gd && (gd.isWebGPU === true || gd.deviceType === 'webgpu' || (gd.supportsCompute && nativeGPUDevice(gd)))); } var WGSL = `
+    'use strict';
+    var G = globalThis;
+    var VERSION = '2.22.6-PT-6.0.7-STANDALONE-URANUS-CULL-SAFE';
+    var STATE_KEY = '__bakePathTracingPT607State';
+    var GPUBufferUsageRef = G.GPUBufferUsage || { MAP_READ: 0x0001, MAP_WRITE: 0x0002, COPY_SRC: 0x0004, COPY_DST: 0x0008, INDEX: 0x0010, VERTEX: 0x0020, UNIFORM: 0x0040, STORAGE: 0x0080 };
+    var GPUShaderStageRef = G.GPUShaderStage || { COMPUTE: 0x4 };
+    var GPUMapModeRef = G.GPUMapMode || { READ: 0x0001, WRITE: 0x0002 };
+    var DEVICE_CACHE = new WeakMap();
+    var AO_DEVICE_CACHE = new WeakMap();
+
+    var QUALITY = {
+        minimum: { label: 'Minima', adaptive: true, maxSamples: 128, minSamples: 64, perDispatch: 32, noiseThreshold: 0.08, adaptiveLumaFloor: 0.04, adaptiveCheckInterval: 32, adaptiveConfirmations: 1, bounces: 2, leaf: 8, denoise: 2, dilation: 2, maxRadiance: 32, normalPower: 96, positionScale: 1.5, colorScale: 0.45, envResolution: 64, materialResolution: 64, aoSamples: 64, aoBatch: 32, giBudgetInitial: 32768, giBudgetMin: 8192, giBudgetMax: 131072, aoBudgetInitial: 131072, aoBudgetMin: 32768, aoBudgetMax: 262144, targetGpuSliceMs: 12, yieldBudgetMs: 30, aoContactRadiusFraction: 0.015, aoCavityRadiusFraction: 0.045, aoIndirectStrength: 0.72, aoContactStrength: 0.12 },
+        medium: { label: 'Media', adaptive: true, maxSamples: 512, minSamples: 128, perDispatch: 32, noiseThreshold: 0.04, adaptiveLumaFloor: 0.04, adaptiveCheckInterval: 64, adaptiveConfirmations: 1, bounces: 3, leaf: 6, denoise: 2, dilation: 3, maxRadiance: 64, normalPower: 128, positionScale: 1.25, colorScale: 0.35, envResolution: 128, materialResolution: 128, aoSamples: 128, aoBatch: 32, giBudgetInitial: 16384, giBudgetMin: 4096, giBudgetMax: 65536, aoBudgetInitial: 98304, aoBudgetMin: 24576, aoBudgetMax: 196608, targetGpuSliceMs: 12, yieldBudgetMs: 30, aoContactRadiusFraction: 0.015, aoCavityRadiusFraction: 0.045, aoIndirectStrength: 0.72, aoContactStrength: 0.12 },
+        maximum: { label: 'Maxima', adaptive: true, maxSamples: 2048, minSamples: 256, perDispatch: 16, noiseThreshold: 0.015, adaptiveLumaFloor: 0.04, adaptiveCheckInterval: 128, adaptiveConfirmations: 2, bounces: 5, leaf: 4, denoise: 1, dilation: 4, maxRadiance: 128, normalPower: 160, positionScale: 1.0, colorScale: 0.25, envResolution: 256, materialResolution: 256, aoSamples: 512, aoBatch: 64, giBudgetInitial: 4096, giBudgetMin: 1024, giBudgetMax: 16384, aoBudgetInitial: 65536, aoBudgetMin: 16384, aoBudgetMax: 131072, targetGpuSliceMs: 12, yieldBudgetMs: 28, aoContactRadiusFraction: 0.015, aoCavityRadiusFraction: 0.045, aoIndirectStrength: 0.72, aoContactStrength: 0.12 },
+        ultra: { label: 'Ultrarealista', adaptive: true, maxSamples: 4096, minSamples: 1024, perDispatch: 8, noiseThreshold: 0.02, adaptiveLumaFloor: 0.05, adaptiveCheckInterval: 128, adaptiveConfirmations: 2, bounces: 8, leaf: 4, denoise: 1, dilation: 4, maxRadiance: 256, normalPower: 192, positionScale: 0.8, colorScale: 0.18, envResolution: 256, materialResolution: 512, aoSamples: 1024, aoBatch: 64, giBudgetInitial: 4096, giBudgetMin: 1024, giBudgetMax: 16384, aoBudgetInitial: 65536, aoBudgetMin: 16384, aoBudgetMax: 131072, targetGpuSliceMs: 12, yieldBudgetMs: 26, aoContactRadiusFraction: 0.015, aoCavityRadiusFraction: 0.045, aoIndirectStrength: 0.72, aoContactStrength: 0.12 }
+    };
+
+    function preset(owner) { return QUALITY[owner && owner.quality] || QUALITY.maximum; }
+    function getState() { var s = G[STATE_KEY]; if (!s) { s = { installed: false, owner: null, epoch: 0, nativeBake: null, nativePost: null, patchedBake: null, patchedPost: null }; G[STATE_KEY] = s; } return s; }
+    function log() { var a = Array.prototype.slice.call(arguments); a.unshift('[BakePT6.0.7]'); console.log.apply(console, a); }
+    function warn() { var a = Array.prototype.slice.call(arguments); a.unshift('[BakePT6.0.7]'); console.warn.apply(console, a); }
+    function fail() { var a = Array.prototype.slice.call(arguments); a.unshift('[BakePT6.0.7]'); console.error.apply(console, a); }
+    function now() { return G.performance && typeof G.performance.now === 'function' ? G.performance.now() : Date.now(); }
+    function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+    function isNum(v) { return typeof v === 'number' && Number.isFinite(v); }
+    function srgbToLinear1(v) { v = Math.max(0, v); return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }
+    function linearToSrgb1(v) { v = clamp(v, 0, 1); return v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055; }
+    function luminance(r, g, b) { return r * 0.2126 + g * 0.7152 + b * 0.0722; }
+    function fmt(a, d) { d = d === undefined ? 3 : d; return '[' + Array.prototype.map.call(a, function (v) { return Number(v).toFixed(d); }).join(', ') + ']'; }
+    function active(owner, epoch) { var s = getState(); return !!(s.installed && s.owner === owner && owner && owner.enabled && s.epoch === epoch); }
+    function nativeGPUDevice(gd) { if (!gd) return null; var c = [gd.wgpu, gd._wgpu, gd.impl && gd.impl.wgpu, gd.impl && gd.impl._wgpu, gd.device, gd._device, gd.impl && gd.impl.device, gd.impl && gd.impl._device]; for (var i = 0; i < c.length; i++) { var d = c[i]; if (d && typeof d.createCommandEncoder === 'function' && typeof d.createShaderModule === 'function' && typeof d.createBuffer === 'function') return d; } return null; }
+    function webgpuOK(gd) { return !!(gd && (gd.isWebGPU === true || gd.deviceType === 'webgpu' || (gd.supportsCompute && nativeGPUDevice(gd)))); }
+
+    function installLegacyInstancingFormatShim(owner, state) {
+        if (!owner || !owner.app || !owner.app.graphicsDevice || !pc.VertexFormat || typeof pc.VertexFormat.getDefaultInstancingFormat !== 'function') return false;
+        if (state.vertexFormatLegacyShimInstalled) return true;
+
+        var VF = pc.VertexFormat;
+        var desc;
+
+        try {
+            desc = Object.getOwnPropertyDescriptor(VF, 'defaultInstancingFormat');
+        } catch (_) {
+            desc = null;
+        }
+
+        state.vertexFormatLegacyDescriptor = desc || null;
+
+        try {
+            Object.defineProperty(VF, 'defaultInstancingFormat', {
+                configurable: true,
+                enumerable: desc ? !!desc.enumerable : false,
+                get: function () {
+                    return null;
+                }
+            });
+
+            state.vertexFormatLegacyShimInstalled = true;
+
+            log(
+                'Compatibilidad Uranus instalada: VertexFormat.defaultInstancingFormat ' +
+                'conserva el null oficial pero sin emitir el warning REMOVED; ' +
+                'Uranus cae en getDefaultInstancingFormat(graphicsDevice).'
+            );
+
+            return true;
+        } catch (e) {
+            state.vertexFormatLegacyShimInstalled = false;
+
+            warn(
+                'No se pudo instalar compatibilidad para VertexFormat.defaultInstancingFormat; ' +
+                'Uranus puede seguir mostrando el warning de API eliminada:',
+                e && e.message || e
+            );
+
+            return false;
+        }
+    }
+
+    function restoreLegacyInstancingFormatShim(state) {
+        if (!state || !state.vertexFormatLegacyShimInstalled || !pc.VertexFormat) return;
+
+        try {
+            if (state.vertexFormatLegacyDescriptor) {
+                Object.defineProperty(
+                    pc.VertexFormat,
+                    'defaultInstancingFormat',
+                    state.vertexFormatLegacyDescriptor
+                );
+            } else {
+                delete pc.VertexFormat.defaultInstancingFormat;
+            }
+        } catch (_) {
+        }
+
+        state.vertexFormatLegacyShimInstalled = false;
+        state.vertexFormatLegacyDescriptor = null;
+    }
+
+    var WGSL = `
 const PI:f32=3.14159265358979323846;
 struct Params{width:u32,height:u32,triCount:u32,bvhCount:u32,lightCount:u32,sampleCount:u32,maxSamples:u32,minSamples:u32,maxBounces:u32,seed:u32,envFaceSize:u32,envCount:u32,ambient:vec4f,rayBias:f32,maxRadiance:f32,noiseThreshold:f32,envIntensity:f32,envMode:u32,adaptive:u32,customEnvDirect:u32,pad1:u32,envRot0:vec4f,envRot1:vec4f,envRot2:vec4f,envControl:vec4f};
 struct GBuf{pos:vec4f,nrm:vec4f,du:vec4f,dv:vec4f};
@@ -141,6 +235,7 @@ if(count>=params.maxSamples){convergenceState=2.0;}
 else if(params.adaptive!=0u&&count>=params.minSamples){let checkInterval=max(1u,u32(params.ambient.w+0.5));if((count/checkInterval)!=(startCount/checkInterval)){let nf=f32(count);let mean=sumLum/nf;let variance=max(sumLum2/nf-mean*mean,0.0);let stdError=sqrt(variance/nf);let relativeError=stdError/max(abs(mean),params.envControl.z);let required=max(1.0,params.envControl.w);if(relativeError<=params.noiseThreshold){convergenceState=convergenceState+1.0;}else{convergenceState=0.0;}if(convergenceState>=required){convergenceState=2.0;}}}
 stats[idx]=vec4f(sumLum,sumLum2,f32(count),convergenceState);outPixels[idx]=vec4f(rgbSum,f32(count));
 }`;
+
     var AO_WGSL = `
 struct AOParams{width:u32,height:u32,triCount:u32,bvhCount:u32,sampleCount:u32,maxSamples:u32,seed:u32,pad0:u32,controls0:vec4f,controls1:vec4f};
 struct GBuf{pos:vec4f,nrm:vec4f,du:vec4f,dv:vec4f};
@@ -190,273 +285,11792 @@ contactSum=contactSum+cv;cavitySum=cavitySum+vv;bentAcc=bentAcc+vec4f(d*vv,vv);c
 }
 outAO[idx]=vec4f(contactSum,cavitySum,cavityRadius,f32(count));outBent[idx]=bentAcc;
 }`;
-    function normalMatrix(m) { var a = m[0], b = m[4], c = m[8], d = m[1], e = m[5], f = m[9], g = m[2], h = m[6], i = m[10]; var A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g, D = -(b * i - c * h), E = a * i - c * g, F = -(a * h - b * g), GG = b * f - c * e, H = -(a * f - c * d), I = a * e - b * d; var det = a * A + b * B + c * C; if (Math.abs(det) < 1e-20) det = 1; return [A / det, B / det, C / det, D / det, E / det, F / det, GG / det, H / det, I / det]; } function rootOf(lm) { if (lm && lm.root && typeof lm.root.findComponents === 'function') return { root: lm.root, source: 'lightmapper.root' }; try { var app = pc.Application && typeof pc.Application.getApplication === 'function' ? pc.Application.getApplication() : null; if (app && app.root) return { root: app.root, source: 'Application.getApplication().root' }; } catch (_) { } return { root: null, source: 'none' }; } function indexComponents(lm) {
-        var ri = rootOf(lm), map = new Map(), stats = { scanned: 0, static: 0, dynamic: 0, disabled: 0, lightmapped: 0, castLightmapShadow: 0 }; if (!ri.root) return { root: ri, map: map, stats: stats };['render', 'model'].forEach(function (type) {
-            var comps = []; try { comps = ri.root.findComponents(type) || []; } catch (_) { comps = []; } comps.forEach(function (comp) {
-                if (!comp) return; stats.scanned++; var enabled = !!(comp.enabled && comp.entity && comp.entity.enabled); var stat = comp.isStatic === true; if (!enabled) stats.disabled++; else if (stat) stats.static++;
-                else stats.dynamic++; if (comp.lightmapped === true) stats.lightmapped++; if (comp.castShadowsLightmap !== false) stats.castLightmapShadow++; var mis = comp.meshInstances || []; for (var i = 0; i < mis.length; i++) { if (!mis[i]) continue; map.set(mis[i], { type: type, component: comp, entity: comp.entity, entityName: comp.entity ? comp.entity.name : '(sin entidad)', enabled: enabled, isStatic: stat, lightmapped: comp.lightmapped === true, castShadowsLightmap: comp.castShadowsLightmap !== false }); }
-            });
-        }); return { root: ri, map: map, stats: stats };
-    } function materialIsTransparent(mat) { if (!mat) return false; var blendNone = isNum(pc.BLEND_NONE) ? pc.BLEND_NONE : 0; if (isNum(mat.blendType) && mat.blendType !== blendNone) return true; if (isNum(mat.opacity) && mat.opacity < 0.9999) return true; if (isNum(mat.alphaTest) && mat.alphaTest > 0) return true; if (mat.opacityDither && mat.opacityDither !== 'none') return true; if (mat.opacityShadowDither && mat.opacityShadowDither !== 'none') return true; return false; } function buildGeometry(mi, owner, texDB, matrixOverride) {
-        var out = { ok: false, name: mi && mi.node ? mi.node.name : '(sin nombre)', mi: mi, owner: owner, positions: null, normals: null, uv0: null, uv1: null, hasUv0: false, hasUv1: false, indices: null, vertexCount: 0, triCount: 0, albedo: [0.8, 0.8, 0.8], emission: [0, 0, 0], metalness: 0, transparent: false, textured: false, material: null, diff: null, emis: null, metal: null, norm: null, normalCpu: null, reason: '' };
+
+    function normalMatrix(m) {
+        var a = m[0], b = m[4], c = m[8], d = m[1], e = m[5], f = m[9], g = m[2], h = m[6], i = m[10];
+        var A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g, D = -(b * i - c * h), E = a * i - c * g, F = -(a * h - b * g), GG = b * f - c * e, H = -(a * f - c * d), I = a * e - b * d;
+        var det = a * A + b * B + c * C;
+        if (Math.abs(det) < 1e-20) det = 1;
+        return [A / det, B / det, C / det, D / det, E / det, F / det, GG / det, H / det, I / det];
+    }
+
+    function rootOf(lm) {
+        if (lm && lm.root && typeof lm.root.findComponents === 'function') return { root: lm.root, source: 'lightmapper.root' };
         try {
-            if (!mi || !mi.mesh || !mi.node) { out.reason = 'MeshInstance sin mesh/node'; return out; } if (mi.skinInstance) { out.reason = 'skinInstance no soportado para bake estatico'; return out; } var mesh = mi.mesh, pos = [], nrm = [], uv0a = [], uv1a = [], idx = []; var nv = mesh.getPositions(pos) || Math.floor(pos.length / 3); if (!nv || pos.length < nv * 3) { out.reason = 'sin positions'; return out; } var nn = 0, nu0 = 0, nu1 = 0, ni = 0; try { nn = mesh.getNormals(nrm) || 0; } catch (_) { nn = 0; } try { nu0 = mesh.getUvs(0, uv0a) || 0; } catch (_) { nu0 = 0; } try { nu1 = mesh.getUvs(1, uv1a) || 0; } catch (_) { nu1 = 0; } try { ni = mesh.getIndices(idx) || 0; } catch (_) { ni = 0; } if (nrm.length < nv * 3) nn = 0; if (uv0a.length < nv * 2) nu0 = 0; if (uv1a.length < nv * 2) nu1 = 0; if (!ni) ni = idx.length; var prim = mesh.primitive && mesh.primitive[0]; if (prim && isNum(prim.type) && isNum(pc.PRIMITIVE_TRIANGLES) && prim.type !== pc.PRIMITIVE_TRIANGLES) { out.reason = 'primitive no TRIANGLES'; return out; } var indexed = prim ? (prim.indexed !== false && ni > 0) : ni > 0; var base = prim ? prim.base | 0 : 0, baseVertex = prim ? prim.baseVertex | 0 : 0, count = prim ? prim.count | 0 : (indexed ? ni : nv), tri = []; for (var k = 0; k + 2 < count; k += 3) {
-                var ia, ib, ic; if (indexed) { ia = idx[base + k] + baseVertex; ib = idx[base + k + 1] + baseVertex; ic = idx[base + k + 2] + baseVertex; } else { ia = base + k; ib = base + k + 1; ic = base + k + 2; } if (ia >= 0 && ib >= 0 && ic >= 0 && ia < nv && ib < nv && ic < nv) tri.push(ia, ib, ic);
-            } if (!tri.length) { out.reason = 'sin triangulos'; return out; } var m = matrixOverride || mi.node.getWorldTransform().data, nm = normalMatrix(m), wp = new Float32Array(nv * 3), wn = new Float32Array(nv * 3), v, x, y, z; for (v = 0; v < nv; v++) { x = pos[v * 3]; y = pos[v * 3 + 1]; z = pos[v * 3 + 2]; wp[v * 3] = m[0] * x + m[4] * y + m[8] * z + m[12]; wp[v * 3 + 1] = m[1] * x + m[5] * y + m[9] * z + m[13]; wp[v * 3 + 2] = m[2] * x + m[6] * y + m[10] * z + m[14]; } if (nn) { for (v = 0; v < nv; v++) { x = nrm[v * 3]; y = nrm[v * 3 + 1]; z = nrm[v * 3 + 2]; var nx = nm[0] * x + nm[1] * y + nm[2] * z, ny = nm[3] * x + nm[4] * y + nm[5] * z, nz = nm[6] * x + nm[7] * y + nm[8] * z, nl = Math.hypot(nx, ny, nz) || 1; wn[v * 3] = nx / nl; wn[v * 3 + 1] = ny / nl; wn[v * 3 + 2] = nz / nl; } } else { for (var tt = 0; tt < tri.length; tt += 3) { ia = tri[tt]; ib = tri[tt + 1]; ic = tri[tt + 2]; var e1x = wp[ib * 3] - wp[ia * 3], e1y = wp[ib * 3 + 1] - wp[ia * 3 + 1], e1z = wp[ib * 3 + 2] - wp[ia * 3 + 2]; var e2x = wp[ic * 3] - wp[ia * 3], e2y = wp[ic * 3 + 1] - wp[ia * 3 + 1], e2z = wp[ic * 3 + 2] - wp[ia * 3 + 2]; var fx = e1y * e2z - e1z * e2y, fy = e1z * e2x - e1x * e2z, fz = e1x * e2y - e1y * e2x;[ia, ib, ic].forEach(function (q) { wn[q * 3] += fx; wn[q * 3 + 1] += fy; wn[q * 3 + 2] += fz; }); } for (v = 0; v < nv; v++) { nl = Math.hypot(wn[v * 3], wn[v * 3 + 1], wn[v * 3 + 2]) || 1; wn[v * 3] /= nl; wn[v * 3 + 1] /= nl; wn[v * 3 + 2] /= nl; } } var uv0 = new Float32Array(nv * 2), uv1 = new Float32Array(nv * 2); if (nu0) for (k = 0; k < nv * 2; k++)uv0[k] = uv0a[k]; if (nu1) for (k = 0; k < nv * 2; k++)uv1[k] = uv1a[k]; out.hasUv0 = !!nu0;
-            out.hasUv1 = !!nu1; var mat = mi.material; out.material = mat; if (mat) { out.transparent = materialIsTransparent(mat); out.textured = !!(mat.diffuseMap || mat.emissiveMap || mat.metalnessMap); if (mat.diffuse && isNum(mat.diffuse.r)) out.albedo = [srgbToLinear1(mat.diffuse.r), srgbToLinear1(mat.diffuse.g), srgbToLinear1(mat.diffuse.b)]; if (mat.emissive && isNum(mat.emissive.r)) { var ei = isNum(mat.emissiveIntensity) ? mat.emissiveIntensity : 1; out.emission = [srgbToLinear1(mat.emissive.r) * ei, srgbToLinear1(mat.emissive.g) * ei, srgbToLinear1(mat.emissive.b) * ei]; } out.metalness = mat.useMetalness && isNum(mat.metalness) ? clamp(mat.metalness, 0, 1) : 0; out.diff = mapDescriptor(mat, 'diffuse', texDB, false); out.emis = mapDescriptor(mat, 'emissive', texDB, false); out.metal = mapDescriptor(mat, 'metalness', texDB, true); out.norm = mapDescriptor(mat, 'normal', texDB, false); out.normalCpu = mat.normalMap && texDB && texDB.dataMap ? texDB.dataMap.get(mat.normalMap) || null : null; } else { out.diff = mapDescriptor(null, 'diffuse', texDB, false); out.emis = mapDescriptor(null, 'emissive', texDB, false); out.metal = mapDescriptor(null, 'metalness', texDB, true); out.norm = mapDescriptor(null, 'normal', texDB, false); out.normalCpu = null; } out.positions = wp; out.normals = wn; out.uv0 = uv0; out.uv1 = uv1; out.indices = new Uint32Array(tri);
-            out.vertexCount = nv; out.triCount = tri.length / 3; out.ok = true; return out;
-        } catch (e) { out.reason = e && e.message ? e.message : String(e); return out; }
-    } function buildBVH(records, leafSize) {
-        var TRI_FLOATS = 84; if (!records.length) return { tris: new Float32Array(TRI_FLOATS), triCount: 0, nodes: new Float32Array(12), nodeCount: 0 }; var order = records.map(function (_, i) { return i; }), nodes = []; function build(start, end, depth) {
-            var idx = nodes.length; nodes.push(null); var mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity], cmn = [Infinity, Infinity, Infinity], cmx = [-Infinity, -Infinity, -Infinity]; for (var i = start; i < end; i++) { var r = records[order[i]]; for (var k = 0; k < 3; k++) { mn[k] = Math.min(mn[k], r.min[k]); mx[k] = Math.max(mx[k], r.max[k]); cmn[k] = Math.min(cmn[k], r.centroid[k]); cmx[k] = Math.max(cmx[k], r.centroid[k]); } } var count = end - start; if (count <= leafSize || depth >= 48) { nodes[idx] = { min: mn, max: mx, left: -1, right: -1, start: start, count: count }; return idx; } var ex = [cmx[0] - cmn[0], cmx[1] - cmn[1], cmx[2] - cmn[2]], axis = ex[1] > ex[0] ? 1 : 0; if (ex[2] > ex[axis]) axis = 2; if (ex[axis] < 1e-9) { nodes[idx] = { min: mn, max: mx, left: -1, right: -1, start: start, count: count }; return idx; } var part = order.slice(start, end).sort(function (a, b) {
+            var app = pc.Application && typeof pc.Application.getApplication === 'function' ? pc.Application.getApplication() : null;
+            if (app && app.root) return { root: app.root, source: 'Application.getApplication().root' };
+        } catch (_) {
+        }
+        return { root: null, source: 'none' };
+    }
+
+    function indexComponents(lm) {
+        var ri = rootOf(lm), map = new Map(), stats = { scanned: 0, static: 0, dynamic: 0, disabled: 0, lightmapped: 0, castLightmapShadow: 0 };
+        if (!ri.root) return { root: ri, map: map, stats: stats };
+
+        ['render', 'model'].forEach(function (type) {
+            var comps = [];
+            try {
+                comps = ri.root.findComponents(type) || [];
+            } catch (_) {
+                comps = [];
+            }
+
+            comps.forEach(function (comp) {
+                if (!comp) return;
+
+                stats.scanned++;
+
+                var enabled = !!(comp.enabled && comp.entity && comp.entity.enabled);
+                var stat = comp.isStatic === true;
+
+                if (!enabled) stats.disabled++;
+                else if (stat) stats.static++;
+                else stats.dynamic++;
+
+                if (comp.lightmapped === true) stats.lightmapped++;
+                if (comp.castShadowsLightmap !== false) stats.castLightmapShadow++;
+
+                var mis = comp.meshInstances || [];
+
+                for (var i = 0; i < mis.length; i++) {
+                    if (!mis[i]) continue;
+
+                    map.set(mis[i], {
+                        type: type,
+                        component: comp,
+                        entity: comp.entity,
+                        entityName: comp.entity ? comp.entity.name : '(sin entidad)',
+                        enabled: enabled,
+                        isStatic: stat,
+                        lightmapped: comp.lightmapped === true,
+                        castShadowsLightmap: comp.castShadowsLightmap !== false
+                    });
+                }
+            });
+        });
+
+        return { root: ri, map: map, stats: stats };
+    }
+
+    function materialIsTransparent(mat) {
+        if (!mat) return false;
+
+        var blendNone = isNum(pc.BLEND_NONE) ? pc.BLEND_NONE : 0;
+
+        if (isNum(mat.blendType) && mat.blendType !== blendNone) return true;
+        if (isNum(mat.opacity) && mat.opacity < 0.9999) return true;
+        if (isNum(mat.alphaTest) && mat.alphaTest > 0) return true;
+        if (mat.opacityDither && mat.opacityDither !== 'none') return true;
+        if (mat.opacityShadowDither && mat.opacityShadowDither !== 'none') return true;
+
+        return false;
+    }
+
+    function buildGeometry(mi, owner, texDB, matrixOverride) {
+        var out = {
+            ok: false,
+            name: mi && mi.node ? mi.node.name : '(sin nombre)',
+            mi: mi,
+            owner: owner,
+            positions: null,
+            normals: null,
+            uv0: null,
+            uv1: null,
+            hasUv0: false,
+            hasUv1: false,
+            indices: null,
+            vertexCount: 0,
+            triCount: 0,
+            albedo: [0.8, 0.8, 0.8],
+            emission: [0, 0, 0],
+            metalness: 0,
+            transparent: false,
+            textured: false,
+            material: null,
+            diff: null,
+            emis: null,
+            metal: null,
+            norm: null,
+            normalCpu: null,
+            reason: ''
+        };
+
+        try {
+            if (!mi || !mi.mesh || !mi.node) {
+                out.reason = 'MeshInstance sin mesh/node';
+                return out;
+            }
+
+            if (mi.skinInstance) {
+                out.reason = 'skinInstance no soportado para bake estatico';
+                return out;
+            }
+
+            var mesh = mi.mesh, pos = [], nrm = [], uv0a = [], uv1a = [], idx = [];
+
+            var nv = mesh.getPositions(pos) || Math.floor(pos.length / 3);
+
+            if (!nv || pos.length < nv * 3) {
+                out.reason = 'sin positions';
+                return out;
+            }
+
+            var nn = 0, nu0 = 0, nu1 = 0, ni = 0;
+
+            try { nn = mesh.getNormals(nrm) || 0; } catch (_) { nn = 0; }
+            try { nu0 = mesh.getUvs(0, uv0a) || 0; } catch (_) { nu0 = 0; }
+            try { nu1 = mesh.getUvs(1, uv1a) || 0; } catch (_) { nu1 = 0; }
+            try { ni = mesh.getIndices(idx) || 0; } catch (_) { ni = 0; }
+
+            if (nrm.length < nv * 3) nn = 0;
+            if (uv0a.length < nv * 2) nu0 = 0;
+            if (uv1a.length < nv * 2) nu1 = 0;
+            if (!ni) ni = idx.length;
+
+            var prim = mesh.primitive && mesh.primitive[0];
+
+            if (prim && isNum(prim.type) && isNum(pc.PRIMITIVE_TRIANGLES) && prim.type !== pc.PRIMITIVE_TRIANGLES) {
+                out.reason = 'primitive no TRIANGLES';
+                return out;
+            }
+
+            var indexed = prim ? (prim.indexed !== false && ni > 0) : ni > 0;
+            var base = prim ? prim.base | 0 : 0;
+            var baseVertex = prim ? prim.baseVertex | 0 : 0;
+            var count = prim ? prim.count | 0 : (indexed ? ni : nv);
+            var tri = [];
+
+            for (var k = 0; k + 2 < count; k += 3) {
+                var ia, ib, ic;
+
+                if (indexed) {
+                    ia = idx[base + k] + baseVertex;
+                    ib = idx[base + k + 1] + baseVertex;
+                    ic = idx[base + k + 2] + baseVertex;
+                } else {
+                    ia = base + k;
+                    ib = base + k + 1;
+                    ic = base + k + 2;
+                }
+
+                if (ia >= 0 && ib >= 0 && ic >= 0 && ia < nv && ib < nv && ic < nv) tri.push(ia, ib, ic);
+            }
+
+            if (!tri.length) {
+                out.reason = 'sin triangulos';
+                return out;
+            }
+
+            var m = matrixOverride || mi.node.getWorldTransform().data;
+            var nm = normalMatrix(m);
+            var wp = new Float32Array(nv * 3);
+            var wn = new Float32Array(nv * 3);
+            var v, x, y, z;
+
+            for (v = 0; v < nv; v++) {
+                x = pos[v * 3];
+                y = pos[v * 3 + 1];
+                z = pos[v * 3 + 2];
+
+                wp[v * 3] = m[0] * x + m[4] * y + m[8] * z + m[12];
+                wp[v * 3 + 1] = m[1] * x + m[5] * y + m[9] * z + m[13];
+                wp[v * 3 + 2] = m[2] * x + m[6] * y + m[10] * z + m[14];
+            }
+
+            if (nn) {
+                for (v = 0; v < nv; v++) {
+                    x = nrm[v * 3];
+                    y = nrm[v * 3 + 1];
+                    z = nrm[v * 3 + 2];
+
+                    var nx = nm[0] * x + nm[1] * y + nm[2] * z;
+                    var ny = nm[3] * x + nm[4] * y + nm[5] * z;
+                    var nz = nm[6] * x + nm[7] * y + nm[8] * z;
+                    var nl = Math.hypot(nx, ny, nz) || 1;
+
+                    wn[v * 3] = nx / nl;
+                    wn[v * 3 + 1] = ny / nl;
+                    wn[v * 3 + 2] = nz / nl;
+                }
+            } else {
+                for (var tt = 0; tt < tri.length; tt += 3) {
+                    ia = tri[tt];
+                    ib = tri[tt + 1];
+                    ic = tri[tt + 2];
+
+                    var e1x = wp[ib * 3] - wp[ia * 3];
+                    var e1y = wp[ib * 3 + 1] - wp[ia * 3 + 1];
+                    var e1z = wp[ib * 3 + 2] - wp[ia * 3 + 2];
+
+                    var e2x = wp[ic * 3] - wp[ia * 3];
+                    var e2y = wp[ic * 3 + 1] - wp[ia * 3 + 1];
+                    var e2z = wp[ic * 3 + 2] - wp[ia * 3 + 2];
+
+                    var fx = e1y * e2z - e1z * e2y;
+                    var fy = e1z * e2x - e1x * e2z;
+                    var fz = e1x * e2y - e1y * e2x;
+
+                    [ia, ib, ic].forEach(function (q) {
+                        wn[q * 3] += fx;
+                        wn[q * 3 + 1] += fy;
+                        wn[q * 3 + 2] += fz;
+                    });
+                }
+
+                for (v = 0; v < nv; v++) {
+                    nl = Math.hypot(wn[v * 3], wn[v * 3 + 1], wn[v * 3 + 2]) || 1;
+
+                    wn[v * 3] /= nl;
+                    wn[v * 3 + 1] /= nl;
+                    wn[v * 3 + 2] /= nl;
+                }
+            }
+
+            var uv0 = new Float32Array(nv * 2);
+            var uv1 = new Float32Array(nv * 2);
+
+            if (nu0) {
+                for (k = 0; k < nv * 2; k++) uv0[k] = uv0a[k];
+            }
+
+            if (nu1) {
+                for (k = 0; k < nv * 2; k++) uv1[k] = uv1a[k];
+            }
+
+            out.hasUv0 = !!nu0;
+            out.hasUv1 = !!nu1;
+
+            var mat = mi.material;
+            out.material = mat;
+
+            if (mat) {
+                out.transparent = materialIsTransparent(mat);
+                out.textured = !!(mat.diffuseMap || mat.emissiveMap || mat.metalnessMap);
+
+                if (mat.diffuse && isNum(mat.diffuse.r)) {
+                    out.albedo = [
+                        srgbToLinear1(mat.diffuse.r),
+                        srgbToLinear1(mat.diffuse.g),
+                        srgbToLinear1(mat.diffuse.b)
+                    ];
+                }
+
+                if (mat.emissive && isNum(mat.emissive.r)) {
+                    var ei = isNum(mat.emissiveIntensity) ? mat.emissiveIntensity : 1;
+
+                    out.emission = [
+                        srgbToLinear1(mat.emissive.r) * ei,
+                        srgbToLinear1(mat.emissive.g) * ei,
+                        srgbToLinear1(mat.emissive.b) * ei
+                    ];
+                }
+
+                out.metalness = mat.useMetalness && isNum(mat.metalness) ? clamp(mat.metalness, 0, 1) : 0;
+
+                out.diff = mapDescriptor(mat, 'diffuse', texDB, false);
+                out.emis = mapDescriptor(mat, 'emissive', texDB, false);
+                out.metal = mapDescriptor(mat, 'metalness', texDB, true);
+                out.norm = mapDescriptor(mat, 'normal', texDB, false);
+                out.normalCpu = mat.normalMap && texDB && texDB.dataMap ? texDB.dataMap.get(mat.normalMap) || null : null;
+            } else {
+                out.diff = mapDescriptor(null, 'diffuse', texDB, false);
+                out.emis = mapDescriptor(null, 'emissive', texDB, false);
+                out.metal = mapDescriptor(null, 'metalness', texDB, true);
+                out.norm = mapDescriptor(null, 'normal', texDB, false);
+                out.normalCpu = null;
+            }
+
+            out.positions = wp;
+            out.normals = wn;
+            out.uv0 = uv0;
+            out.uv1 = uv1;
+            out.indices = new Uint32Array(tri);
+            out.vertexCount = nv;
+            out.triCount = tri.length / 3;
+            out.ok = true;
+
+            return out;
+        } catch (e) {
+            out.reason = e && e.message ? e.message : String(e);
+            return out;
+        }
+    }
+
+    function buildBVH(records, leafSize) {
+        var TRI_FLOATS = 84;
+
+        if (!records.length) {
+            return {
+                tris: new Float32Array(TRI_FLOATS),
+                triCount: 0,
+                nodes: new Float32Array(12),
+                nodeCount: 0
+            };
+        }
+
+        var order = records.map(function (_, i) { return i; });
+        var nodes = [];
+
+        function build(start, end, depth) {
+            var idx = nodes.length;
+            nodes.push(null);
+
+            var mn = [Infinity, Infinity, Infinity];
+            var mx = [-Infinity, -Infinity, -Infinity];
+            var cmn = [Infinity, Infinity, Infinity];
+            var cmx = [-Infinity, -Infinity, -Infinity];
+
+            for (var i = start; i < end; i++) {
+                var r = records[order[i]];
+
+                for (var k = 0; k < 3; k++) {
+                    mn[k] = Math.min(mn[k], r.min[k]);
+                    mx[k] = Math.max(mx[k], r.max[k]);
+                    cmn[k] = Math.min(cmn[k], r.centroid[k]);
+                    cmx[k] = Math.max(cmx[k], r.centroid[k]);
+                }
+            }
+
+            var count = end - start;
+
+            if (count <= leafSize || depth >= 48) {
+                nodes[idx] = {
+                    min: mn,
+                    max: mx,
+                    left: -1,
+                    right: -1,
+                    start: start,
+                    count: count
+                };
+
+                return idx;
+            }
+
+            var ex = [
+                cmx[0] - cmn[0],
+                cmx[1] - cmn[1],
+                cmx[2] - cmn[2]
+            ];
+
+            var axis = ex[1] > ex[0] ? 1 : 0;
+
+            if (ex[2] > ex[axis]) axis = 2;
+
+            if (ex[axis] < 1e-9) {
+                nodes[idx] = {
+                    min: mn,
+                    max: mx,
+                    left: -1,
+                    right: -1,
+                    start: start,
+                    count: count
+                };
+
+                return idx;
+            }
+
+            var part = order.slice(start, end).sort(function (a, b) {
                 return records[a].centroid[axis] - records[b].centroid[axis];
-            }); for (i = 0; i < part.length; i++)order[start + i] = part[i]; var mid = start + (count >> 1), left = build(start, mid, depth + 1), right = build(mid, end, depth + 1); nodes[idx] = { min: mn, max: mx, left: left, right: right, start: 0, count: 0 }; return idx;
-        } build(0, order.length, 0); var td = new Float32Array(order.length * TRI_FLOATS); for (var t = 0; t < order.length; t++)td.set(records[order[t]].data, t * TRI_FLOATS); var nd = new Float32Array(nodes.length * 12); for (var n = 0; n < nodes.length; n++) { var q = nodes[n], o = n * 12; nd[o] = q.min[0]; nd[o + 1] = q.min[1]; nd[o + 2] = q.min[2]; nd[o + 3] = q.left; nd[o + 4] = q.max[0]; nd[o + 5] = q.max[1]; nd[o + 6] = q.max[2]; nd[o + 7] = q.right; nd[o + 8] = q.start; nd[o + 9] = q.count; } return { tris: td, triCount: order.length, nodes: nd, nodeCount: nodes.length };
-    } function textureDiagnostic(tex) { if (!tex) return 'none'; var parts = []; parts.push('"' + (tex.name || '(sin nombre)') + '"'); if (isNum(tex.width) && isNum(tex.height)) parts.push(tex.width + 'x' + tex.height); if (tex.encoding) parts.push('encoding=' + tex.encoding); if (tex.srgb === true) parts.push('sRGB'); return parts.join(' '); } function vec2Diagnostic(v, dx, dy) { var x = v && isNum(v.x) ? v.x : dx; var y = v && isNum(v.y) ? v.y : dy; return '[' + Number(x).toFixed(3) + ', ' + Number(y).toFixed(3) + ']'; } function logMaterialDiagnostics(scene) {
+            });
+
+            for (i = 0; i < part.length; i++) order[start + i] = part[i];
+
+            var mid = start + (count >> 1);
+            var left = build(start, mid, depth + 1);
+            var right = build(mid, end, depth + 1);
+
+            nodes[idx] = {
+                min: mn,
+                max: mx,
+                left: left,
+                right: right,
+                start: 0,
+                count: 0
+            };
+
+            return idx;
+        }
+
+        build(0, order.length, 0);
+
+        var td = new Float32Array(order.length * TRI_FLOATS);
+
+        for (var t = 0; t < order.length; t++) {
+            td.set(records[order[t]].data, t * TRI_FLOATS);
+        }
+
+        var nd = new Float32Array(nodes.length * 12);
+
+        for (var n = 0; n < nodes.length; n++) {
+            var q = nodes[n], o = n * 12;
+
+            nd[o] = q.min[0];
+            nd[o + 1] = q.min[1];
+            nd[o + 2] = q.min[2];
+            nd[o + 3] = q.left;
+
+            nd[o + 4] = q.max[0];
+            nd[o + 5] = q.max[1];
+            nd[o + 6] = q.max[2];
+            nd[o + 7] = q.right;
+
+            nd[o + 8] = q.start;
+            nd[o + 9] = q.count;
+        }
+
+        return {
+            tris: td,
+            triCount: order.length,
+            nodes: nd,
+            nodeCount: nodes.length
+        };
+    }
+
+    function textureDiagnostic(tex) {
+        if (!tex) return 'none';
+
+        var parts = [];
+
+        parts.push('"' + (tex.name || '(sin nombre)') + '"');
+
+        if (isNum(tex.width) && isNum(tex.height)) {
+            parts.push(tex.width + 'x' + tex.height);
+        }
+
+        if (tex.encoding) parts.push('encoding=' + tex.encoding);
+        if (tex.srgb === true) parts.push('sRGB');
+
+        return parts.join(' ');
+    }
+
+    function vec2Diagnostic(v, dx, dy) {
+        var x = v && isNum(v.x) ? v.x : dx;
+        var y = v && isNum(v.y) ? v.y : dy;
+
+        return '[' + Number(x).toFixed(3) + ', ' + Number(y).toFixed(3) + ']';
+    }
+
+    function logMaterialDiagnostics(scene) {
         var seen = new Set(), count = 0;
-        (scene.allGeoms || (scene.receivers ? scene.receivers.map(function (r) { return r.geom; }) : [])).forEach(function (g) {
-            var mat = g && g.material; if (!mat || seen.has(mat)) return; seen.add(mat); count++; var dc = mat.diffuse && isNum(mat.diffuse.r) ? [mat.diffuse.r, mat.diffuse.g, mat.diffuse.b] : [1, 1, 1]; var normalMap = mat.normalMap || null; var aoMap = mat.aoMap || null; log('  Material PBR "' + (mat.name || '(sin nombre)') + '"' + ' diffuse(sRGB)=' + fmt(dc, 3) + ' diffuseMap=' + textureDiagnostic(mat.diffuseMap) + ' diffuseUv=' + (isNum(mat.diffuseMapUv) ? mat.diffuseMapUv : 0) + ' tiling=' + vec2Diagnostic(mat.diffuseMapTiling, 1, 1) + ' offset=' + vec2Diagnostic(mat.diffuseMapOffset, 0, 0) + ' rot=' + (isNum(mat.diffuseMapRotation) ? mat.diffuseMapRotation : 0) + ' normalMap=' + textureDiagnostic(normalMap) + ' normalUv=' + (isNum(mat.normalMapUv) ? mat.normalMapUv : 0) + ' bumpiness=' + (isNum(mat.bumpiness) ? mat.bumpiness.toFixed(3) : 'n/a') + ' aoMap=' + textureDiagnostic(aoMap) + ' aoUv=' + (isNum(mat.aoMapUv) ? mat.aoMapUv : 0) + ' aoIntensity=' + (isNum(mat.aoIntensity) ? mat.aoIntensity.toFixed(3) : 'n/a') + ' occludeDirect=' + (mat.occludeDirect === true) + ' metalness=' + (isNum(mat.metalness) ? mat.metalness.toFixed(3) : 'n/a') + ' useMetalness=' + (mat.useMetalness === true) + ' useLighting=' + (mat.useLighting !== false) + ' twoSidedLighting=' + (mat.twoSidedLighting === true));
-        }); log('Diagnostico materiales: ' + count + ' material(es) unicos en receivers/transporte.');
-    } function lightUnitConversion(comp) { var type = comp.type === 'omni' ? 'point' : comp.type; if (type === 'directional') return 1; if (type === 'point') return 4 * Math.PI; if (type === 'spot') { var inner = clamp(isNum(comp.innerConeAngle) ? comp.innerConeAngle : 40, 0, 89.9) * Math.PI / 180, outer = clamp(isNum(comp.outerConeAngle) ? comp.outerConeAngle : 45, 0, 89.9) * Math.PI / 180; return 2 * Math.PI * ((1 - Math.cos(inner)) + (Math.cos(inner) - Math.cos(outer)) * 0.5); } return 1; } function lightLinearColor(comp, scene) { var intensity = isNum(comp.intensity) ? comp.intensity : 1; if (scene && scene.physicalUnits && isNum(comp.luminance)) intensity = comp.luminance / Math.max(1e-6, lightUnitConversion(comp)); var c = comp.color || { r: 1, g: 1, b: 1 }; return [srgbToLinear1(c.r) * intensity, srgbToLinear1(c.g) * intensity, srgbToLinear1(c.b) * intensity]; } function collectLights(lm) {
-        var ri = rootOf(lm), packed = [], report = [], stats = { scanned: 0, included: 0, notBaked: 0, disabled: 0, runtimeAffectLightmapped: 0 }; if (!ri.root) return { data: new Float32Array(32), count: 0, report: report, stats: stats }; var comps = []; try { comps = ri.root.findComponents('light') || []; } catch (_) { comps = []; } comps.forEach(function (comp) {
-            stats.scanned++; if (!comp || !comp.enabled || !comp.entity || !comp.entity.enabled) {
+
+        (scene.allGeoms || (scene.receivers ? scene.receivers.map(function (r) {
+            return r.geom;
+        }) : [])).forEach(function (g) {
+            var mat = g && g.material;
+
+            if (!mat || seen.has(mat)) return;
+
+            seen.add(mat);
+            count++;
+
+            var dc = mat.diffuse && isNum(mat.diffuse.r) ?
+                [mat.diffuse.r, mat.diffuse.g, mat.diffuse.b] :
+                [1, 1, 1];
+
+            var normalMap = mat.normalMap || null;
+            var aoMap = mat.aoMap || null;
+
+            log(
+                '  Material PBR "' + (mat.name || '(sin nombre)') + '"' +
+                ' diffuse(sRGB)=' + fmt(dc, 3) +
+                ' diffuseMap=' + textureDiagnostic(mat.diffuseMap) +
+                ' diffuseUv=' + (isNum(mat.diffuseMapUv) ? mat.diffuseMapUv : 0) +
+                ' tiling=' + vec2Diagnostic(mat.diffuseMapTiling, 1, 1) +
+                ' offset=' + vec2Diagnostic(mat.diffuseMapOffset, 0, 0) +
+                ' rot=' + (isNum(mat.diffuseMapRotation) ? mat.diffuseMapRotation : 0) +
+                ' normalMap=' + textureDiagnostic(normalMap) +
+                ' normalUv=' + (isNum(mat.normalMapUv) ? mat.normalMapUv : 0) +
+                ' bumpiness=' + (isNum(mat.bumpiness) ? mat.bumpiness.toFixed(3) : 'n/a') +
+                ' aoMap=' + textureDiagnostic(aoMap) +
+                ' aoUv=' + (isNum(mat.aoMapUv) ? mat.aoMapUv : 0) +
+                ' aoIntensity=' + (isNum(mat.aoIntensity) ? mat.aoIntensity.toFixed(3) : 'n/a') +
+                ' occludeDirect=' + (mat.occludeDirect === true) +
+                ' metalness=' + (isNum(mat.metalness) ? mat.metalness.toFixed(3) : 'n/a') +
+                ' useMetalness=' + (mat.useMetalness === true) +
+                ' useLighting=' + (mat.useLighting !== false) +
+                ' twoSidedLighting=' + (mat.twoSidedLighting === true)
+            );
+        });
+
+        log('Diagnostico materiales: ' + count + ' material(es) unicos en receivers/transporte.');
+    }
+
+    function lightUnitConversion(comp) {
+        var type = comp.type === 'omni' ? 'point' : comp.type;
+
+        if (type === 'directional') return 1;
+        if (type === 'point') return 4 * Math.PI;
+
+        if (type === 'spot') {
+            var inner = clamp(isNum(comp.innerConeAngle) ? comp.innerConeAngle : 40, 0, 89.9) * Math.PI / 180;
+            var outer = clamp(isNum(comp.outerConeAngle) ? comp.outerConeAngle : 45, 0, 89.9) * Math.PI / 180;
+
+            return 2 * Math.PI * (
+                (1 - Math.cos(inner)) +
+                (Math.cos(inner) - Math.cos(outer)) * 0.5
+            );
+        }
+
+        return 1;
+    }
+
+    function lightLinearColor(comp, scene) {
+        var intensity = isNum(comp.intensity) ? comp.intensity : 1;
+
+        if (scene && scene.physicalUnits && isNum(comp.luminance)) {
+            intensity = comp.luminance / Math.max(1e-6, lightUnitConversion(comp));
+        }
+
+        var c = comp.color || { r: 1, g: 1, b: 1 };
+
+        return [
+            srgbToLinear1(c.r) * intensity,
+            srgbToLinear1(c.g) * intensity,
+            srgbToLinear1(c.b) * intensity
+        ];
+    }
+
+    function collectLights(lm) {
+        var ri = rootOf(lm);
+        var packed = [];
+        var report = [];
+
+        var stats = {
+            scanned: 0,
+            included: 0,
+            notBaked: 0,
+            disabled: 0,
+            runtimeAffectLightmapped: 0
+        };
+
+        if (!ri.root) {
+            return {
+                data: new Float32Array(32),
+                count: 0,
+                report: report,
+                stats: stats
+            };
+        }
+
+        var comps = [];
+
+        try {
+            comps = ri.root.findComponents('light') || [];
+        } catch (_) {
+            comps = [];
+        }
+
+        comps.forEach(function (comp) {
+            stats.scanned++;
+
+            if (!comp || !comp.enabled || !comp.entity || !comp.entity.enabled) {
                 stats.disabled++;
                 return;
-            } if (comp.bake !== true) { stats.notBaked++; if (comp.affectLightmapped === true) stats.runtimeAffectLightmapped++; return; } var m = comp.entity.getWorldTransform().data, xl = Math.hypot(m[0], m[1], m[2]) || 1, yl = Math.hypot(m[4], m[5], m[6]) || 1, zl = Math.hypot(m[8], m[9], m[10]) || 1, X = [m[0] / xl, m[1] / xl, m[2] / xl], Y = [m[4] / yl, m[5] / yl, m[6] / yl], Z = [m[8] / zl, m[9] / zl, m[10] / zl]; var type = comp.type === 'omni' ? 'point' : comp.type, kind = type === 'directional' ? 0 : (type === 'spot' ? 2 : 1); if (type !== 'directional' && type !== 'point' && type !== 'spot') return; var col = lightLinearColor(comp, lm.scene), range = isNum(comp.range) && comp.range > 0 ? comp.range : 10, fall = comp.falloffMode === pc.LIGHTFALLOFF_INVERSESQUARED ? 1 : 0, shape = isNum(comp.shape) ? comp.shape : (isNum(pc.LIGHTSHAPE_PUNCTUAL) ? pc.LIGHTSHAPE_PUNCTUAL : 0), casts = comp.castShadows !== false ? 1 : 0, shadowIntensity = isNum(comp.shadowIntensity) ? clamp(comp.shadowIntensity, 0, 1) : 1, bakeArea = kind === 0 && isNum(comp.bakeArea) ? clamp(comp.bakeArea, 0, 179) : 0, tanRadius = Math.tan(bakeArea * Math.PI / 360), inner = clamp(isNum(comp.innerConeAngle) ? comp.innerConeAngle : 40, 0, 89.9), outer = clamp(isNum(comp.outerConeAngle) ? comp.outerConeAngle : 45, 0, 89.9), ci = Math.cos(Math.min(inner, outer) * Math.PI / 180), co = Math.cos(outer * Math.PI / 180); if (ci <= co) ci = co + 1e-4;
-            packed.push(kind === 0 ? Y[0] : m[12], kind === 0 ? Y[1] : m[13], kind === 0 ? Y[2] : m[14], kind, col[0], col[1], col[2], range, -Y[0], -Y[1], -Y[2], fall, shape, casts, tanRadius, shadowIntensity, X[0], X[1], X[2], xl * 0.5, Y[0], Y[1], Y[2], yl * 0.5, Z[0], Z[1], Z[2], zl * 0.5, ci, co, isNum(comp.bakeNumSamples) ? comp.bakeNumSamples : 1, 0); stats.included++; report.push({ entity: comp.entity.name, type: type, color: col, shape: shape, castShadows: !!casts, bakeArea: bakeArea });
-        }); var data = new Float32Array(Math.max(32, packed.length)); data.set(packed); return { data: data, count: packed.length / 32, report: report, stats: stats };
-    } var _f32 = new Float32Array(1), _u32 = new Uint32Array(_f32.buffer); function halfToFloat(h) { var s = (h & 0x8000) ? -1 : 1, e = (h >> 10) & 0x1f, f = h & 0x3ff; if (e === 0) return s * Math.pow(2, -14) * (f / 1024); if (e === 31) return f ? NaN : s * Infinity; return s * Math.pow(2, e - 15) * (1 + f / 1024); } function floatToHalf(value) { if (!(value > 0)) return 0; if (value >= 65504) return 0x7bff; _f32[0] = value; var x = _u32[0], exp = ((x >>> 23) & 0xff) - 127 + 15, m = x & 0x7fffff; if (exp <= 0) { if (exp < -10) return 0; m = (m | 0x800000) >> (1 - exp); return (m + 0x1000) >> 13; } var r = (exp << 10) + ((m + 0x1000) >> 13); return r >= 0x7c00 ? 0x7bff : r; } function unpackUFloat(bits, mantBits) {
-        var mask = (1 << mantBits) - 1, m = bits & mask, e = (bits >> mantBits) & 0x1f; if (e === 0) return m * Math.pow(2, 1 - 15 - mantBits);
-        if (e === 31) return Infinity; return (1 + m / (1 << mantBits)) * Math.pow(2, e - 15);
-    } function unpackR11G11B10(v, out) { out[0] = unpackUFloat(v & 0x7ff, 6); out[1] = unpackUFloat((v >>> 11) & 0x7ff, 6); out[2] = unpackUFloat((v >>> 22) & 0x3ff, 5); } function packUFloat(v, mantBits) { if (!Number.isFinite(v) || v <= 0) return 0; var max = (1 << mantBits) - 1, minN = Math.pow(2, -14), sub = Math.pow(2, -14 - mantBits); if (v < minN) return Math.min(max, Math.max(0, Math.round(v / sub))); var e = Math.floor(Math.log2(v)), be = e + 15; if (be >= 31) return (30 << mantBits) | max; var base = Math.pow(2, e), mant = Math.round((v / base - 1) * (1 << mantBits)); if (mant >= (1 << mantBits)) { mant = 0; be++; if (be >= 31) return (30 << mantBits) | max; } if (be <= 0) return Math.min(max, Math.max(0, Math.round(v / sub))); return (be << mantBits) | mant; } function packR11G11B10(r, g, b) { return (packUFloat(r, 6) | (packUFloat(g, 6) << 11) | (packUFloat(b, 5) << 22)) >>> 0; } function unpackRGB9E5(v, out) { var rm = v & 0x1ff, gm = (v >>> 9) & 0x1ff, bm = (v >>> 18) & 0x1ff, e = (v >>> 27) & 0x1f, scale = Math.pow(2, e - 24); out[0] = rm * scale; out[1] = gm * scale; out[2] = bm * scale; } function encodeRGBM(r, g, b, out) {
-        var er = Math.sqrt(Math.max(0, r)) / 8, eg = Math.sqrt(Math.max(0, g)) / 8, eb = Math.sqrt(Math.max(0, b)) / 8, a = clamp(Math.max(er, eg, eb, 1 / 255), 0, 1); a = Math.ceil(a * 255) / 255; out[0] = clamp(er / a, 0, 1); out[1] = clamp(eg / a, 0, 1);
-        out[2] = clamp(eb / a, 0, 1); out[3] = a;
-    } function formatEquals(format, name) { return isNum(pc[name]) && format === pc[name]; } function decodeTexturePixels(tex, raw, width, height, forceData) {
-        forceData = forceData === true; var count = width * height, out = new Float32Array(count * 4), view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength), tmp = [0, 0, 0], rgbm = !forceData && (tex.type === pc.TEXTURETYPE_RGBM || tex.encoding === 'rgbm'), isSrgb = !forceData && (!!tex.srgb || formatEquals(tex.format, 'PIXELFORMAT_SRGB8') || formatEquals(tex.format, 'PIXELFORMAT_SRGBA8') || formatEquals(tex.format, 'PIXELFORMAT_SBGRA8')), isBgra = formatEquals(tex.format, 'PIXELFORMAT_BGRA8') || formatEquals(tex.format, 'PIXELFORMAT_SBGRA8'), i, o, off, ch; if (tex.format === pc.PIXELFORMAT_111110F) { for (i = 0; i < count; i++) { unpackR11G11B10(view.getUint32(i * 4, true), tmp); o = i * 4; out[o] = tmp[0]; out[o + 1] = tmp[1]; out[o + 2] = tmp[2]; out[o + 3] = 1; } return out; } if (formatEquals(tex.format, 'PIXELFORMAT_RGB9E5')) { for (i = 0; i < count; i++) { unpackRGB9E5(view.getUint32(i * 4, true), tmp); o = i * 4; out[o] = tmp[0]; out[o + 1] = tmp[1]; out[o + 2] = tmp[2]; out[o + 3] = 1; } return out; } if (tex.format === pc.PIXELFORMAT_RGBA16F || tex.format === pc.PIXELFORMAT_RGB16F) {
-            ch = tex.format === pc.PIXELFORMAT_RGBA16F ? 4 : 3; for (i = 0; i < count; i++) {
-                o = i * 4; off = i * ch * 2;
-                out[o] = halfToFloat(view.getUint16(off, true)); out[o + 1] = halfToFloat(view.getUint16(off + 2, true)); out[o + 2] = halfToFloat(view.getUint16(off + 4, true)); out[o + 3] = ch === 4 ? halfToFloat(view.getUint16(off + 6, true)) : 1;
-            } return out;
-        } if (tex.format === pc.PIXELFORMAT_RGBA32F || tex.format === pc.PIXELFORMAT_RGB32F) { ch = tex.format === pc.PIXELFORMAT_RGBA32F ? 4 : 3; for (i = 0; i < count; i++) { o = i * 4; off = i * ch * 4; out[o] = view.getFloat32(off, true); out[o + 1] = view.getFloat32(off + 4, true); out[o + 2] = view.getFloat32(off + 8, true); out[o + 3] = ch === 4 ? view.getFloat32(off + 12, true) : 1; } return out; } var isR8 = formatEquals(tex.format, 'PIXELFORMAT_R8'), isRG8 = formatEquals(tex.format, 'PIXELFORMAT_RG8'), isRGB8 = formatEquals(tex.format, 'PIXELFORMAT_RGB8') || formatEquals(tex.format, 'PIXELFORMAT_SRGB8'), isRGBA8 = tex.format === pc.PIXELFORMAT_RGBA8 || formatEquals(tex.format, 'PIXELFORMAT_SRGBA8') || isBgra; if (isR8 || isRG8 || isRGB8 || isRGBA8) {
-            ch = isR8 ? 1 : isRG8 ? 2 : isRGB8 ? 3 : 4; for (i = 0; i < count; i++) {
-                o = i * 4; off = i * ch; var r = raw[off] / 255, g = ch > 1 ? raw[off + 1] / 255 : r, b = ch > 2 ? raw[off + 2] / 255 : r, a = ch > 3 ? raw[off + 3] / 255 : 1; if (isBgra) { var sw = r; r = b; b = sw; } if (rgbm && ch === 4) { var mm = 8 * a; out[o] = (r * mm) * (r * mm); out[o + 1] = (g * mm) * (g * mm); out[o + 2] = (b * mm) * (b * mm); } else if (isSrgb) {
-                    out[o] = srgbToLinear1(r); out[o + 1] = srgbToLinear1(g);
-                    out[o + 2] = srgbToLinear1(b);
-                } else { out[o] = r; out[o + 1] = g; out[o + 2] = b; } out[o + 3] = a;
-            } return out;
-        } throw new Error('Formato de textura no soportado para lectura PT6.0.2: ' + tex.format);
-    } function channelCode3(s) { s = (s || 'rgb').toLowerCase(); function ch(c) { return c === 'g' ? 1 : c === 'b' ? 2 : c === 'a' ? 3 : 0; } var a = ch(s[0] || 'r'), b = ch(s[1] || s[0] || 'g'), c = ch(s[2] || s[1] || s[0] || 'b'); return a | (b << 2) | (c << 4); } function channelCode1(s) { s = (s || 'r').toLowerCase(); return s[0] === 'g' ? 1 : s[0] === 'b' ? 2 : s[0] === 'a' ? 3 : 0; } function resampleRGBA(src, sw, sh, dw, dh) { if (sw === dw && sh === dh) return src; var out = new Float32Array(dw * dh * 4); for (var y = 0; y < dh; y++) { var fy = (y + 0.5) * sh / dh - 0.5, y0 = clamp(Math.floor(fy), 0, sh - 1), y1 = Math.min(y0 + 1, sh - 1), ty = fy - Math.floor(fy); if (fy < 0) ty = 0; for (var x = 0; x < dw; x++) { var fx = (x + 0.5) * sw / dw - 0.5, x0 = clamp(Math.floor(fx), 0, sw - 1), x1 = Math.min(x0 + 1, sw - 1), tx = fx - Math.floor(fx); if (fx < 0) tx = 0; var d = (y * dw + x) * 4, a = (y0 * sw + x0) * 4, b = (y0 * sw + x1) * 4, c = (y1 * sw + x0) * 4, e = (y1 * sw + x1) * 4; for (var k = 0; k < 4; k++) { var p0 = src[a + k] * (1 - tx) + src[b + k] * tx, p1 = src[c + k] * (1 - tx) + src[e + k] * tx; out[d + k] = p0 * (1 - ty) + p1 * ty; } } } return out; } async function readTextureForBake(tex, maxResolution, forceData) {
-        if (!tex || tex.cubemap || tex.volume || tex.array) throw new Error('solo texturas 2D'); var levels = Math.max(1, tex.numLevels || 1), mip = 0;
-        while (mip + 1 < levels && Math.max(tex.width >> (mip + 1), tex.height >> (mip + 1)) >= Math.max(4, maxResolution)) mip++; var w = Math.max(1, tex.width >> mip), h = Math.max(1, tex.height >> mip), pixels = null, raw = null; try { raw = await tex.read(0, 0, w, h, { mipLevel: mip, immediate: true }); if (raw) pixels = decodeTexturePixels(tex, raw, w, h, forceData === true); } catch (_) { pixels = null; } if (!pixels && typeof document !== 'undefined' && typeof tex.getSource === 'function') {
-            try {
-                var source = tex.getSource(mip) || tex.getSource(0); if (source && !Array.isArray(source) && source.width && source.height) {
-                    var scale = Math.min(1, maxResolution / Math.max(source.width, source.height)); var dw = Math.max(1, Math.round(source.width * scale)), dh = Math.max(1, Math.round(source.height * scale)); var canvas = document.createElement('canvas'); canvas.width = dw; canvas.height = dh; var ctx = canvas.getContext('2d', { willReadFrequently: true }); ctx.drawImage(source, 0, 0, dw, dh); var bytes = ctx.getImageData(0, 0, dw, dh).data; pixels = new Float32Array(dw * dh * 4); var srgb = forceData !== true && (!!tex.srgb || formatEquals(tex.format, 'PIXELFORMAT_SRGB8') || formatEquals(tex.format, 'PIXELFORMAT_SRGBA8') || formatEquals(tex.format, 'PIXELFORMAT_SBGRA8')); for (var i = 0; i < dw * dh; i++) {
-                        var o = i * 4, r = bytes[o] / 255, g = bytes[o + 1] / 255, b = bytes[o + 2] / 255;
-                        pixels[o] = srgb ? srgbToLinear1(r) : r; pixels[o + 1] = srgb ? srgbToLinear1(g) : g; pixels[o + 2] = srgb ? srgbToLinear1(b) : b; pixels[o + 3] = bytes[o + 3] / 255;
-                    } w = dw; h = dh; mip = 0;
+            }
+
+            if (comp.bake !== true) {
+                stats.notBaked++;
+
+                if (comp.affectLightmapped === true) {
+                    stats.runtimeAffectLightmapped++;
                 }
-            } catch (_) { pixels = null; }
-        } if (!pixels) throw new Error('readback/source no disponible o formato no soportado'); if (Math.max(w, h) > maxResolution) { var s = maxResolution / Math.max(w, h), nw = Math.max(1, Math.round(w * s)), nh = Math.max(1, Math.round(h * s)); pixels = resampleRGBA(pixels, w, h, nw, nh); w = nw; h = nh; } return { pixels: pixels, width: w, height: h, mip: mip, addressU: isNum(tex.addressU) ? tex.addressU : 0, addressV: isNum(tex.addressV) ? tex.addressV : 0, name: tex.name || '(texture)' };
-    } async function prepareMaterialTextures(lm, p, baseOffset) {
-        var ix = indexComponents(lm), colorTextures = new Set(), dataTextures = new Set(), materials = new Set(); ix.map.forEach(function (owner, mi) { if (!owner.enabled || !mi || mi.visible === false || !(owner.isStatic || owner.lightmapped)) return; var mat = mi.material; if (!mat || materials.has(mat)) return; materials.add(mat); if (mat.diffuseMap) colorTextures.add(mat.diffuseMap); if (mat.emissiveMap) colorTextures.add(mat.emissiveMap); if (mat.metalnessMap) dataTextures.add(mat.metalnessMap); if (mat.normalMap) dataTextures.add(mat.normalMap); }); async function decodeSet(set, forceData, role) {
-            var list = Array.from(set);
-            return Promise.all(list.map(async function (tex) { try { return { tex: tex, data: await readTextureForBake(tex, p.materialResolution, forceData), error: null, role: role }; } catch (e) { return { tex: tex, data: null, error: e, role: role }; } }));
-        } var colorDecoded = await decodeSet(colorTextures, false, 'color'); var dataDecoded = await decodeSet(dataTextures, true, 'data'); var decoded = colorDecoded.concat(dataDecoded); var colorMap = new Map(), dataMap = new Map(), total = 0, ok = 0, failed = 0, colorOk = 0, dataOk = 0; decoded.forEach(function (r) { if (r.data) { total += r.data.width * r.data.height; ok++; if (r.role === 'data') dataOk++; else colorOk++; } else { failed++; warn('Texture PBR (' + r.role + ') "' + (r.tex && r.tex.name || '?') + '" no pudo entrar al pool PT: ' + (r.error && r.error.message || r.error)); } }); var pixels = new Float32Array(Math.max(4, total * 4)), cursor = 0; decoded.forEach(function (r) { if (!r.data) return; var d = r.data, count = d.width * d.height, entry = { offset: baseOffset + cursor, width: d.width, height: d.height, addressU: d.addressU, addressV: d.addressV, mip: d.mip, name: d.name, pixels: d.pixels, dataTexture: r.role === 'data' }; pixels.set(d.pixels, cursor * 4); if (r.role === 'data') dataMap.set(r.tex, entry); else colorMap.set(r.tex, entry); cursor += count; }); return { map: colorMap, colorMap: colorMap, dataMap: dataMap, normalMap: dataMap, pixels: pixels, textureCount: ok, colorTextureCount: colorOk, dataTextureCount: dataOk, failedCount: failed, texelCount: cursor, materialCount: materials.size };
-    } function mapDescriptor(mat, prefix, texDB, scalar) { var tex = mat && mat[prefix + 'Map'], useData = scalar || prefix === 'normal', lookup = texDB && (useData ? texDB.dataMap : texDB.colorMap), entry = tex && lookup && lookup.get(tex), til = mat && mat[prefix + 'MapTiling'], off = mat && mat[prefix + 'MapOffset']; return { info: [entry ? entry.offset : -1, entry ? entry.width : 0, entry ? entry.height : 0, entry ? entry.addressU : 0], xform: [til && isNum(til.x) ? til.x : 1, til && isNum(til.y) ? til.y : 1, off && isNum(off.x) ? off.x : 0, off && isNum(off.y) ? off.y : 0], misc: [entry ? entry.addressV : 0, ((mat && isNum(mat[prefix + 'MapRotation']) ? mat[prefix + 'MapRotation'] : 0) * Math.PI / 180), mat && isNum(mat[prefix + 'MapUv']) ? mat[prefix + 'MapUv'] : 0, scalar ? channelCode1(mat && mat[prefix + 'MapChannel']) : channelCode3(mat && mat[prefix + 'MapChannel'])] }; } function faceUvDirJS(face, u, v) { var s = u * 2 - 1, t = v * 2 - 1, x, y, z; switch (face) { case 0: x = 1; y = -t; z = -s; break; case 1: x = -1; y = -t; z = s; break; case 2: x = s; y = 1; z = t; break; case 3: x = s; y = -1; z = -t; break; case 4: x = s; y = -t; z = 1; break; default: x = -s; y = -t; z = -1; }var l = Math.hypot(x, y, z) || 1; return [x / l, y / l, z / l]; } function inverseQuatRows(q) {
-        var x = -(q && isNum(q.x) ? q.x : 0), y = -(q && isNum(q.y) ? q.y : 0), z = -(q && isNum(q.z) ? q.z : 0), w = q && isNum(q.w) ? q.w : 1, xx = x * x, yy = y * y, zz = z * z, xy = x * y, xz = x * z, yz = y * z, wx = w * x, wy = w * y, wz = w * z;
-        return [1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy), 2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx), 2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy)];
-    } function envLocalToWorld(local, r) { return [r[0] * local[0] + r[3] * local[1] + r[6] * local[2], r[1] * local[0] + r[4] * local[1] + r[7] * local[2], r[2] * local[0] + r[5] * local[1] + r[8] * local[2]]; } function resampleFaceLinear(src, srcN, dstN) { if (srcN === dstN) return src; var out = new Float32Array(dstN * dstN * 4); for (var y = 0; y < dstN; y++) { var fy = (y + 0.5) * srcN / dstN - 0.5, y0 = clamp(Math.floor(fy), 0, srcN - 1), y1 = Math.min(y0 + 1, srcN - 1), ty = fy - Math.floor(fy); if (fy < 0) ty = 0; for (var x = 0; x < dstN; x++) { var fx = (x + 0.5) * srcN / dstN - 0.5, x0 = clamp(Math.floor(fx), 0, srcN - 1), x1 = Math.min(x0 + 1, srcN - 1), tx = fx - Math.floor(fx); if (fx < 0) tx = 0; var d = (y * dstN + x) * 4, a = (y0 * srcN + x0) * 4, b = (y0 * srcN + x1) * 4, c = (y1 * srcN + x0) * 4, e = (y1 * srcN + x1) * 4; for (var ch = 0; ch < 4; ch++) { var v0 = src[a + ch] * (1 - tx) + src[b + ch] * tx, v1 = src[c + ch] * (1 - tx) + src[e + ch] * tx; out[d + ch] = v0 * (1 - ty) + v1 * ty; } } } return out; } function buildAliasTable(weights) {
-        var n = weights.length, data = new Float32Array(Math.max(4, n * 4)); if (!n) return { data: data, total: 0 }; var total = 0; for (var i = 0; i < n; i++)total += Math.max(0, weights[i]); if (!(total > 1e-20)) return { data: data, total: 0 }; var scaled = new Float64Array(n), mass = new Float64Array(n), small = [], large = [];
-        for (i = 0; i < n; i++) { mass[i] = Math.max(0, weights[i]) / total; scaled[i] = mass[i] * n; (scaled[i] < 1 ? small : large).push(i); } var q = new Float64Array(n), alias = new Int32Array(n); while (small.length && large.length) { var s = small.pop(), l = large.pop(); q[s] = scaled[s]; alias[s] = l; scaled[l] -= 1 - scaled[s]; (scaled[l] < 1 ? small : large).push(l); } while (large.length) { l = large.pop(); q[l] = 1; alias[l] = l; } while (small.length) { s = small.pop(); q[s] = 1; alias[s] = s; } for (i = 0; i < n; i++) { var o = i * 4; data[o] = q[i]; data[o + 1] = alias[i]; data[o + 2] = mass[i]; } return { data: data, total: total };
-    } function buildEnvWeights(pixels, n, rows, minY) { var count = 6 * n * n, w = new Float64Array(count), cell = 4 / (n * n); for (var face = 0; face < 6; face++)for (var y = 0; y < n; y++) { var v = (y + 0.5) / n, t = v * 2 - 1; for (var x = 0; x < n; x++) { var u = (x + 0.5) / n, s = u * 2 - 1, local = faceUvDirJS(face, u, v), world = envLocalToWorld(local, rows), idx = face * n * n + y * n + x; if (world[1] < minY) { w[idx] = 0; continue; } var o = idx * 4, lum = Math.max(0, luminance(pixels[o], pixels[o + 1], pixels[o + 2])), jac = 1 / Math.pow(1 + s * s + t * t, 1.5); w[idx] = lum * cell * jac; } } return w; } function analyzeEnvironment(pixels, n, rows, minY, intensity) {
-        var cell = 4 / (n * n), omega = 0, lumOmega = 0, maxLum = 0, upIrr = 0, rgbOmega = [0, 0, 0], upRgb = [0, 0, 0], activeTexels = 0; intensity = isNum(intensity) ? Math.max(0, intensity) : 1;
-        for (var face = 0; face < 6; face++)for (var y = 0; y < n; y++) { var v = (y + 0.5) / n, t = v * 2 - 1; for (var x = 0; x < n; x++) { var u = (x + 0.5) / n, ss = u * 2 - 1, local = faceUvDirJS(face, u, v), world = envLocalToWorld(local, rows); if (world[1] < minY) continue; var idx = face * n * n + y * n + x, o = idx * 4, jac = 1 / Math.pow(1 + ss * ss + t * t, 1.5), dOmega = cell * jac, r = Math.max(0, pixels[o]) * intensity, g = Math.max(0, pixels[o + 1]) * intensity, b = Math.max(0, pixels[o + 2]) * intensity, lum = luminance(r, g, b), upCos = Math.max(0, world[1]); omega += dOmega; lumOmega += lum * dOmega; maxLum = Math.max(maxLum, lum); upIrr += lum * upCos * dOmega; rgbOmega[0] += r * dOmega; rgbOmega[1] += g * dOmega; rgbOmega[2] += b * dOmega; upRgb[0] += r * upCos * dOmega; upRgb[1] += g * upCos * dOmega; upRgb[2] += b * upCos * dOmega; activeTexels++; } } var meanLum = omega > 0 ? lumOmega / omega : 0; return { solidAngle: omega, activeTexels: activeTexels, meanLuminance: meanLum, maxLuminance: maxLum, sphereLuminanceIntegral: lumOmega, isotropicDiffuseEstimate: Math.PI * meanLum, upIrradiance: upIrr, meanRgb: omega > 0 ? [rgbOmega[0] / omega, rgbOmega[1] / omega, rgbOmega[2] / omega] : [0, 0, 0], upIrradianceRgb: upRgb };
-    } function syntheticAmbientEnvironment(scene) {
-        var n = 16, count = 6 * n * n, pixels = new Float32Array(count * 4), a = scene.ambientLight || { r: 0, g: 0, b: 0 }, rgb = [srgbToLinear1(a.r), srgbToLinear1(a.g), srgbToLinear1(a.b)];
-        if (scene.physicalUnits && isNum(scene.ambientLuminance) && scene.ambientLuminance > 0) { rgb[0] *= scene.ambientLuminance; rgb[1] *= scene.ambientLuminance; rgb[2] *= scene.ambientLuminance; } for (var i = 0; i < count; i++) { var o = i * 4; pixels[o] = rgb[0]; pixels[o + 1] = rgb[1]; pixels[o + 2] = rgb[2]; pixels[o + 3] = 1; } return { n: n, pixels: pixels, intensity: 1, source: 'ambientLight sintetico' };
-    } async function buildEnvironment(scene, p) {
-        var disabled = { mode: 0, faceSize: 1, count: 0, pixels: new Float32Array(4), alias: new Float32Array(4), rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1], intensity: 1, minWorldY: -1, source: 'sin environment', readMs: 0, mipLevel: 0 }; if (!scene) return disabled; var useBakeCap = scene.ambientBake === true, part = useBakeCap && isNum(scene.ambientBakeSpherePart) ? clamp(scene.ambientBakeSpherePart, 0.001, 1) : 1, minY = useBakeCap ? Math.cos(Math.PI * part) : -1, rows = inverseQuatRows(scene.skyboxRotation), sky = scene.skybox, t0 = now(); try {
-            var source = null; if (sky && sky.cubemap) {
-                var levels = Math.max(1, sky.numLevels || 1), target = p.envResolution, mip = 0; while (mip + 1 < levels) { var candidate = Math.max(1, sky.width >> (mip + 1)); if (candidate < target) break; mip++; } var srcN = Math.max(1, sky.width >> mip), dstN = Math.min(target, srcN); var faces = await Promise.all([0, 1, 2, 3, 4, 5].map(function (face) {
-                    return sky.read(0, 0, srcN, srcN, { face: face, mipLevel: mip, immediate: true });
-                })); var pixels = new Float32Array(6 * dstN * dstN * 4); for (var f = 0; f < 6; f++) { var decoded = decodeTexturePixels(sky, faces[f], srcN, srcN), resized = resampleFaceLinear(decoded, srcN, dstN); pixels.set(resized, f * dstN * dstN * 4); } var intensity; if (scene.physicalUnits) { intensity = isNum(scene.skyboxLuminance) && scene.skyboxLuminance > 0 ? scene.skyboxLuminance / 20000 : 1; warn('physicalUnits=true: escala PT del skybox usa skyboxLuminance/20000 como aproximacion.'); } else intensity = isNum(scene.skyboxIntensity) ? scene.skyboxIntensity : 1; source = { n: dstN, pixels: pixels, intensity: intensity, source: 'scene.skybox cubemap mip=' + mip + ' (' + srcN + '->' + dstN + ')', mipLevel: mip };
-            } else { var amb = scene.ambientLight || { r: 0, g: 0, b: 0 }; if ((amb.r || amb.g || amb.b) || (scene.physicalUnits && scene.ambientLuminance > 0)) { source = syntheticAmbientEnvironment(scene); source.mipLevel = 0; } } if (!source) { disabled.source = 'sin skybox y ambientLight negro'; disabled.readMs = Math.round(now() - t0); return disabled; } var weights = buildEnvWeights(source.pixels, source.n, rows, minY), alias = buildAliasTable(weights); if (!(alias.total > 1e-20)) { disabled.source = 'environment negro/sin energia'; disabled.readMs = Math.round(now() - t0); return disabled; } var diagnostics = analyzeEnvironment(source.pixels, source.n, rows, minY, source.intensity);
-            return { mode: 1, faceSize: source.n, count: 6 * source.n * source.n, pixels: source.pixels, alias: alias.data, rotation: rows, intensity: source.intensity, minWorldY: minY, source: source.source + (useBakeCap ? ' spherePart=' + part : ' full-sphere'), readMs: Math.round(now() - t0), mipLevel: source.mipLevel || 0, diagnostics: diagnostics };
-        } catch (e) { warn('No se pudo preparar Environment GI:', e); disabled.source = 'fallo environment: ' + (e && e.message ? e.message : String(e)); disabled.readMs = Math.round(now() - t0); return disabled; }
-    } function dilateGB(gb, iterations) {
-        var w = gb.w, h = gb.h, dirs = [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, -1], [-1, 1], [1, 1]]; for (var it = 0; it < iterations; it++) {
-            var mask = new Uint8Array(w * h), i; for (i = 0; i < w * h; i++)mask[i] = gb.pos[i * 4 + 3] > 0.5 ? 1 : 0; for (var y = 0; y < h; y++)for (var x = 0; x < w; x++) {
-                i = y * w + x; if (mask[i]) continue; for (var k = 0; k < dirs.length; k++) {
-                    var sx = x + dirs[k][0], sy = y + dirs[k][1]; if (sx < 0 || sy < 0 || sx >= w || sy >= h) continue; var si = sy * w + sx; if (!mask[si]) continue; var d = i * 4, s = si * 4; gb.pos[d] = gb.pos[s]; gb.pos[d + 1] = gb.pos[s + 1]; gb.pos[d + 2] = gb.pos[s + 2]; gb.pos[d + 3] = 2; gb.nrm[d] = gb.nrm[s]; gb.nrm[d + 1] = gb.nrm[s + 1]; gb.nrm[d + 2] = gb.nrm[s + 2]; gb.nrm[d + 3] = gb.nrm[s + 3]; gb.du[d] = gb.du[s]; gb.du[d + 1] = gb.du[s + 1]; gb.du[d + 2] = gb.du[s + 2]; gb.dv[d] = gb.dv[s]; gb.dv[d + 1] = gb.dv[s + 1];
-                    gb.dv[d + 2] = gb.dv[s + 2]; break;
+
+                return;
+            }
+
+            var m = comp.entity.getWorldTransform().data;
+
+            var xl = Math.hypot(m[0], m[1], m[2]) || 1;
+            var yl = Math.hypot(m[4], m[5], m[6]) || 1;
+            var zl = Math.hypot(m[8], m[9], m[10]) || 1;
+
+            var X = [m[0] / xl, m[1] / xl, m[2] / xl];
+            var Y = [m[4] / yl, m[5] / yl, m[6] / yl];
+            var Z = [m[8] / zl, m[9] / zl, m[10] / zl];
+
+            var type = comp.type === 'omni' ? 'point' : comp.type;
+
+            var kind = type === 'directional' ? 0 : (type === 'spot' ? 2 : 1);
+
+            if (type !== 'directional' && type !== 'point' && type !== 'spot') return;
+
+            var col = lightLinearColor(comp, lm.scene);
+            var range = isNum(comp.range) && comp.range > 0 ? comp.range : 10;
+
+            var fall = comp.falloffMode === pc.LIGHTFALLOFF_INVERSESQUARED ? 1 : 0;
+
+            var shape = isNum(comp.shape) ?
+                comp.shape :
+                (isNum(pc.LIGHTSHAPE_PUNCTUAL) ? pc.LIGHTSHAPE_PUNCTUAL : 0);
+
+            var casts = comp.castShadows !== false ? 1 : 0;
+
+            var shadowIntensity = isNum(comp.shadowIntensity) ?
+                clamp(comp.shadowIntensity, 0, 1) :
+                1;
+
+            var bakeArea = kind === 0 && isNum(comp.bakeArea) ?
+                clamp(comp.bakeArea, 0, 179) :
+                0;
+
+            var tanRadius = Math.tan(bakeArea * Math.PI / 360);
+
+            var inner = clamp(
+                isNum(comp.innerConeAngle) ? comp.innerConeAngle : 40,
+                0,
+                89.9
+            );
+
+            var outer = clamp(
+                isNum(comp.outerConeAngle) ? comp.outerConeAngle : 45,
+                0,
+                89.9
+            );
+
+            var ci = Math.cos(Math.min(inner, outer) * Math.PI / 180);
+            var co = Math.cos(outer * Math.PI / 180);
+
+            if (ci <= co) ci = co + 1e-4;
+
+            packed.push(
+                kind === 0 ? Y[0] : m[12],
+                kind === 0 ? Y[1] : m[13],
+                kind === 0 ? Y[2] : m[14],
+                kind,
+
+                col[0],
+                col[1],
+                col[2],
+                range,
+
+                -Y[0],
+                -Y[1],
+                -Y[2],
+                fall,
+
+                shape,
+                casts,
+                tanRadius,
+                shadowIntensity,
+
+                X[0],
+                X[1],
+                X[2],
+                xl * 0.5,
+
+                Y[0],
+                Y[1],
+                Y[2],
+                yl * 0.5,
+
+                Z[0],
+                Z[1],
+                Z[2],
+                zl * 0.5,
+
+                ci,
+                co,
+                isNum(comp.bakeNumSamples) ? comp.bakeNumSamples : 1,
+                0
+            );
+
+            stats.included++;
+
+            report.push({
+                entity: comp.entity.name,
+                type: type,
+                color: col,
+                shape: shape,
+                castShadows: !!casts,
+                bakeArea: bakeArea
+            });
+        });
+
+        var data = new Float32Array(Math.max(32, packed.length));
+        data.set(packed);
+
+        return {
+            data: data,
+            count: packed.length / 32,
+            report: report,
+            stats: stats
+        };
+    }
+
+    var _f32 = new Float32Array(1);
+    var _u32 = new Uint32Array(_f32.buffer);
+
+    function halfToFloat(h) {
+        var s = (h & 0x8000) ? -1 : 1;
+        var e = (h >> 10) & 0x1f;
+        var f = h & 0x3ff;
+
+        if (e === 0) return s * Math.pow(2, -14) * (f / 1024);
+        if (e === 31) return f ? NaN : s * Infinity;
+
+        return s * Math.pow(2, e - 15) * (1 + f / 1024);
+    }
+
+    function floatToHalf(value) {
+        if (!(value > 0)) return 0;
+        if (value >= 65504) return 0x7bff;
+
+        _f32[0] = value;
+
+        var x = _u32[0];
+        var exp = ((x >>> 23) & 0xff) - 127 + 15;
+        var m = x & 0x7fffff;
+
+        if (exp <= 0) {
+            if (exp < -10) return 0;
+
+            m = (m | 0x800000) >> (1 - exp);
+
+            return (m + 0x1000) >> 13;
+        }
+
+        var r = (exp << 10) + ((m + 0x1000) >> 13);
+
+        return r >= 0x7c00 ? 0x7bff : r;
+    }
+
+    function unpackUFloat(bits, mantBits) {
+        var mask = (1 << mantBits) - 1;
+        var m = bits & mask;
+        var e = (bits >> mantBits) & 0x1f;
+
+        if (e === 0) return m * Math.pow(2, 1 - 15 - mantBits);
+        if (e === 31) return Infinity;
+
+        return (1 + m / (1 << mantBits)) * Math.pow(2, e - 15);
+    }
+
+    function unpackR11G11B10(v, out) {
+        out[0] = unpackUFloat(v & 0x7ff, 6);
+        out[1] = unpackUFloat((v >>> 11) & 0x7ff, 6);
+        out[2] = unpackUFloat((v >>> 22) & 0x3ff, 5);
+    }
+
+    function packUFloat(v, mantBits) {
+        if (!Number.isFinite(v) || v <= 0) return 0;
+
+        var max = (1 << mantBits) - 1;
+        var minN = Math.pow(2, -14);
+        var sub = Math.pow(2, -14 - mantBits);
+
+        if (v < minN) {
+            return Math.min(max, Math.max(0, Math.round(v / sub)));
+        }
+
+        var e = Math.floor(Math.log2(v));
+        var be = e + 15;
+
+        if (be >= 31) return (30 << mantBits) | max;
+
+        var base = Math.pow(2, e);
+        var mant = Math.round((v / base - 1) * (1 << mantBits));
+
+        if (mant >= (1 << mantBits)) {
+            mant = 0;
+            be++;
+
+            if (be >= 31) return (30 << mantBits) | max;
+        }
+
+        if (be <= 0) {
+            return Math.min(max, Math.max(0, Math.round(v / sub)));
+        }
+
+        return (be << mantBits) | mant;
+    }
+
+    function packR11G11B10(r, g, b) {
+        return (
+            packUFloat(r, 6) |
+            (packUFloat(g, 6) << 11) |
+            (packUFloat(b, 5) << 22)
+        ) >>> 0;
+    }
+
+    function unpackRGB9E5(v, out) {
+        var rm = v & 0x1ff;
+        var gm = (v >>> 9) & 0x1ff;
+        var bm = (v >>> 18) & 0x1ff;
+        var e = (v >>> 27) & 0x1f;
+        var scale = Math.pow(2, e - 24);
+
+        out[0] = rm * scale;
+        out[1] = gm * scale;
+        out[2] = bm * scale;
+    }
+
+    function encodeRGBM(r, g, b, out) {
+        var er = Math.sqrt(Math.max(0, r)) / 8;
+        var eg = Math.sqrt(Math.max(0, g)) / 8;
+        var eb = Math.sqrt(Math.max(0, b)) / 8;
+
+        var a = clamp(Math.max(er, eg, eb, 1 / 255), 0, 1);
+        a = Math.ceil(a * 255) / 255;
+
+        out[0] = clamp(er / a, 0, 1);
+        out[1] = clamp(eg / a, 0, 1);
+        out[2] = clamp(eb / a, 0, 1);
+        out[3] = a;
+    }
+
+    function formatEquals(format, name) {
+        return isNum(pc[name]) && format === pc[name];
+    }
+
+    function decodeTexturePixels(tex, raw, width, height, forceData) {
+        forceData = forceData === true;
+
+        var count = width * height;
+        var out = new Float32Array(count * 4);
+        var view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+        var tmp = [0, 0, 0];
+
+        var rgbm = !forceData && (
+            tex.type === pc.TEXTURETYPE_RGBM ||
+            tex.encoding === 'rgbm'
+        );
+
+        var isSrgb = !forceData && (
+            !!tex.srgb ||
+            formatEquals(tex.format, 'PIXELFORMAT_SRGB8') ||
+            formatEquals(tex.format, 'PIXELFORMAT_SRGBA8') ||
+            formatEquals(tex.format, 'PIXELFORMAT_SBGRA8')
+        );
+
+        var isBgra =
+            formatEquals(tex.format, 'PIXELFORMAT_BGRA8') ||
+            formatEquals(tex.format, 'PIXELFORMAT_SBGRA8');
+
+        var i, o, off, ch;
+
+        if (tex.format === pc.PIXELFORMAT_111110F) {
+            for (i = 0; i < count; i++) {
+                unpackR11G11B10(view.getUint32(i * 4, true), tmp);
+
+                o = i * 4;
+
+                out[o] = tmp[0];
+                out[o + 1] = tmp[1];
+                out[o + 2] = tmp[2];
+                out[o + 3] = 1;
+            }
+
+            return out;
+        }
+
+        if (formatEquals(tex.format, 'PIXELFORMAT_RGB9E5')) {
+            for (i = 0; i < count; i++) {
+                unpackRGB9E5(view.getUint32(i * 4, true), tmp);
+
+                o = i * 4;
+
+                out[o] = tmp[0];
+                out[o + 1] = tmp[1];
+                out[o + 2] = tmp[2];
+                out[o + 3] = 1;
+            }
+
+            return out;
+        }
+
+        if (
+            tex.format === pc.PIXELFORMAT_RGBA16F ||
+            tex.format === pc.PIXELFORMAT_RGB16F
+        ) {
+            ch = tex.format === pc.PIXELFORMAT_RGBA16F ? 4 : 3;
+
+            for (i = 0; i < count; i++) {
+                o = i * 4;
+                off = i * ch * 2;
+
+                out[o] = halfToFloat(view.getUint16(off, true));
+                out[o + 1] = halfToFloat(view.getUint16(off + 2, true));
+                out[o + 2] = halfToFloat(view.getUint16(off + 4, true));
+                out[o + 3] = ch === 4 ?
+                    halfToFloat(view.getUint16(off + 6, true)) :
+                    1;
+            }
+
+            return out;
+        }
+
+        if (
+            tex.format === pc.PIXELFORMAT_RGBA32F ||
+            tex.format === pc.PIXELFORMAT_RGB32F
+        ) {
+            ch = tex.format === pc.PIXELFORMAT_RGBA32F ? 4 : 3;
+
+            for (i = 0; i < count; i++) {
+                o = i * 4;
+                off = i * ch * 4;
+
+                out[o] = view.getFloat32(off, true);
+                out[o + 1] = view.getFloat32(off + 4, true);
+                out[o + 2] = view.getFloat32(off + 8, true);
+                out[o + 3] = ch === 4 ?
+                    view.getFloat32(off + 12, true) :
+                    1;
+            }
+
+            return out;
+        }
+
+        var isR8 = formatEquals(tex.format, 'PIXELFORMAT_R8');
+        var isRG8 = formatEquals(tex.format, 'PIXELFORMAT_RG8');
+
+        var isRGB8 =
+            formatEquals(tex.format, 'PIXELFORMAT_RGB8') ||
+            formatEquals(tex.format, 'PIXELFORMAT_SRGB8');
+
+        var isRGBA8 =
+            tex.format === pc.PIXELFORMAT_RGBA8 ||
+            formatEquals(tex.format, 'PIXELFORMAT_SRGBA8') ||
+            isBgra;
+
+        if (isR8 || isRG8 || isRGB8 || isRGBA8) {
+            ch = isR8 ? 1 : isRG8 ? 2 : isRGB8 ? 3 : 4;
+
+            for (i = 0; i < count; i++) {
+                o = i * 4;
+                off = i * ch;
+
+                var r = raw[off] / 255;
+                var g = ch > 1 ? raw[off + 1] / 255 : r;
+                var b = ch > 2 ? raw[off + 2] / 255 : r;
+                var a = ch > 3 ? raw[off + 3] / 255 : 1;
+
+                if (isBgra) {
+                    var sw = r;
+                    r = b;
+                    b = sw;
+                }
+
+                if (rgbm && ch === 4) {
+                    var mm = 8 * a;
+
+                    out[o] = (r * mm) * (r * mm);
+                    out[o + 1] = (g * mm) * (g * mm);
+                    out[o + 2] = (b * mm) * (b * mm);
+                } else if (isSrgb) {
+                    out[o] = srgbToLinear1(r);
+                    out[o + 1] = srgbToLinear1(g);
+                    out[o + 2] = srgbToLinear1(b);
+                } else {
+                    out[o] = r;
+                    out[o + 1] = g;
+                    out[o + 2] = b;
+                }
+
+                out[o + 3] = a;
+            }
+
+            return out;
+        }
+
+        throw new Error(
+            'Formato de textura no soportado para lectura PT6.0.7: ' +
+            tex.format
+        );
+    }
+
+    function channelCode3(s) {
+        s = (s || 'rgb').toLowerCase();
+
+        function ch(c) {
+            return c === 'g' ? 1 :
+                c === 'b' ? 2 :
+                    c === 'a' ? 3 :
+                        0;
+        }
+
+        var a = ch(s[0] || 'r');
+        var b = ch(s[1] || s[0] || 'g');
+        var c = ch(s[2] || s[1] || s[0] || 'b');
+
+        return a | (b << 2) | (c << 4);
+    }
+
+    function channelCode1(s) {
+        s = (s || 'r').toLowerCase();
+
+        return s[0] === 'g' ? 1 :
+            s[0] === 'b' ? 2 :
+                s[0] === 'a' ? 3 :
+                    0;
+    }
+
+    function resampleRGBA(src, sw, sh, dw, dh) {
+        if (sw === dw && sh === dh) return src;
+
+        var out = new Float32Array(dw * dh * 4);
+
+        for (var y = 0; y < dh; y++) {
+            var fy = (y + 0.5) * sh / dh - 0.5;
+            var y0 = clamp(Math.floor(fy), 0, sh - 1);
+            var y1 = Math.min(y0 + 1, sh - 1);
+            var ty = fy - Math.floor(fy);
+
+            if (fy < 0) ty = 0;
+
+            for (var x = 0; x < dw; x++) {
+                var fx = (x + 0.5) * sw / dw - 0.5;
+                var x0 = clamp(Math.floor(fx), 0, sw - 1);
+                var x1 = Math.min(x0 + 1, sw - 1);
+                var tx = fx - Math.floor(fx);
+
+                if (fx < 0) tx = 0;
+
+                var d = (y * dw + x) * 4;
+                var a = (y0 * sw + x0) * 4;
+                var b = (y0 * sw + x1) * 4;
+                var c = (y1 * sw + x0) * 4;
+                var e = (y1 * sw + x1) * 4;
+
+                for (var k = 0; k < 4; k++) {
+                    var p0 = src[a + k] * (1 - tx) + src[b + k] * tx;
+                    var p1 = src[c + k] * (1 - tx) + src[e + k] * tx;
+
+                    out[d + k] = p0 * (1 - ty) + p1 * ty;
                 }
             }
         }
-    } function octEncodeNormal(n) { var x = n[0], y = n[1], z = n[2], l = Math.abs(x) + Math.abs(y) + Math.abs(z) || 1; x /= l; y /= l; z /= l; if (z < 0) { var ox = x, oy = y; x = (1 - Math.abs(oy)) * (ox >= 0 ? 1 : -1); y = (1 - Math.abs(ox)) * (oy >= 0 ? 1 : -1); } return [x * 0.5 + 0.5, y * 0.5 + 0.5]; } function applyBentNormalsToGBuffer(gb, bent) { for (var i = 0; i < gb.w * gb.h; i++) { var o = i * 4; if (gb.pos[o + 3] < 0.5) { gb.du[o + 3] = 0.5; gb.dv[o + 3] = 0.5; continue; } var nx = gb.nrm[o], ny = gb.nrm[o + 1], nz = gb.nrm[o + 2], bx = bent ? bent[o] : nx, by = bent ? bent[o + 1] : ny, bz = bent ? bent[o + 2] : nz; var l = Math.hypot(bx, by, bz) || 1; var enc = octEncodeNormal([bx / l, by / l, bz / l]); gb.du[o + 3] = enc[0]; gb.dv[o + 3] = enc[1]; } } function packGBuffer(gb) { var count = gb.w * gb.h, out = new Float32Array(count * 16); for (var i = 0; i < count; i++) { var s = i * 4, d = i * 16; out.set(gb.pos.subarray(s, s + 4), d); out.set(gb.nrm.subarray(s, s + 4), d + 4); out.set(gb.du.subarray(s, s + 4), d + 8); out.set(gb.dv.subarray(s, s + 4), d + 12); } return out; } async function createDeviceState(gd) {
-        var gpu = nativeGPUDevice(gd); if (!gpu) throw new Error('No se encontro GPUDevice WebGPU nativo.'); if (gpu.limits && gpu.limits.maxStorageBuffersPerShaderStage < 8) throw new Error('WebGPU maxStorageBuffersPerShaderStage=' + gpu.limits.maxStorageBuffersPerShaderStage + '; PT6.0.2 necesita 8.');
-        gpu.pushErrorScope('validation'); var C = GPUShaderStageRef.COMPUTE, entries = [{ binding: 0, visibility: C, buffer: { type: 'uniform' } }]; for (var b = 1; b <= 8; b++)entries.push({ binding: b, visibility: C, buffer: { type: (b === 7 || b === 8) ? 'storage' : 'read-only-storage' } }); var bgl = gpu.createBindGroupLayout({ label: 'BakePT602-BGL', entries: entries }), mod = gpu.createShaderModule({ label: 'BakePT602-WGSL', code: WGSL }); if (typeof mod.getCompilationInfo === 'function') { var ci = await mod.getCompilationInfo(), bad = false; ci.messages.forEach(function (m) { (m.type === 'error' ? fail : warn)('WGSL ' + m.type + ' L' + m.lineNum + ':' + m.linePos + ' ' + m.message); if (m.type === 'error') bad = true; }); if (bad) throw new Error('WGSL no compilo.'); } var pipeline = gpu.createComputePipeline({ label: 'BakePT602-Pipeline', layout: gpu.createPipelineLayout({ bindGroupLayouts: [bgl] }), compute: { module: mod, entryPoint: 'main' } }), validation = await gpu.popErrorScope(); if (validation) throw new Error('WebGPU validation: ' + validation.message); return { gpu: gpu, bgl: bgl, pipeline: pipeline };
-    } function deviceState(gd) { var p = DEVICE_CACHE.get(gd); if (!p) { p = createDeviceState(gd); DEVICE_CACHE.set(gd, p); p.catch(function () { DEVICE_CACHE.delete(gd); }); } return p; } async function createAODeviceState(gd) {
-        var gpu = nativeGPUDevice(gd);
-        if (!gpu) throw new Error('No se encontro GPUDevice WebGPU para AO.'); gpu.pushErrorScope('validation'); var C = GPUShaderStageRef.COMPUTE; var bgl = gpu.createBindGroupLayout({ label: 'BakePT602-AO-BGL', entries: [{ binding: 0, visibility: C, buffer: { type: 'uniform' } }, { binding: 1, visibility: C, buffer: { type: 'read-only-storage' } }, { binding: 2, visibility: C, buffer: { type: 'read-only-storage' } }, { binding: 3, visibility: C, buffer: { type: 'read-only-storage' } }, { binding: 4, visibility: C, buffer: { type: 'storage' } }, { binding: 5, visibility: C, buffer: { type: 'storage' } }] }); var mod = gpu.createShaderModule({ label: 'BakePT602-AO-WGSL', code: AO_WGSL }); if (typeof mod.getCompilationInfo === 'function') { var ci = await mod.getCompilationInfo(), bad = false; ci.messages.forEach(function (m) { (m.type === 'error' ? fail : warn)('AO WGSL ' + m.type + ' L' + m.lineNum + ':' + m.linePos + ' ' + m.message); if (m.type === 'error') bad = true; }); if (bad) throw new Error('WGSL de Ambient Occlusion no compilo.'); } var pipeline = gpu.createComputePipeline({ label: 'BakePT602-AO-Pipeline', layout: gpu.createPipelineLayout({ bindGroupLayouts: [bgl] }), compute: { module: mod, entryPoint: 'main' } }); var validation = await gpu.popErrorScope(); if (validation) throw new Error('WebGPU AO validation: ' + validation.message);
-        return { gpu: gpu, bgl: bgl, pipeline: pipeline };
-    } function aoDeviceState(gd) { var p = AO_DEVICE_CACHE.get(gd); if (!p) { p = createAODeviceState(gd); AO_DEVICE_CACHE.set(gd, p); p.catch(function () { AO_DEVICE_CACHE.delete(gd); }); } return p; } function storage(gpu, data, label) { var size = Math.max(16, Math.ceil(data.byteLength / 16) * 16), b = gpu.createBuffer({ label: label, size: size, usage: GPUBufferUsageRef.STORAGE | GPUBufferUsageRef.COPY_DST }); if (data.byteLength) gpu.queue.writeBuffer(b, 0, data.buffer, data.byteOffset, data.byteLength); return b; } function emptyStorage(gpu, size, label, copySrc) { return gpu.createBuffer({ label: label, size: Math.max(16, Math.ceil(size / 16) * 16), usage: GPUBufferUsageRef.STORAGE | (copySrc ? GPUBufferUsageRef.COPY_SRC : 0) }); } function paramArray(p) {
-        var ab = new ArrayBuffer(160), u = new Uint32Array(ab), f = new Float32Array(ab); u[0] = p.width; u[1] = p.height; u[2] = p.triCount; u[3] = p.bvhCount; u[4] = p.lightCount; u[5] = p.sampleCount; u[6] = p.maxSamples; u[7] = p.minSamples; u[8] = p.maxBounces; u[9] = p.seed; u[10] = p.envFaceSize; u[11] = p.envCount; f[12] = p.ambient[0]; f[13] = p.ambient[1]; f[14] = p.ambient[2]; f[15] = p.adaptiveCheckInterval || 1; f[16] = p.rayBias; f[17] = p.maxRadiance; f[18] = p.noiseThreshold; f[19] = p.envIntensity; u[20] = p.envMode; u[21] = p.adaptive ? 1 : 0;
-        u[22] = p.customEnvDirect ? 1 : 0; u[23] = p.pixelOffset || 0; f[24] = p.envRotation[0]; f[25] = p.envRotation[1]; f[26] = p.envRotation[2]; f[28] = p.envRotation[3]; f[29] = p.envRotation[4]; f[30] = p.envRotation[5]; f[32] = p.envRotation[6]; f[33] = p.envRotation[7]; f[34] = p.envRotation[8]; f[36] = p.envMinWorldY; f[37] = p.bentStrength || 0; f[38] = p.adaptiveLumaFloor || 0.02; f[39] = p.adaptiveConfirmations || 1; return ab;
-    } function assertBindingSize(gpu, bytes, label) { var max = gpu.limits && gpu.limits.maxStorageBufferBindingSize; if (max && bytes > max) throw new Error(label + ' requiere ' + Math.round(bytes / 1048576) + ' MB, pero WebGPU permite ' + Math.round(max / 1048576) + ' MB por storage binding. Reduce la resolucion de ese lightmap.'); } function nextPlayCanvasFrame(owner) {
-        return new Promise(function (resolve) {
-            var done = false, handle = null, timer = null; function finish() { if (done) return; done = true; if (timer !== null) clearTimeout(timer); if (handle && typeof handle.off === 'function') try { handle.off(); } catch (_) { } resolve(); } try { var app = owner && owner.app, scene = app && app.scene; if (scene && typeof scene.once === 'function') { var evt = pc.Scene && pc.Scene.EVENT_POSTRENDER ? pc.Scene.EVENT_POSTRENDER : 'postrender'; handle = scene.once(evt, finish); timer = setTimeout(finish, 40); return; } } catch (_) { } if (typeof requestAnimationFrame === 'function') requestAnimationFrame(finish);
-            else setTimeout(finish, 0);
-        });
-    } function alignedTexelChunk(pixelCount, sampleChunk, budget) { var raw = Math.max(64, Math.floor(Math.max(64, budget) / Math.max(1, sampleChunk))); var aligned = Math.max(64, Math.floor(raw / 64) * 64); return Math.min(pixelCount, aligned); } function calibratedBudget(actualSampleTexels, sliceMs, targetMs, minBudget, maxBudget) { if (!Number.isFinite(sliceMs) || sliceMs <= 0) return clamp(actualSampleTexels, minBudget, maxBudget); var scale = clamp(targetMs / Math.max(0.25, sliceMs), 0.25, 64.0); return clamp(Math.round(actualSampleTexels * scale), minBudget, maxBudget); } function retuneWorkBudget(current, actualSampleTexels, sliceMs, targetMs, minBudget, maxBudget) { if (!Number.isFinite(sliceMs) || sliceMs <= 0) return current; var desired = calibratedBudget(actualSampleTexels, sliceMs, targetMs, minBudget, maxBudget); return clamp(Math.round(current * 0.60 + desired * 0.40), minBudget, maxBudget); } async function traceGPU(ds, sb, eb, gb, si, p, seed, owner, epoch) {
-        var gpu = ds.gpu, w = gb.w, h = gb.h, pixelCount = w * h, gPacked = packGBuffer(gb), gBytes = gPacked.byteLength, outBytes = pixelCount * 16, statsBytes = pixelCount * 16; assertBindingSize(gpu, gBytes, 'G-buffer ' + w + 'x' + h); assertBindingSize(gpu, outBytes, 'Acumulacion ' + w + 'x' + h); assertBindingSize(gpu, eb.pixelBytes, 'Environment pixels');
-        assertBindingSize(gpu, eb.aliasBytes, 'Environment alias'); var gbufBuffer = storage(gpu, gPacked, 'BakePT602-GBuf'), statsBuffer = emptyStorage(gpu, statsBytes, 'BakePT602-Stats', true), outBuffer = emptyStorage(gpu, outBytes, 'BakePT602-Out', true), readBuffer = gpu.createBuffer({ label: 'BakePT602-Read', size: outBytes, usage: GPUBufferUsageRef.COPY_DST | GPUBufferUsageRef.MAP_READ }), statsReadBuffer = gpu.createBuffer({ label: 'BakePT602-StatsRead', size: statsBytes, usage: GPUBufferUsageRef.COPY_DST | GPUBufferUsageRef.MAP_READ }), paramsBuffer = gpu.createBuffer({ label: 'BakePT602-Params', size: 160, usage: GPUBufferUsageRef.UNIFORM | GPUBufferUsageRef.COPY_DST }); var sampleChunk = Math.max(1, p.perDispatch | 0), rounds = Math.ceil(p.maxSamples / sampleChunk), budgetMax = Math.max(p.giBudgetMax, Math.min(8388608, p.giBudgetInitial * 2048)), budget = clamp(p.giBudgetInitial, p.giBudgetMin, budgetMax), budgetInitial = budget, targetMs = p.targetGpuSliceMs || 12, yieldBudgetMs = p.yieldBudgetMs || 26; var params = paramArray({ width: w, height: h, triCount: si.triCount, bvhCount: si.bvhCount, lightCount: si.lightCount, sampleCount: sampleChunk, maxSamples: p.maxSamples, minSamples: p.minSamples, maxBounces: p.bounces, seed: seed >>> 0, ambient: si.ambient, rayBias: si.rayBias, maxRadiance: p.maxRadiance, noiseThreshold: p.noiseThreshold, adaptiveLumaFloor: p.adaptiveLumaFloor, adaptiveCheckInterval: p.adaptiveCheckInterval, adaptiveConfirmations: p.adaptiveConfirmations, envFaceSize: si.env.faceSize, envCount: si.env.count, envMode: si.env.mode, envIntensity: si.env.intensity, envRotation: si.env.rotation, envMinWorldY: si.env.minWorldY, adaptive: true, customEnvDirect: !!si.customEnvDirect, bentStrength: si.bentStrength || 0, pixelOffset: 0 });
-        gpu.queue.writeBuffer(paramsBuffer, 0, params); var bind = gpu.createBindGroup({ layout: ds.bgl, entries: [{ binding: 0, resource: { buffer: paramsBuffer } }, { binding: 1, resource: { buffer: gbufBuffer } }, { binding: 2, resource: { buffer: sb.tris } }, { binding: 3, resource: { buffer: sb.bvh } }, { binding: 4, resource: { buffer: sb.lights } }, { binding: 5, resource: { buffer: eb.pixels } }, { binding: 6, resource: { buffer: eb.alias } }, { binding: 7, resource: { buffer: statsBuffer } }, { binding: 8, resource: { buffer: outBuffer } }] }); var offsetU32 = new Uint32Array(1), submits = 0, dispatches = 0, interleavedFrames = 0, calibrationTimes = [], calibrationSampleTexels = 0, calibrated = false, frameBatch = 1, dispatchesSinceYield = 0, gpuMsSinceYield = 0, sliceSum = 0, sliceMax = 0, sliceCount = 0, lastStatusMs = now(), checkpoints = 0, lastActiveFraction = 1, nextCheckpoint = p.minSamples, checkpointInterval = Math.max(128, (p.adaptiveCheckInterval || 128) * 2); try {
-            async function readAdaptiveProgress() {
-                var cenc = gpu.createCommandEncoder({ label: 'BakePT602-StatsCheckpoint' }); cenc.copyBufferToBuffer(statsBuffer, 0, statsReadBuffer, 0, statsBytes); gpu.queue.submit([cenc.finish()]); submits++; await statsReadBuffer.mapAsync(GPUMapModeRef.READ); var cp = new Float32Array(statsReadBuffer.getMappedRange()), activeCount = 0, validCount = 0; for (var ci = 0;
-                    ci < pixelCount; ci++) { var co = ci * 4; if (gb.pos[co + 3] < 0.5) continue; validCount++; if (cp[co + 3] < 2.0) activeCount++; } statsReadBuffer.unmap(); checkpoints++; var fraction = validCount ? activeCount / validCount : 0; lastActiveFraction = fraction; frameBatch = fraction > 0 ? clamp(Math.round(0.9 / Math.max(fraction, 0.001)), 1, 8) : 8; return { active: activeCount, valid: validCount, fraction: fraction };
-            } var stopAll = false; for (var round = 0; round < rounds && !stopAll; round++) {
-                var offset = 0; while (offset < pixelCount) {
-                    if (!active(owner, epoch)) throw new Error('cancelado'); var plannedTexels = alignedTexelChunk(pixelCount, sampleChunk, budget), remaining = pixelCount - offset, texels = Math.min(plannedTexels, remaining), fullBudgetChunk = texels === plannedTexels; offsetU32[0] = offset; gpu.queue.writeBuffer(paramsBuffer, 92, offsetU32); var enc = gpu.createCommandEncoder({ label: 'BakePT602-Encoder-r' + round + '-o' + offset }), pass = enc.beginComputePass({ label: 'BakePT602-Pass-r' + round + '-o' + offset }); pass.setPipeline(ds.pipeline); pass.setBindGroup(0, bind); pass.dispatchWorkgroups(Math.ceil(texels / 64), 1, 1); pass.end(); dispatches++; var finalScheduled = round === rounds - 1 && offset + texels >= pixelCount; if (finalScheduled) {
-                        enc.copyBufferToBuffer(outBuffer, 0, readBuffer, 0, outBytes); enc.copyBufferToBuffer(statsBuffer, 0, statsReadBuffer, 0, statsBytes);
-                    } if (!calibrated && typeof gpu.queue.onSubmittedWorkDone === 'function' && calibrationTimes.length < 2) { var tCal = now(); gpu.queue.submit([enc.finish()]); submits++; await gpu.queue.onSubmittedWorkDone(); var measured = now() - tCal; calibrationTimes.push(measured); calibrationSampleTexels = texels * sampleChunk; offset += texels; gpuMsSinceYield += measured; sliceSum += measured; sliceMax = Math.max(sliceMax, measured); sliceCount++; if (calibrationTimes.length === 2) { var warmMs = calibrationTimes[1]; budget = calibratedBudget(calibrationSampleTexels, warmMs, targetMs, p.giBudgetMin, budgetMax); calibrated = true; } if (!finalScheduled && gpuMsSinceYield >= yieldBudgetMs) { await nextPlayCanvasFrame(owner); interleavedFrames++; gpuMsSinceYield = 0; dispatchesSinceYield = 0; } continue; } var submitStart = now(); gpu.queue.submit([enc.finish()]); submits++; if (typeof gpu.queue.onSubmittedWorkDone === 'function') await gpu.queue.onSubmittedWorkDone(); var sliceMs = now() - submitStart, actualWork = texels * sampleChunk; offset += texels; dispatchesSinceYield++; gpuMsSinceYield += sliceMs; sliceSum += sliceMs; sliceMax = Math.max(sliceMax, sliceMs); sliceCount++; if (fullBudgetChunk) budget = retuneWorkBudget(budget, actualWork, sliceMs, targetMs, p.giBudgetMin, budgetMax); if (now() - lastStatusMs >= 5000) {
-                        log('    GI trabajando ~' + Math.min(p.maxSamples, (round + 1) * sampleChunk) + ' spp offset=' + (offset) + '/' + pixelCount + ' budget=' + budget + ' slice=' + sliceMs.toFixed(1) + 'ms frames=' + interleavedFrames);
-                        lastStatusMs = now();
-                    } if (!finalScheduled && (gpuMsSinceYield >= yieldBudgetMs || sliceMs >= targetMs * 1.75)) { await nextPlayCanvasFrame(owner); interleavedFrames++; gpuMsSinceYield = 0; dispatchesSinceYield = 0; }
-                } var scheduledSpp = Math.min(p.maxSamples, (round + 1) * sampleChunk); if (p.adaptive && scheduledSpp >= nextCheckpoint && scheduledSpp < p.maxSamples) { var progress = await readAdaptiveProgress(); nextCheckpoint = scheduledSpp + checkpointInterval; log('    GI progreso ' + scheduledSpp + ' spp active=' + (progress.fraction * 100).toFixed(1) + '% budget=' + budget + ' sliceAvg=' + (sliceCount ? sliceSum / sliceCount : 0).toFixed(1) + 'ms max=' + sliceMax.toFixed(1) + 'ms frames=' + interleavedFrames); if (progress.active === 0) { stopAll = true; } else if (gpuMsSinceYield > 0) { await nextPlayCanvasFrame(owner); interleavedFrames++; dispatchesSinceYield = 0; gpuMsSinceYield = 0; } }
-            } if (stopAll) { var fenc = gpu.createCommandEncoder({ label: 'BakePT602-EarlyFinalCopy' }); fenc.copyBufferToBuffer(outBuffer, 0, readBuffer, 0, outBytes); fenc.copyBufferToBuffer(statsBuffer, 0, statsReadBuffer, 0, statsBytes); gpu.queue.submit([fenc.finish()]); submits++; } if (!active(owner, epoch)) throw new Error('cancelado'); await Promise.all([readBuffer.mapAsync(GPUMapModeRef.READ), statsReadBuffer.mapAsync(GPUMapModeRef.READ)]);
-            var raw = new Float32Array(readBuffer.getMappedRange().slice(0)), rawStats = new Float32Array(statsReadBuffer.getMappedRange().slice(0)); readBuffer.unmap(); statsReadBuffer.unmap(); var result = new Float32Array(raw.length), sampleSum = 0, sampleMin = Infinity, sampleMax = 0, counted = 0, early = 0, relErrors = [], relSum = 0, cvSum = 0, lumaFloor = Math.max(1e-6, p.adaptiveLumaFloor || 0.02); for (var i = 0; i < pixelCount; i++) { var o = i * 4; if (gb.pos[o + 3] < 0.5) { result[o + 3] = 1; continue; } var n = Math.max(1, Math.round(raw[o + 3])); result[o] = raw[o] / n; result[o + 1] = raw[o + 1] / n; result[o + 2] = raw[o + 2] / n; result[o + 3] = 1; sampleSum += n; sampleMin = Math.min(sampleMin, n); sampleMax = Math.max(sampleMax, n); counted++; if (n < p.maxSamples) early++; var sn = Math.max(1, rawStats[o + 2]), mean = rawStats[o] / sn, variance = Math.max(rawStats[o + 1] / sn - mean * mean, 0), std = Math.sqrt(variance), stdError = std / Math.sqrt(sn), rel = stdError / Math.max(Math.abs(mean), lumaFloor), cv = std / Math.max(Math.abs(mean), lumaFloor); if (Number.isFinite(rel)) { relErrors.push(rel); relSum += rel; cvSum += cv; } } relErrors.sort(function (a, b) { return a - b; }); function pct(q) { if (!relErrors.length) return 0; return relErrors[Math.min(relErrors.length - 1, Math.max(0, Math.round((relErrors.length - 1) * q)))]; } return { pixels: result, averageSamples: counted ? sampleSum / counted : 0, minSamplesUsed: counted ? sampleMin : 0, maxSamplesUsed: sampleMax, earlyConvergedPct: counted ? early * 100 / counted : 0, dispatches: dispatches, submits: submits, interleavedFrames: interleavedFrames, calibrationMs: calibrationTimes.length > 1 ? calibrationTimes[1] : (calibrationTimes[0] || 0), calibrationColdMs: calibrationTimes.length ? calibrationTimes[0] : 0, calibrationWarmMs: calibrationTimes.length > 1 ? calibrationTimes[1] : (calibrationTimes[0] || 0), calibrationSampleTexels: calibrationSampleTexels, budgetInitial: budgetInitial, budgetFinal: budget, noiseThreshold: p.noiseThreshold, adaptiveLumaFloor: lumaFloor, adaptiveCheckInterval: p.adaptiveCheckInterval, adaptiveConfirmations: p.adaptiveConfirmations || 1, sampleChunk: sampleChunk, checkpoints: checkpoints, lastActiveFraction: lastActiveFraction, frameBatch: frameBatch, gpuSliceAverage: sliceCount ? sliceSum / sliceCount : 0, gpuSliceMax: sliceMax, relativeErrorAverage: relErrors.length ? relSum / relErrors.length : 0, relativeErrorP50: pct(0.50), relativeErrorP90: pct(0.90), relativeErrorP95: pct(0.95), relativeErrorMax: relErrors.length ? relErrors[relErrors.length - 1] : 0, coefficientVariationAverage: relErrors.length ? cvSum / relErrors.length : 0 };
-        } finally { [gbufBuffer, statsBuffer, outBuffer, readBuffer, statsReadBuffer, paramsBuffer].forEach(function (b) { try { b.destroy(); } catch (_) { } }); }
-    } function aoParamArray(gb, scene, si, p, seed, sampleCount, pixelOffset) { var ab = new ArrayBuffer(64), u = new Uint32Array(ab), f = new Float32Array(ab); u[0] = gb.w; u[1] = gb.h; u[2] = scene.triCount; u[3] = scene.bvhCount; u[4] = sampleCount; u[5] = p.aoSamples; u[6] = seed >>> 0; u[7] = pixelOffset || 0; f[8] = si.rayBias; f[9] = scene.extent; f[10] = p.aoContactRadiusFraction; f[11] = p.aoCavityRadiusFraction; return ab; } async function traceAO(gd, sb, gb, scene, si, p, seed, owner, epoch) {
-        var ds = await aoDeviceState(gd); if (!active(owner, epoch)) throw new Error('cancelado'); var gpu = ds.gpu, w = gb.w, h = gb.h, pixelCount = w * h, gPacked = packGBuffer(gb), gBytes = gPacked.byteLength, outBytes = pixelCount * 16; assertBindingSize(gpu, gBytes, 'AO G-buffer ' + w + 'x' + h); assertBindingSize(gpu, outBytes, 'AO output ' + w + 'x' + h); var gbufBuffer = storage(gpu, gPacked, 'BakePT602-AO-GBuf'), outBuffer = emptyStorage(gpu, outBytes, 'BakePT602-AO-Out', true), bentBuffer = emptyStorage(gpu, outBytes, 'BakePT602-Bent-Out', true), readBuffer = gpu.createBuffer({ label: 'BakePT602-AO-Read', size: outBytes, usage: GPUBufferUsageRef.COPY_DST | GPUBufferUsageRef.MAP_READ }), bentRead = gpu.createBuffer({ label: 'BakePT602-Bent-Read', size: outBytes, usage: GPUBufferUsageRef.COPY_DST | GPUBufferUsageRef.MAP_READ }), paramsBuffer = gpu.createBuffer({ label: 'BakePT602-AO-Params', size: 64, usage: GPUBufferUsageRef.UNIFORM | GPUBufferUsageRef.COPY_DST });
-        var sampleChunk = Math.max(1, p.aoBatch | 0), rounds = Math.ceil(p.aoSamples / sampleChunk), budgetMax = Math.max(p.aoBudgetMax, Math.min(16777216, p.aoBudgetInitial * 256)), budget = clamp(p.aoBudgetInitial, p.aoBudgetMin, budgetMax), budgetInitial = budget, targetMs = p.targetGpuSliceMs || 12, yieldBudgetMs = p.yieldBudgetMs || 26; gpu.queue.writeBuffer(paramsBuffer, 0, aoParamArray(gb, scene, si, p, seed, sampleChunk, 0)); var bind = gpu.createBindGroup({ layout: ds.bgl, entries: [{ binding: 0, resource: { buffer: paramsBuffer } }, { binding: 1, resource: { buffer: gbufBuffer } }, { binding: 2, resource: { buffer: sb.tris } }, { binding: 3, resource: { buffer: sb.bvh } }, { binding: 4, resource: { buffer: outBuffer } }, { binding: 5, resource: { buffer: bentBuffer } }] }), offsetU32 = new Uint32Array(1), submits = 0, dispatches = 0, interleavedFrames = 0, calibrationTimes = [], calibrationSampleTexels = 0, calibrated = false, gpuMsSinceYield = 0, sliceSum = 0, sliceMax = 0, sliceCount = 0, lastStatusMs = now(); try {
-            for (var round = 0; round < rounds; round++) {
-                var offset = 0; while (offset < pixelCount) {
-                    if (!active(owner, epoch)) throw new Error('cancelado'); var plannedTexels = alignedTexelChunk(pixelCount, sampleChunk, budget), remaining = pixelCount - offset, texels = Math.min(plannedTexels, remaining), fullBudgetChunk = texels === plannedTexels; offsetU32[0] = offset;
-                    gpu.queue.writeBuffer(paramsBuffer, 28, offsetU32); var enc = gpu.createCommandEncoder({ label: 'BakePT602-AO-Encoder-r' + round + '-o' + offset }), pass = enc.beginComputePass({ label: 'BakePT602-AO-Pass-r' + round + '-o' + offset }); pass.setPipeline(ds.pipeline); pass.setBindGroup(0, bind); pass.dispatchWorkgroups(Math.ceil(texels / 64), 1, 1); pass.end(); dispatches++; var last = round === rounds - 1 && offset + texels >= pixelCount; if (last) { enc.copyBufferToBuffer(outBuffer, 0, readBuffer, 0, outBytes); enc.copyBufferToBuffer(bentBuffer, 0, bentRead, 0, outBytes); } if (!calibrated && typeof gpu.queue.onSubmittedWorkDone === 'function' && calibrationTimes.length < 2) {
-                        var tCal = now(); gpu.queue.submit([enc.finish()]); submits++; await gpu.queue.onSubmittedWorkDone(); var measured = now() - tCal; calibrationTimes.push(measured); calibrationSampleTexels = texels * sampleChunk; offset += texels; gpuMsSinceYield += measured; sliceSum += measured; sliceMax = Math.max(sliceMax, measured); sliceCount++; if (calibrationTimes.length === 2) { var warmMs = calibrationTimes[1]; budget = calibratedBudget(calibrationSampleTexels, warmMs, targetMs, p.aoBudgetMin, budgetMax); calibrated = true; } if (!last && gpuMsSinceYield >= yieldBudgetMs) { await nextPlayCanvasFrame(owner); interleavedFrames++; gpuMsSinceYield = 0; } continue;
-                    } var submitStart = now(); gpu.queue.submit([enc.finish()]); submits++; if (typeof gpu.queue.onSubmittedWorkDone === 'function') await gpu.queue.onSubmittedWorkDone(); var sliceMs = now() - submitStart, actualWork = texels * sampleChunk; offset += texels; gpuMsSinceYield += sliceMs; sliceSum += sliceMs; sliceMax = Math.max(sliceMax, sliceMs); sliceCount++; if (fullBudgetChunk) budget = retuneWorkBudget(budget, actualWork, sliceMs, targetMs, p.aoBudgetMin, budgetMax); if (now() - lastStatusMs >= 5000) { log('    AO trabajando ~' + Math.min(p.aoSamples, (round + 1) * sampleChunk) + ' spp offset=' + (offset) + '/' + pixelCount + ' budget=' + budget + ' slice=' + sliceMs.toFixed(1) + 'ms frames=' + interleavedFrames); lastStatusMs = now(); } if (!last && (gpuMsSinceYield >= yieldBudgetMs || sliceMs >= targetMs * 1.75)) { await nextPlayCanvasFrame(owner); interleavedFrames++; gpuMsSinceYield = 0; }
+
+        return out;
+    }
+
+    async function readTextureForBake(tex, maxResolution, forceData) {
+        if (!tex || tex.cubemap || tex.volume || tex.array) {
+            throw new Error('solo texturas 2D');
+        }
+
+        var levels = Math.max(1, tex.numLevels || 1);
+        var mip = 0;
+
+        while (
+            mip + 1 < levels &&
+            Math.max(
+                tex.width >> (mip + 1),
+                tex.height >> (mip + 1)
+            ) >= Math.max(4, maxResolution)
+        ) {
+            mip++;
+        }
+
+        var w = Math.max(1, tex.width >> mip);
+        var h = Math.max(1, tex.height >> mip);
+
+        var pixels = null;
+        var raw = null;
+
+        try {
+            raw = await tex.read(
+                0,
+                0,
+                w,
+                h,
+                {
+                    mipLevel: mip,
+                    immediate: true
                 }
-            } if (!active(owner, epoch)) throw new Error('cancelado'); await Promise.all([readBuffer.mapAsync(GPUMapModeRef.READ), bentRead.mapAsync(GPUMapModeRef.READ)]); var raw = new Float32Array(readBuffer.getMappedRange().slice(0)), br = new Float32Array(bentRead.getMappedRange().slice(0)); readBuffer.unmap(); bentRead.unmap(); var contact = new Float32Array(pixelCount), cavity = new Float32Array(pixelCount), bent = new Float32Array(pixelCount * 4), radiusSum = 0, valid = 0;
-            for (var i = 0; i < pixelCount; i++) { var o = i * 4; if (gb.pos[o + 3] < 0.5) { contact[i] = 1; cavity[i] = 1; bent[o] = gb.nrm[o]; bent[o + 1] = gb.nrm[o + 1]; bent[o + 2] = gb.nrm[o + 2]; bent[o + 3] = 1; continue; } var samples = Math.max(1, Math.round(raw[o + 3])); contact[i] = clamp(raw[o] / samples, 0, 1); cavity[i] = clamp(raw[o + 1] / samples, 0, 1); radiusSum += raw[o + 2]; valid++; var bx = br[o], by = br[o + 1], bz = br[o + 2], bl = Math.hypot(bx, by, bz); if (bl < 1e-8) { bx = gb.nrm[o]; by = gb.nrm[o + 1]; bz = gb.nrm[o + 2]; bl = Math.hypot(bx, by, bz) || 1; } bent[o] = bx / bl; bent[o + 1] = by / bl; bent[o + 2] = bz / bl; bent[o + 3] = 1; } return { contact: contact, cavity: cavity, bent: bent, averageRadius: valid ? radiusSum / valid : 0, dispatches: dispatches, submits: submits, interleavedFrames: interleavedFrames, calibrationMs: calibrationTimes.length ? Math.min.apply(Math, calibrationTimes) : 0, calibrationColdMs: calibrationTimes.length ? calibrationTimes[0] : 0, calibrationWarmMs: calibrationTimes.length > 1 ? calibrationTimes[1] : (calibrationTimes[0] || 0), calibrationSampleTexels: calibrationSampleTexels, budgetInitial: budgetInitial, budgetFinal: budget, sampleChunk: sampleChunk, gpuSliceAverage: sliceCount ? sliceSum / sliceCount : 0, gpuSliceMax: sliceMax };
+            );
+
+            if (raw) {
+                pixels = decodeTexturePixels(
+                    tex,
+                    raw,
+                    w,
+                    h,
+                    forceData === true
+                );
+            }
+        } catch (_) {
+            pixels = null;
+        }
+
+        if (
+            !pixels &&
+            typeof document !== 'undefined' &&
+            typeof tex.getSource === 'function'
+        ) {
+            try {
+                var source = tex.getSource(mip) || tex.getSource(0);
+
+                if (
+                    source &&
+                    !Array.isArray(source) &&
+                    source.width &&
+                    source.height
+                ) {
+                    var scale = Math.min(
+                        1,
+                        maxResolution /
+                        Math.max(source.width, source.height)
+                    );
+
+                    var dw = Math.max(
+                        1,
+                        Math.round(source.width * scale)
+                    );
+
+                    var dh = Math.max(
+                        1,
+                        Math.round(source.height * scale)
+                    );
+
+                    var canvas = document.createElement('canvas');
+
+                    canvas.width = dw;
+                    canvas.height = dh;
+
+                    var ctx = canvas.getContext(
+                        '2d',
+                        {
+                            willReadFrequently: true
+                        }
+                    );
+
+                    ctx.drawImage(
+                        source,
+                        0,
+                        0,
+                        dw,
+                        dh
+                    );
+
+                    var bytes = ctx.getImageData(
+                        0,
+                        0,
+                        dw,
+                        dh
+                    ).data;
+
+                    pixels = new Float32Array(dw * dh * 4);
+
+                    var srgb =
+                        forceData !== true &&
+                        (
+                            !!tex.srgb ||
+                            formatEquals(
+                                tex.format,
+                                'PIXELFORMAT_SRGB8'
+                            ) ||
+                            formatEquals(
+                                tex.format,
+                                'PIXELFORMAT_SRGBA8'
+                            ) ||
+                            formatEquals(
+                                tex.format,
+                                'PIXELFORMAT_SBGRA8'
+                            )
+                        );
+
+                    for (var i = 0; i < dw * dh; i++) {
+                        var o = i * 4;
+
+                        var r = bytes[o] / 255;
+                        var g = bytes[o + 1] / 255;
+                        var b = bytes[o + 2] / 255;
+
+                        pixels[o] = srgb ? srgbToLinear1(r) : r;
+                        pixels[o + 1] = srgb ? srgbToLinear1(g) : g;
+                        pixels[o + 2] = srgb ? srgbToLinear1(b) : b;
+                        pixels[o + 3] = bytes[o + 3] / 255;
+                    }
+
+                    w = dw;
+                    h = dh;
+                    mip = 0;
+                }
+            } catch (_) {
+                pixels = null;
+            }
+        }
+
+        if (!pixels) {
+            throw new Error(
+                'readback/source no disponible o formato no soportado'
+            );
+        }
+
+        if (Math.max(w, h) > maxResolution) {
+            var s = maxResolution / Math.max(w, h);
+            var nw = Math.max(1, Math.round(w * s));
+            var nh = Math.max(1, Math.round(h * s));
+
+            pixels = resampleRGBA(
+                pixels,
+                w,
+                h,
+                nw,
+                nh
+            );
+
+            w = nw;
+            h = nh;
+        }
+
+        return {
+            pixels: pixels,
+            width: w,
+            height: h,
+            mip: mip,
+            addressU: isNum(tex.addressU) ? tex.addressU : 0,
+            addressV: isNum(tex.addressV) ? tex.addressV : 0,
+            name: tex.name || '(texture)'
+        };
+    }
+
+    async function prepareMaterialTextures(lm, p, baseOffset) {
+        var ix = indexComponents(lm);
+
+        var colorTextures = new Set();
+        var dataTextures = new Set();
+        var materials = new Set();
+
+        ix.map.forEach(function (owner, mi) {
+            if (
+                !owner.enabled ||
+                !mi ||
+                mi.visible === false ||
+                !(owner.isStatic || owner.lightmapped)
+            ) return;
+
+            var mat = mi.material;
+
+            if (!mat || materials.has(mat)) return;
+
+            materials.add(mat);
+
+            if (mat.diffuseMap) colorTextures.add(mat.diffuseMap);
+            if (mat.emissiveMap) colorTextures.add(mat.emissiveMap);
+            if (mat.metalnessMap) dataTextures.add(mat.metalnessMap);
+            if (mat.normalMap) dataTextures.add(mat.normalMap);
+        });
+
+        async function decodeSet(set, forceData, role) {
+            var list = Array.from(set);
+
+            return Promise.all(
+                list.map(async function (tex) {
+                    try {
+                        return {
+                            tex: tex,
+                            data: await readTextureForBake(
+                                tex,
+                                p.materialResolution,
+                                forceData
+                            ),
+                            error: null,
+                            role: role
+                        };
+                    } catch (e) {
+                        return {
+                            tex: tex,
+                            data: null,
+                            error: e,
+                            role: role
+                        };
+                    }
+                })
+            );
+        }
+
+        var colorDecoded = await decodeSet(
+            colorTextures,
+            false,
+            'color'
+        );
+
+        var dataDecoded = await decodeSet(
+            dataTextures,
+            true,
+            'data'
+        );
+
+        var decoded = colorDecoded.concat(dataDecoded);
+
+        var colorMap = new Map();
+        var dataMap = new Map();
+
+        var total = 0;
+        var ok = 0;
+        var failed = 0;
+        var colorOk = 0;
+        var dataOk = 0;
+
+        decoded.forEach(function (r) {
+            if (r.data) {
+                total += r.data.width * r.data.height;
+                ok++;
+
+                if (r.role === 'data') dataOk++;
+                else colorOk++;
+            } else {
+                failed++;
+
+                warn(
+                    'Texture PBR (' + r.role + ') "' +
+                    (r.tex && r.tex.name || '?') +
+                    '" no pudo entrar al pool PT: ' +
+                    (
+                        r.error &&
+                        r.error.message ||
+                        r.error
+                    )
+                );
+            }
+        });
+
+        var pixels = new Float32Array(
+            Math.max(4, total * 4)
+        );
+
+        var cursor = 0;
+
+        decoded.forEach(function (r) {
+            if (!r.data) return;
+
+            var d = r.data;
+            var count = d.width * d.height;
+
+            var entry = {
+                offset: baseOffset + cursor,
+                width: d.width,
+                height: d.height,
+                addressU: d.addressU,
+                addressV: d.addressV,
+                mip: d.mip,
+                name: d.name,
+                pixels: d.pixels,
+                dataTexture: r.role === 'data'
+            };
+
+            pixels.set(
+                d.pixels,
+                cursor * 4
+            );
+
+            if (r.role === 'data') {
+                dataMap.set(r.tex, entry);
+            } else {
+                colorMap.set(r.tex, entry);
+            }
+
+            cursor += count;
+        });
+
+        return {
+            map: colorMap,
+            colorMap: colorMap,
+            dataMap: dataMap,
+            normalMap: dataMap,
+            pixels: pixels,
+            textureCount: ok,
+            colorTextureCount: colorOk,
+            dataTextureCount: dataOk,
+            failedCount: failed,
+            texelCount: cursor,
+            materialCount: materials.size
+        };
+    }
+
+    function mapDescriptor(mat, prefix, texDB, scalar) {
+        var tex = mat && mat[prefix + 'Map'];
+
+        var useData = scalar || prefix === 'normal';
+
+        var lookup =
+            texDB &&
+            (
+                useData ?
+                    texDB.dataMap :
+                    texDB.colorMap
+            );
+
+        var entry =
+            tex &&
+            lookup &&
+            lookup.get(tex);
+
+        var til =
+            mat &&
+            mat[prefix + 'MapTiling'];
+
+        var off =
+            mat &&
+            mat[prefix + 'MapOffset'];
+
+        return {
+            info: [
+                entry ? entry.offset : -1,
+                entry ? entry.width : 0,
+                entry ? entry.height : 0,
+                entry ? entry.addressU : 0
+            ],
+
+            xform: [
+                til && isNum(til.x) ? til.x : 1,
+                til && isNum(til.y) ? til.y : 1,
+                off && isNum(off.x) ? off.x : 0,
+                off && isNum(off.y) ? off.y : 0
+            ],
+
+            misc: [
+                entry ? entry.addressV : 0,
+
+                (
+                    (
+                        mat &&
+                            isNum(mat[prefix + 'MapRotation']) ?
+                            mat[prefix + 'MapRotation'] :
+                            0
+                    ) * Math.PI / 180
+                ),
+
+                mat &&
+                    isNum(mat[prefix + 'MapUv']) ?
+                    mat[prefix + 'MapUv'] :
+                    0,
+
+                scalar ?
+                    channelCode1(
+                        mat &&
+                        mat[prefix + 'MapChannel']
+                    ) :
+                    channelCode3(
+                        mat &&
+                        mat[prefix + 'MapChannel']
+                    )
+            ]
+        };
+    }
+
+    function faceUvDirJS(face, u, v) {
+        var s = u * 2 - 1;
+        var t = v * 2 - 1;
+
+        var x, y, z;
+
+        switch (face) {
+            case 0:
+                x = 1;
+                y = -t;
+                z = -s;
+                break;
+
+            case 1:
+                x = -1;
+                y = -t;
+                z = s;
+                break;
+
+            case 2:
+                x = s;
+                y = 1;
+                z = t;
+                break;
+
+            case 3:
+                x = s;
+                y = -1;
+                z = -t;
+                break;
+
+            case 4:
+                x = s;
+                y = -t;
+                z = 1;
+                break;
+
+            default:
+                x = -s;
+                y = -t;
+                z = -1;
+        }
+
+        var l = Math.hypot(x, y, z) || 1;
+
+        return [
+            x / l,
+            y / l,
+            z / l
+        ];
+    }
+
+    function inverseQuatRows(q) {
+        var x = -(q && isNum(q.x) ? q.x : 0);
+        var y = -(q && isNum(q.y) ? q.y : 0);
+        var z = -(q && isNum(q.z) ? q.z : 0);
+        var w = q && isNum(q.w) ? q.w : 1;
+
+        var xx = x * x;
+        var yy = y * y;
+        var zz = z * z;
+        var xy = x * y;
+        var xz = x * z;
+        var yz = y * z;
+        var wx = w * x;
+        var wy = w * y;
+        var wz = w * z;
+
+        return [
+            1 - 2 * (yy + zz),
+            2 * (xy - wz),
+            2 * (xz + wy),
+
+            2 * (xy + wz),
+            1 - 2 * (xx + zz),
+            2 * (yz - wx),
+
+            2 * (xz - wy),
+            2 * (yz + wx),
+            1 - 2 * (xx + yy)
+        ];
+    }
+
+    function envLocalToWorld(local, r) {
+        return [
+            r[0] * local[0] + r[3] * local[1] + r[6] * local[2],
+            r[1] * local[0] + r[4] * local[1] + r[7] * local[2],
+            r[2] * local[0] + r[5] * local[1] + r[8] * local[2]
+        ];
+    }
+
+    function resampleFaceLinear(src, srcN, dstN) {
+        if (srcN === dstN) return src;
+
+        var out = new Float32Array(dstN * dstN * 4);
+
+        for (var y = 0; y < dstN; y++) {
+            var fy = (y + 0.5) * srcN / dstN - 0.5;
+            var y0 = clamp(Math.floor(fy), 0, srcN - 1);
+            var y1 = Math.min(y0 + 1, srcN - 1);
+            var ty = fy - Math.floor(fy);
+
+            if (fy < 0) ty = 0;
+
+            for (var x = 0; x < dstN; x++) {
+                var fx = (x + 0.5) * srcN / dstN - 0.5;
+                var x0 = clamp(Math.floor(fx), 0, srcN - 1);
+                var x1 = Math.min(x0 + 1, srcN - 1);
+                var tx = fx - Math.floor(fx);
+
+                if (fx < 0) tx = 0;
+
+                var d = (y * dstN + x) * 4;
+                var a = (y0 * srcN + x0) * 4;
+                var b = (y0 * srcN + x1) * 4;
+                var c = (y1 * srcN + x0) * 4;
+                var e = (y1 * srcN + x1) * 4;
+
+                for (var ch = 0; ch < 4; ch++) {
+                    var v0 =
+                        src[a + ch] * (1 - tx) +
+                        src[b + ch] * tx;
+
+                    var v1 =
+                        src[c + ch] * (1 - tx) +
+                        src[e + ch] * tx;
+
+                    out[d + ch] =
+                        v0 * (1 - ty) +
+                        v1 * ty;
+                }
+            }
+        }
+
+        return out;
+    }
+
+    function buildAliasTable(weights) {
+        var n = weights.length;
+
+        var data =
+            new Float32Array(
+                Math.max(4, n * 4)
+            );
+
+        if (!n) {
+            return {
+                data: data,
+                total: 0
+            };
+        }
+
+        var total = 0;
+
+        for (var i = 0; i < n; i++) {
+            total += Math.max(0, weights[i]);
+        }
+
+        if (!(total > 1e-20)) {
+            return {
+                data: data,
+                total: 0
+            };
+        }
+
+        var scaled = new Float64Array(n);
+        var mass = new Float64Array(n);
+
+        var small = [];
+        var large = [];
+
+        for (i = 0; i < n; i++) {
+            mass[i] = Math.max(0, weights[i]) / total;
+            scaled[i] = mass[i] * n;
+
+            (
+                scaled[i] < 1 ?
+                    small :
+                    large
+            ).push(i);
+        }
+
+        var q = new Float64Array(n);
+        var alias = new Int32Array(n);
+
+        while (
+            small.length &&
+            large.length
+        ) {
+            var s = small.pop();
+            var l = large.pop();
+
+            q[s] = scaled[s];
+            alias[s] = l;
+
+            scaled[l] -= 1 - scaled[s];
+
+            (
+                scaled[l] < 1 ?
+                    small :
+                    large
+            ).push(l);
+        }
+
+        while (large.length) {
+            l = large.pop();
+
+            q[l] = 1;
+            alias[l] = l;
+        }
+
+        while (small.length) {
+            s = small.pop();
+
+            q[s] = 1;
+            alias[s] = s;
+        }
+
+        for (i = 0; i < n; i++) {
+            var o = i * 4;
+
+            data[o] = q[i];
+            data[o + 1] = alias[i];
+            data[o + 2] = mass[i];
+        }
+
+        return {
+            data: data,
+            total: total
+        };
+    }
+
+    function buildEnvWeights(pixels, n, rows, minY) {
+        var count = 6 * n * n;
+        var w = new Float64Array(count);
+        var cell = 4 / (n * n);
+
+        for (var face = 0; face < 6; face++) {
+            for (var y = 0; y < n; y++) {
+                var v = (y + 0.5) / n;
+                var t = v * 2 - 1;
+
+                for (var x = 0; x < n; x++) {
+                    var u = (x + 0.5) / n;
+                    var s = u * 2 - 1;
+
+                    var local =
+                        faceUvDirJS(
+                            face,
+                            u,
+                            v
+                        );
+
+                    var world =
+                        envLocalToWorld(
+                            local,
+                            rows
+                        );
+
+                    var idx =
+                        face * n * n +
+                        y * n +
+                        x;
+
+                    if (world[1] < minY) {
+                        w[idx] = 0;
+                        continue;
+                    }
+
+                    var o = idx * 4;
+
+                    var lum =
+                        Math.max(
+                            0,
+                            luminance(
+                                pixels[o],
+                                pixels[o + 1],
+                                pixels[o + 2]
+                            )
+                        );
+
+                    var jac =
+                        1 /
+                        Math.pow(
+                            1 + s * s + t * t,
+                            1.5
+                        );
+
+                    w[idx] =
+                        lum *
+                        cell *
+                        jac;
+                }
+            }
+        }
+
+        return w;
+    }
+
+    function analyzeEnvironment(
+        pixels,
+        n,
+        rows,
+        minY,
+        intensity
+    ) {
+        var cell = 4 / (n * n);
+
+        var omega = 0;
+        var lumOmega = 0;
+        var maxLum = 0;
+        var upIrr = 0;
+
+        var rgbOmega = [0, 0, 0];
+        var upRgb = [0, 0, 0];
+
+        var activeTexels = 0;
+
+        intensity =
+            isNum(intensity) ?
+                Math.max(0, intensity) :
+                1;
+
+        for (var face = 0; face < 6; face++) {
+            for (var y = 0; y < n; y++) {
+                var v = (y + 0.5) / n;
+                var t = v * 2 - 1;
+
+                for (var x = 0; x < n; x++) {
+                    var u = (x + 0.5) / n;
+                    var ss = u * 2 - 1;
+
+                    var local =
+                        faceUvDirJS(
+                            face,
+                            u,
+                            v
+                        );
+
+                    var world =
+                        envLocalToWorld(
+                            local,
+                            rows
+                        );
+
+                    if (world[1] < minY) continue;
+
+                    var idx =
+                        face * n * n +
+                        y * n +
+                        x;
+
+                    var o = idx * 4;
+
+                    var jac =
+                        1 /
+                        Math.pow(
+                            1 + ss * ss + t * t,
+                            1.5
+                        );
+
+                    var dOmega =
+                        cell *
+                        jac;
+
+                    var r =
+                        Math.max(0, pixels[o]) *
+                        intensity;
+
+                    var g =
+                        Math.max(0, pixels[o + 1]) *
+                        intensity;
+
+                    var b =
+                        Math.max(0, pixels[o + 2]) *
+                        intensity;
+
+                    var lum =
+                        luminance(
+                            r,
+                            g,
+                            b
+                        );
+
+                    var upCos =
+                        Math.max(
+                            0,
+                            world[1]
+                        );
+
+                    omega += dOmega;
+                    lumOmega += lum * dOmega;
+                    maxLum = Math.max(maxLum, lum);
+                    upIrr += lum * upCos * dOmega;
+
+                    rgbOmega[0] += r * dOmega;
+                    rgbOmega[1] += g * dOmega;
+                    rgbOmega[2] += b * dOmega;
+
+                    upRgb[0] += r * upCos * dOmega;
+                    upRgb[1] += g * upCos * dOmega;
+                    upRgb[2] += b * upCos * dOmega;
+
+                    activeTexels++;
+                }
+            }
+        }
+
+        var meanLum =
+            omega > 0 ?
+                lumOmega / omega :
+                0;
+
+        return {
+            solidAngle: omega,
+            activeTexels: activeTexels,
+            meanLuminance: meanLum,
+            maxLuminance: maxLum,
+            sphereLuminanceIntegral: lumOmega,
+            isotropicDiffuseEstimate: Math.PI * meanLum,
+            upIrradiance: upIrr,
+            meanRgb: omega > 0 ?
+                [
+                    rgbOmega[0] / omega,
+                    rgbOmega[1] / omega,
+                    rgbOmega[2] / omega
+                ] :
+                [0, 0, 0],
+            upIrradianceRgb: upRgb
+        };
+    }
+
+    function syntheticAmbientEnvironment(scene) {
+        var n = 16;
+        var count = 6 * n * n;
+
+        var pixels =
+            new Float32Array(
+                count * 4
+            );
+
+        var a =
+            scene.ambientLight ||
+            {
+                r: 0,
+                g: 0,
+                b: 0
+            };
+
+        var rgb = [
+            srgbToLinear1(a.r),
+            srgbToLinear1(a.g),
+            srgbToLinear1(a.b)
+        ];
+
+        if (
+            scene.physicalUnits &&
+            isNum(scene.ambientLuminance) &&
+            scene.ambientLuminance > 0
+        ) {
+            rgb[0] *= scene.ambientLuminance;
+            rgb[1] *= scene.ambientLuminance;
+            rgb[2] *= scene.ambientLuminance;
+        }
+
+        for (var i = 0; i < count; i++) {
+            var o = i * 4;
+
+            pixels[o] = rgb[0];
+            pixels[o + 1] = rgb[1];
+            pixels[o + 2] = rgb[2];
+            pixels[o + 3] = 1;
+        }
+
+        return {
+            n: n,
+            pixels: pixels,
+            intensity: 1,
+            source: 'ambientLight sintetico'
+        };
+    }
+
+    async function buildEnvironment(scene, p) {
+        var disabled = {
+            mode: 0,
+            faceSize: 1,
+            count: 0,
+            pixels: new Float32Array(4),
+            alias: new Float32Array(4),
+            rotation: [
+                1, 0, 0,
+                0, 1, 0,
+                0, 0, 1
+            ],
+            intensity: 1,
+            minWorldY: -1,
+            source: 'sin environment',
+            readMs: 0,
+            mipLevel: 0
+        };
+
+        if (!scene) return disabled;
+
+        var useBakeCap =
+            scene.ambientBake === true;
+
+        var part =
+            useBakeCap &&
+                isNum(scene.ambientBakeSpherePart) ?
+                clamp(
+                    scene.ambientBakeSpherePart,
+                    0.001,
+                    1
+                ) :
+                1;
+
+        var minY =
+            useBakeCap ?
+                Math.cos(Math.PI * part) :
+                -1;
+
+        var rows =
+            inverseQuatRows(
+                scene.skyboxRotation
+            );
+
+        var sky = scene.skybox;
+        var t0 = now();
+
+        try {
+            var source = null;
+
+            if (
+                sky &&
+                sky.cubemap
+            ) {
+                var levels =
+                    Math.max(
+                        1,
+                        sky.numLevels || 1
+                    );
+
+                var target =
+                    p.envResolution;
+
+                var mip = 0;
+
+                while (mip + 1 < levels) {
+                    var candidate =
+                        Math.max(
+                            1,
+                            sky.width >> (mip + 1)
+                        );
+
+                    if (candidate < target) break;
+
+                    mip++;
+                }
+
+                var srcN =
+                    Math.max(
+                        1,
+                        sky.width >> mip
+                    );
+
+                var dstN =
+                    Math.min(
+                        target,
+                        srcN
+                    );
+
+                var faces =
+                    await Promise.all(
+                        [0, 1, 2, 3, 4, 5].map(
+                            function (face) {
+                                return sky.read(
+                                    0,
+                                    0,
+                                    srcN,
+                                    srcN,
+                                    {
+                                        face: face,
+                                        mipLevel: mip,
+                                        immediate: true
+                                    }
+                                );
+                            }
+                        )
+                    );
+
+                var pixels =
+                    new Float32Array(
+                        6 *
+                        dstN *
+                        dstN *
+                        4
+                    );
+
+                for (var f = 0; f < 6; f++) {
+                    var decoded =
+                        decodeTexturePixels(
+                            sky,
+                            faces[f],
+                            srcN,
+                            srcN
+                        );
+
+                    var resized =
+                        resampleFaceLinear(
+                            decoded,
+                            srcN,
+                            dstN
+                        );
+
+                    pixels.set(
+                        resized,
+                        f *
+                        dstN *
+                        dstN *
+                        4
+                    );
+                }
+
+                var intensity;
+
+                if (scene.physicalUnits) {
+                    intensity =
+                        isNum(scene.skyboxLuminance) &&
+                            scene.skyboxLuminance > 0 ?
+                            scene.skyboxLuminance / 20000 :
+                            1;
+
+                    warn(
+                        'physicalUnits=true: escala PT del skybox usa ' +
+                        'skyboxLuminance/20000 como aproximacion.'
+                    );
+                } else {
+                    intensity =
+                        isNum(scene.skyboxIntensity) ?
+                            scene.skyboxIntensity :
+                            1;
+                }
+
+                source = {
+                    n: dstN,
+                    pixels: pixels,
+                    intensity: intensity,
+                    source:
+                        'scene.skybox cubemap mip=' +
+                        mip +
+                        ' (' +
+                        srcN +
+                        '->' +
+                        dstN +
+                        ')',
+                    mipLevel: mip
+                };
+            } else {
+                var amb =
+                    scene.ambientLight ||
+                    {
+                        r: 0,
+                        g: 0,
+                        b: 0
+                    };
+
+                if (
+                    (amb.r || amb.g || amb.b) ||
+                    (
+                        scene.physicalUnits &&
+                        scene.ambientLuminance > 0
+                    )
+                ) {
+                    source =
+                        syntheticAmbientEnvironment(
+                            scene
+                        );
+
+                    source.mipLevel = 0;
+                }
+            }
+
+            if (!source) {
+                disabled.source =
+                    'sin skybox y ambientLight negro';
+
+                disabled.readMs =
+                    Math.round(now() - t0);
+
+                return disabled;
+            }
+
+            var weights =
+                buildEnvWeights(
+                    source.pixels,
+                    source.n,
+                    rows,
+                    minY
+                );
+
+            var alias =
+                buildAliasTable(
+                    weights
+                );
+
+            if (!(alias.total > 1e-20)) {
+                disabled.source =
+                    'environment negro/sin energia';
+
+                disabled.readMs =
+                    Math.round(now() - t0);
+
+                return disabled;
+            }
+
+            var diagnostics =
+                analyzeEnvironment(
+                    source.pixels,
+                    source.n,
+                    rows,
+                    minY,
+                    source.intensity
+                );
+
+            return {
+                mode: 1,
+                faceSize: source.n,
+                count:
+                    6 *
+                    source.n *
+                    source.n,
+                pixels: source.pixels,
+                alias: alias.data,
+                rotation: rows,
+                intensity: source.intensity,
+                minWorldY: minY,
+                source:
+                    source.source +
+                    (
+                        useBakeCap ?
+                            ' spherePart=' + part :
+                            ' full-sphere'
+                    ),
+                readMs:
+                    Math.round(
+                        now() - t0
+                    ),
+                mipLevel:
+                    source.mipLevel || 0,
+                diagnostics: diagnostics
+            };
+        } catch (e) {
+            warn(
+                'No se pudo preparar Environment GI:',
+                e
+            );
+
+            disabled.source =
+                'fallo environment: ' +
+                (
+                    e &&
+                        e.message ?
+                        e.message :
+                        String(e)
+                );
+
+            disabled.readMs =
+                Math.round(now() - t0);
+
+            return disabled;
+        }
+    }
+
+    function dilateGB(gb, iterations) {
+        var w = gb.w;
+        var h = gb.h;
+
+        var dirs = [
+            [-1, 0],
+            [1, 0],
+            [0, -1],
+            [0, 1],
+            [-1, -1],
+            [1, -1],
+            [-1, 1],
+            [1, 1]
+        ];
+
+        for (var it = 0; it < iterations; it++) {
+            var mask =
+                new Uint8Array(
+                    w * h
+                );
+
+            var i;
+
+            for (i = 0; i < w * h; i++) {
+                mask[i] =
+                    gb.pos[i * 4 + 3] > 0.5 ?
+                        1 :
+                        0;
+            }
+
+            for (var y = 0; y < h; y++) {
+                for (var x = 0; x < w; x++) {
+                    i = y * w + x;
+
+                    if (mask[i]) continue;
+
+                    for (var k = 0; k < dirs.length; k++) {
+                        var sx =
+                            x + dirs[k][0];
+
+                        var sy =
+                            y + dirs[k][1];
+
+                        if (
+                            sx < 0 ||
+                            sy < 0 ||
+                            sx >= w ||
+                            sy >= h
+                        ) continue;
+
+                        var si =
+                            sy * w + sx;
+
+                        if (!mask[si]) continue;
+
+                        var d = i * 4;
+                        var s = si * 4;
+
+                        gb.pos[d] = gb.pos[s];
+                        gb.pos[d + 1] = gb.pos[s + 1];
+                        gb.pos[d + 2] = gb.pos[s + 2];
+                        gb.pos[d + 3] = 2;
+
+                        gb.nrm[d] = gb.nrm[s];
+                        gb.nrm[d + 1] = gb.nrm[s + 1];
+                        gb.nrm[d + 2] = gb.nrm[s + 2];
+                        gb.nrm[d + 3] = gb.nrm[s + 3];
+
+                        gb.du[d] = gb.du[s];
+                        gb.du[d + 1] = gb.du[s + 1];
+                        gb.du[d + 2] = gb.du[s + 2];
+
+                        gb.dv[d] = gb.dv[s];
+                        gb.dv[d + 1] = gb.dv[s + 1];
+                        gb.dv[d + 2] = gb.dv[s + 2];
+
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    function octEncodeNormal(n) {
+        var x = n[0];
+        var y = n[1];
+        var z = n[2];
+
+        var l =
+            Math.abs(x) +
+            Math.abs(y) +
+            Math.abs(z) ||
+            1;
+
+        x /= l;
+        y /= l;
+        z /= l;
+
+        if (z < 0) {
+            var ox = x;
+            var oy = y;
+
+            x =
+                (1 - Math.abs(oy)) *
+                (
+                    ox >= 0 ?
+                        1 :
+                        -1
+                );
+
+            y =
+                (1 - Math.abs(ox)) *
+                (
+                    oy >= 0 ?
+                        1 :
+                        -1
+                );
+        }
+
+        return [
+            x * 0.5 + 0.5,
+            y * 0.5 + 0.5
+        ];
+    }
+
+    function applyBentNormalsToGBuffer(gb, bent) {
+        for (
+            var i = 0;
+            i < gb.w * gb.h;
+            i++
+        ) {
+            var o = i * 4;
+
+            if (gb.pos[o + 3] < 0.5) {
+                gb.du[o + 3] = 0.5;
+                gb.dv[o + 3] = 0.5;
+
+                continue;
+            }
+
+            var nx = gb.nrm[o];
+            var ny = gb.nrm[o + 1];
+            var nz = gb.nrm[o + 2];
+
+            var bx =
+                bent ?
+                    bent[o] :
+                    nx;
+
+            var by =
+                bent ?
+                    bent[o + 1] :
+                    ny;
+
+            var bz =
+                bent ?
+                    bent[o + 2] :
+                    nz;
+
+            var l =
+                Math.hypot(
+                    bx,
+                    by,
+                    bz
+                ) ||
+                1;
+
+            var enc =
+                octEncodeNormal([
+                    bx / l,
+                    by / l,
+                    bz / l
+                ]);
+
+            gb.du[o + 3] = enc[0];
+            gb.dv[o + 3] = enc[1];
+        }
+    }
+
+    function packGBuffer(gb) {
+        var count = gb.w * gb.h;
+
+        var out =
+            new Float32Array(
+                count * 16
+            );
+
+        for (var i = 0; i < count; i++) {
+            var s = i * 4;
+            var d = i * 16;
+
+            out.set(
+                gb.pos.subarray(
+                    s,
+                    s + 4
+                ),
+                d
+            );
+
+            out.set(
+                gb.nrm.subarray(
+                    s,
+                    s + 4
+                ),
+                d + 4
+            );
+
+            out.set(
+                gb.du.subarray(
+                    s,
+                    s + 4
+                ),
+                d + 8
+            );
+
+            out.set(
+                gb.dv.subarray(
+                    s,
+                    s + 4
+                ),
+                d + 12
+            );
+        }
+
+        return out;
+    }
+
+    async function createDeviceState(gd) {
+        var gpu = nativeGPUDevice(gd);
+
+        if (!gpu) {
+            throw new Error(
+                'No se encontro GPUDevice WebGPU nativo.'
+            );
+        }
+
+        if (
+            gpu.limits &&
+            gpu.limits.maxStorageBuffersPerShaderStage < 8
+        ) {
+            throw new Error(
+                'WebGPU maxStorageBuffersPerShaderStage=' +
+                gpu.limits.maxStorageBuffersPerShaderStage +
+                '; PT6.0.7 necesita 8.'
+            );
+        }
+
+        gpu.pushErrorScope('validation');
+
+        var C = GPUShaderStageRef.COMPUTE;
+
+        var entries = [
+            {
+                binding: 0,
+                visibility: C,
+                buffer: {
+                    type: 'uniform'
+                }
+            }
+        ];
+
+        for (var b = 1; b <= 8; b++) {
+            entries.push({
+                binding: b,
+                visibility: C,
+                buffer: {
+                    type:
+                        (b === 7 || b === 8) ?
+                            'storage' :
+                            'read-only-storage'
+                }
+            });
+        }
+
+        var bgl =
+            gpu.createBindGroupLayout({
+                label: 'BakePT607-BGL',
+                entries: entries
+            });
+
+        var mod =
+            gpu.createShaderModule({
+                label: 'BakePT607-WGSL',
+                code: WGSL
+            });
+
+        if (
+            typeof mod.getCompilationInfo === 'function'
+        ) {
+            var ci =
+                await mod.getCompilationInfo();
+
+            var bad = false;
+
+            ci.messages.forEach(function (m) {
+                (
+                    m.type === 'error' ?
+                        fail :
+                        warn
+                )(
+                    'WGSL ' +
+                    m.type +
+                    ' L' +
+                    m.lineNum +
+                    ':' +
+                    m.linePos +
+                    ' ' +
+                    m.message
+                );
+
+                if (m.type === 'error') {
+                    bad = true;
+                }
+            });
+
+            if (bad) {
+                throw new Error(
+                    'WGSL no compilo.'
+                );
+            }
+        }
+
+        var pipeline =
+            gpu.createComputePipeline({
+                label: 'BakePT607-Pipeline',
+
+                layout:
+                    gpu.createPipelineLayout({
+                        bindGroupLayouts: [
+                            bgl
+                        ]
+                    }),
+
+                compute: {
+                    module: mod,
+                    entryPoint: 'main'
+                }
+            });
+
+        var validation =
+            await gpu.popErrorScope();
+
+        if (validation) {
+            throw new Error(
+                'WebGPU validation: ' +
+                validation.message
+            );
+        }
+
+        return {
+            gpu: gpu,
+            bgl: bgl,
+            pipeline: pipeline
+        };
+    }
+
+    function deviceState(gd) {
+        var p = DEVICE_CACHE.get(gd);
+
+        if (!p) {
+            p = createDeviceState(gd);
+
+            DEVICE_CACHE.set(
+                gd,
+                p
+            );
+
+            p.catch(function () {
+                DEVICE_CACHE.delete(gd);
+            });
+        }
+
+        return p;
+    }
+
+    async function createAODeviceState(gd) {
+        var gpu = nativeGPUDevice(gd);
+
+        if (!gpu) {
+            throw new Error(
+                'No se encontro GPUDevice WebGPU para AO.'
+            );
+        }
+
+        gpu.pushErrorScope('validation');
+
+        var C = GPUShaderStageRef.COMPUTE;
+
+        var bgl =
+            gpu.createBindGroupLayout({
+                label: 'BakePT607-AO-BGL',
+
+                entries: [
+                    {
+                        binding: 0,
+                        visibility: C,
+                        buffer: {
+                            type: 'uniform'
+                        }
+                    },
+                    {
+                        binding: 1,
+                        visibility: C,
+                        buffer: {
+                            type: 'read-only-storage'
+                        }
+                    },
+                    {
+                        binding: 2,
+                        visibility: C,
+                        buffer: {
+                            type: 'read-only-storage'
+                        }
+                    },
+                    {
+                        binding: 3,
+                        visibility: C,
+                        buffer: {
+                            type: 'read-only-storage'
+                        }
+                    },
+                    {
+                        binding: 4,
+                        visibility: C,
+                        buffer: {
+                            type: 'storage'
+                        }
+                    },
+                    {
+                        binding: 5,
+                        visibility: C,
+                        buffer: {
+                            type: 'storage'
+                        }
+                    }
+                ]
+            });
+
+        var mod =
+            gpu.createShaderModule({
+                label: 'BakePT607-AO-WGSL',
+                code: AO_WGSL
+            });
+
+        if (
+            typeof mod.getCompilationInfo === 'function'
+        ) {
+            var ci =
+                await mod.getCompilationInfo();
+
+            var bad = false;
+
+            ci.messages.forEach(function (m) {
+                (
+                    m.type === 'error' ?
+                        fail :
+                        warn
+                )(
+                    'AO WGSL ' +
+                    m.type +
+                    ' L' +
+                    m.lineNum +
+                    ':' +
+                    m.linePos +
+                    ' ' +
+                    m.message
+                );
+
+                if (m.type === 'error') {
+                    bad = true;
+                }
+            });
+
+            if (bad) {
+                throw new Error(
+                    'WGSL de Ambient Occlusion no compilo.'
+                );
+            }
+        }
+
+        var pipeline =
+            gpu.createComputePipeline({
+                label: 'BakePT607-AO-Pipeline',
+
+                layout:
+                    gpu.createPipelineLayout({
+                        bindGroupLayouts: [
+                            bgl
+                        ]
+                    }),
+
+                compute: {
+                    module: mod,
+                    entryPoint: 'main'
+                }
+            });
+
+        var validation =
+            await gpu.popErrorScope();
+
+        if (validation) {
+            throw new Error(
+                'WebGPU AO validation: ' +
+                validation.message
+            );
+        }
+
+        return {
+            gpu: gpu,
+            bgl: bgl,
+            pipeline: pipeline
+        };
+    }
+
+    function aoDeviceState(gd) {
+        var p = AO_DEVICE_CACHE.get(gd);
+
+        if (!p) {
+            p = createAODeviceState(gd);
+
+            AO_DEVICE_CACHE.set(
+                gd,
+                p
+            );
+
+            p.catch(function () {
+                AO_DEVICE_CACHE.delete(gd);
+            });
+        }
+
+        return p;
+    }
+
+    function storage(gpu, data, label) {
+        var size =
+            Math.max(
+                16,
+                Math.ceil(data.byteLength / 16) * 16
+            );
+
+        var b =
+            gpu.createBuffer({
+                label: label,
+                size: size,
+                usage:
+                    GPUBufferUsageRef.STORAGE |
+                    GPUBufferUsageRef.COPY_DST
+            });
+
+        if (data.byteLength) {
+            gpu.queue.writeBuffer(
+                b,
+                0,
+                data.buffer,
+                data.byteOffset,
+                data.byteLength
+            );
+        }
+
+        return b;
+    }
+
+    function emptyStorage(gpu, size, label, copySrc) {
+        return gpu.createBuffer({
+            label: label,
+
+            size:
+                Math.max(
+                    16,
+                    Math.ceil(size / 16) * 16
+                ),
+
+            usage:
+                GPUBufferUsageRef.STORAGE |
+                (
+                    copySrc ?
+                        GPUBufferUsageRef.COPY_SRC :
+                        0
+                )
+        });
+    }
+
+    function paramArray(p) {
+        var ab =
+            new ArrayBuffer(160);
+
+        var u =
+            new Uint32Array(ab);
+
+        var f =
+            new Float32Array(ab);
+
+        u[0] = p.width;
+        u[1] = p.height;
+        u[2] = p.triCount;
+        u[3] = p.bvhCount;
+        u[4] = p.lightCount;
+        u[5] = p.sampleCount;
+        u[6] = p.maxSamples;
+        u[7] = p.minSamples;
+        u[8] = p.maxBounces;
+        u[9] = p.seed;
+        u[10] = p.envFaceSize;
+        u[11] = p.envCount;
+
+        f[12] = p.ambient[0];
+        f[13] = p.ambient[1];
+        f[14] = p.ambient[2];
+        f[15] = p.adaptiveCheckInterval || 1;
+
+        f[16] = p.rayBias;
+        f[17] = p.maxRadiance;
+        f[18] = p.noiseThreshold;
+        f[19] = p.envIntensity;
+
+        u[20] = p.envMode;
+        u[21] = p.adaptive ? 1 : 0;
+        u[22] = p.customEnvDirect ? 1 : 0;
+        u[23] = p.pixelOffset || 0;
+
+        f[24] = p.envRotation[0];
+        f[25] = p.envRotation[1];
+        f[26] = p.envRotation[2];
+
+        f[28] = p.envRotation[3];
+        f[29] = p.envRotation[4];
+        f[30] = p.envRotation[5];
+
+        f[32] = p.envRotation[6];
+        f[33] = p.envRotation[7];
+        f[34] = p.envRotation[8];
+
+        f[36] = p.envMinWorldY;
+        f[37] = p.bentStrength || 0;
+        f[38] = p.adaptiveLumaFloor || 0.02;
+        f[39] = p.adaptiveConfirmations || 1;
+
+        return ab;
+    }
+
+    function assertBindingSize(gpu, bytes, label) {
+        var max =
+            gpu.limits &&
+            gpu.limits.maxStorageBufferBindingSize;
+
+        if (
+            max &&
+            bytes > max
+        ) {
+            throw new Error(
+                label +
+                ' requiere ' +
+                Math.round(bytes / 1048576) +
+                ' MB, pero WebGPU permite ' +
+                Math.round(max / 1048576) +
+                ' MB por storage binding. ' +
+                'Reduce la resolucion de ese lightmap.'
+            );
+        }
+    }
+
+    function nextPlayCanvasFrame(owner) {
+        return new Promise(function (resolve) {
+            var done = false;
+            var handle = null;
+            var timer = null;
+
+            function finish() {
+                if (done) return;
+
+                done = true;
+
+                if (timer !== null) {
+                    clearTimeout(timer);
+                }
+
+                if (
+                    handle &&
+                    typeof handle.off === 'function'
+                ) {
+                    try {
+                        handle.off();
+                    } catch (_) {
+                    }
+                }
+
+                resolve();
+            }
+
+            try {
+                var app =
+                    owner &&
+                    owner.app;
+
+                var scene =
+                    app &&
+                    app.scene;
+
+                if (
+                    scene &&
+                    typeof scene.once === 'function'
+                ) {
+                    var evt =
+                        pc.Scene &&
+                            pc.Scene.EVENT_POSTRENDER ?
+                            pc.Scene.EVENT_POSTRENDER :
+                            'postrender';
+
+                    handle =
+                        scene.once(
+                            evt,
+                            finish
+                        );
+
+                    timer =
+                        setTimeout(
+                            finish,
+                            40
+                        );
+
+                    return;
+                }
+            } catch (_) {
+            }
+
+            if (
+                typeof requestAnimationFrame === 'function'
+            ) {
+                requestAnimationFrame(finish);
+            } else {
+                setTimeout(finish, 0);
+            }
+        });
+    }
+
+    function alignedTexelChunk(pixelCount, sampleChunk, budget) {
+        var raw =
+            Math.max(
+                64,
+                Math.floor(
+                    Math.max(64, budget) /
+                    Math.max(1, sampleChunk)
+                )
+            );
+
+        var aligned =
+            Math.max(
+                64,
+                Math.floor(raw / 64) * 64
+            );
+
+        return Math.min(
+            pixelCount,
+            aligned
+        );
+    }
+
+    function calibratedBudget(
+        actualSampleTexels,
+        sliceMs,
+        targetMs,
+        minBudget,
+        maxBudget
+    ) {
+        if (
+            !Number.isFinite(sliceMs) ||
+            sliceMs <= 0
+        ) {
+            return clamp(
+                actualSampleTexels,
+                minBudget,
+                maxBudget
+            );
+        }
+
+        var scale =
+            clamp(
+                targetMs /
+                Math.max(0.25, sliceMs),
+                0.25,
+                64.0
+            );
+
+        return clamp(
+            Math.round(
+                actualSampleTexels *
+                scale
+            ),
+            minBudget,
+            maxBudget
+        );
+    }
+
+    function retuneWorkBudget(
+        current,
+        actualSampleTexels,
+        sliceMs,
+        targetMs,
+        minBudget,
+        maxBudget
+    ) {
+        if (
+            !Number.isFinite(sliceMs) ||
+            sliceMs <= 0
+        ) {
+            return current;
+        }
+
+        var desired =
+            calibratedBudget(
+                actualSampleTexels,
+                sliceMs,
+                targetMs,
+                minBudget,
+                maxBudget
+            );
+
+        return clamp(
+            Math.round(
+                current * 0.60 +
+                desired * 0.40
+            ),
+            minBudget,
+            maxBudget
+        );
+    }
+
+    async function traceGPU(ds, sb, eb, gb, si, p, seed, owner, epoch) {
+        var gpu = ds.gpu;
+        var w = gb.w;
+        var h = gb.h;
+
+        var pixelCount =
+            w * h;
+
+        var gPacked =
+            packGBuffer(gb);
+
+        var gBytes =
+            gPacked.byteLength;
+
+        var outBytes =
+            pixelCount * 16;
+
+        var statsBytes =
+            pixelCount * 16;
+
+        assertBindingSize(
+            gpu,
+            gBytes,
+            'G-buffer ' + w + 'x' + h
+        );
+
+        assertBindingSize(
+            gpu,
+            outBytes,
+            'Acumulacion ' + w + 'x' + h
+        );
+
+        assertBindingSize(
+            gpu,
+            eb.pixelBytes,
+            'Environment pixels'
+        );
+
+        assertBindingSize(
+            gpu,
+            eb.aliasBytes,
+            'Environment alias'
+        );
+
+        var gbufBuffer =
+            storage(
+                gpu,
+                gPacked,
+                'BakePT607-GBuf'
+            );
+
+        var statsBuffer =
+            emptyStorage(
+                gpu,
+                statsBytes,
+                'BakePT607-Stats',
+                true
+            );
+
+        var outBuffer =
+            emptyStorage(
+                gpu,
+                outBytes,
+                'BakePT607-Out',
+                true
+            );
+
+        var readBuffer =
+            gpu.createBuffer({
+                label: 'BakePT607-Read',
+                size: outBytes,
+                usage:
+                    GPUBufferUsageRef.COPY_DST |
+                    GPUBufferUsageRef.MAP_READ
+            });
+
+        var statsReadBuffer =
+            gpu.createBuffer({
+                label: 'BakePT607-StatsRead',
+                size: statsBytes,
+                usage:
+                    GPUBufferUsageRef.COPY_DST |
+                    GPUBufferUsageRef.MAP_READ
+            });
+
+        var paramsBuffer =
+            gpu.createBuffer({
+                label: 'BakePT607-Params',
+                size: 160,
+                usage:
+                    GPUBufferUsageRef.UNIFORM |
+                    GPUBufferUsageRef.COPY_DST
+            });
+
+        var sampleChunk =
+            Math.max(
+                1,
+                p.perDispatch | 0
+            );
+
+        var rounds =
+            Math.ceil(
+                p.maxSamples /
+                sampleChunk
+            );
+
+        var budgetMax =
+            Math.max(
+                p.giBudgetMax,
+                Math.min(
+                    8388608,
+                    p.giBudgetInitial * 2048
+                )
+            );
+
+        var budget =
+            clamp(
+                p.giBudgetInitial,
+                p.giBudgetMin,
+                budgetMax
+            );
+
+        var budgetInitial =
+            budget;
+
+        var targetMs =
+            p.targetGpuSliceMs || 12;
+
+        var yieldBudgetMs =
+            p.yieldBudgetMs || 26;
+
+        var params =
+            paramArray({
+                width: w,
+                height: h,
+                triCount: si.triCount,
+                bvhCount: si.bvhCount,
+                lightCount: si.lightCount,
+                sampleCount: sampleChunk,
+                maxSamples: p.maxSamples,
+                minSamples: p.minSamples,
+                maxBounces: p.bounces,
+                seed: seed >>> 0,
+                ambient: si.ambient,
+                rayBias: si.rayBias,
+                maxRadiance: p.maxRadiance,
+                noiseThreshold: p.noiseThreshold,
+                adaptiveLumaFloor: p.adaptiveLumaFloor,
+                adaptiveCheckInterval: p.adaptiveCheckInterval,
+                adaptiveConfirmations: p.adaptiveConfirmations,
+                envFaceSize: si.env.faceSize,
+                envCount: si.env.count,
+                envMode: si.env.mode,
+                envIntensity: si.env.intensity,
+                envRotation: si.env.rotation,
+                envMinWorldY: si.env.minWorldY,
+                adaptive: true,
+                customEnvDirect: !!si.customEnvDirect,
+                bentStrength: si.bentStrength || 0,
+                pixelOffset: 0
+            });
+
+        gpu.queue.writeBuffer(
+            paramsBuffer,
+            0,
+            params
+        );
+
+        var bind =
+            gpu.createBindGroup({
+                layout: ds.bgl,
+
+                entries: [
+                    {
+                        binding: 0,
+                        resource: {
+                            buffer: paramsBuffer
+                        }
+                    },
+                    {
+                        binding: 1,
+                        resource: {
+                            buffer: gbufBuffer
+                        }
+                    },
+                    {
+                        binding: 2,
+                        resource: {
+                            buffer: sb.tris
+                        }
+                    },
+                    {
+                        binding: 3,
+                        resource: {
+                            buffer: sb.bvh
+                        }
+                    },
+                    {
+                        binding: 4,
+                        resource: {
+                            buffer: sb.lights
+                        }
+                    },
+                    {
+                        binding: 5,
+                        resource: {
+                            buffer: eb.pixels
+                        }
+                    },
+                    {
+                        binding: 6,
+                        resource: {
+                            buffer: eb.alias
+                        }
+                    },
+                    {
+                        binding: 7,
+                        resource: {
+                            buffer: statsBuffer
+                        }
+                    },
+                    {
+                        binding: 8,
+                        resource: {
+                            buffer: outBuffer
+                        }
+                    }
+                ]
+            });
+
+        var offsetU32 =
+            new Uint32Array(1);
+
+        var submits = 0;
+        var dispatches = 0;
+        var interleavedFrames = 0;
+        var calibrationTimes = [];
+        var calibrationSampleTexels = 0;
+        var calibrated = false;
+        var frameBatch = 1;
+        var dispatchesSinceYield = 0;
+        var gpuMsSinceYield = 0;
+        var sliceSum = 0;
+        var sliceMax = 0;
+        var sliceCount = 0;
+        var lastStatusMs = now();
+        var checkpoints = 0;
+        var lastActiveFraction = 1;
+        var nextCheckpoint = p.minSamples;
+
+        var checkpointInterval =
+            Math.max(
+                128,
+                (p.adaptiveCheckInterval || 128) * 2
+            );
+
+        try {
+            async function readAdaptiveProgress() {
+                var cenc =
+                    gpu.createCommandEncoder({
+                        label:
+                            'BakePT607-StatsCheckpoint'
+                    });
+
+                cenc.copyBufferToBuffer(
+                    statsBuffer,
+                    0,
+                    statsReadBuffer,
+                    0,
+                    statsBytes
+                );
+
+                gpu.queue.submit([
+                    cenc.finish()
+                ]);
+
+                submits++;
+
+                await statsReadBuffer.mapAsync(
+                    GPUMapModeRef.READ
+                );
+
+                var cp =
+                    new Float32Array(
+                        statsReadBuffer.getMappedRange()
+                    );
+
+                var activeCount = 0;
+                var validCount = 0;
+
+                for (
+                    var ci = 0;
+                    ci < pixelCount;
+                    ci++
+                ) {
+                    var co = ci * 4;
+
+                    if (
+                        gb.pos[co + 3] < 0.5
+                    ) continue;
+
+                    validCount++;
+
+                    if (
+                        cp[co + 3] < 2.0
+                    ) {
+                        activeCount++;
+                    }
+                }
+
+                statsReadBuffer.unmap();
+
+                checkpoints++;
+
+                var fraction =
+                    validCount ?
+                        activeCount / validCount :
+                        0;
+
+                lastActiveFraction =
+                    fraction;
+
+                frameBatch =
+                    fraction > 0 ?
+                        clamp(
+                            Math.round(
+                                0.9 /
+                                Math.max(
+                                    fraction,
+                                    0.001
+                                )
+                            ),
+                            1,
+                            8
+                        ) :
+                        8;
+
+                return {
+                    active: activeCount,
+                    valid: validCount,
+                    fraction: fraction
+                };
+            }
+
+            var stopAll = false;
+
+            for (
+                var round = 0;
+                round < rounds && !stopAll;
+                round++
+            ) {
+                var offset = 0;
+
+                while (
+                    offset < pixelCount
+                ) {
+                    if (
+                        !active(
+                            owner,
+                            epoch
+                        )
+                    ) {
+                        throw new Error(
+                            'cancelado'
+                        );
+                    }
+
+                    var plannedTexels =
+                        alignedTexelChunk(
+                            pixelCount,
+                            sampleChunk,
+                            budget
+                        );
+
+                    var remaining =
+                        pixelCount -
+                        offset;
+
+                    var texels =
+                        Math.min(
+                            plannedTexels,
+                            remaining
+                        );
+
+                    var fullBudgetChunk =
+                        texels ===
+                        plannedTexels;
+
+                    offsetU32[0] =
+                        offset;
+
+                    gpu.queue.writeBuffer(
+                        paramsBuffer,
+                        92,
+                        offsetU32
+                    );
+
+                    var enc =
+                        gpu.createCommandEncoder({
+                            label:
+                                'BakePT607-Encoder-r' +
+                                round +
+                                '-o' +
+                                offset
+                        });
+
+                    var pass =
+                        enc.beginComputePass({
+                            label:
+                                'BakePT607-Pass-r' +
+                                round +
+                                '-o' +
+                                offset
+                        });
+
+                    pass.setPipeline(
+                        ds.pipeline
+                    );
+
+                    pass.setBindGroup(
+                        0,
+                        bind
+                    );
+
+                    pass.dispatchWorkgroups(
+                        Math.ceil(
+                            texels / 64
+                        ),
+                        1,
+                        1
+                    );
+
+                    pass.end();
+
+                    dispatches++;
+
+                    var finalScheduled =
+                        round === rounds - 1 &&
+                        offset + texels >=
+                        pixelCount;
+
+                    if (finalScheduled) {
+                        enc.copyBufferToBuffer(
+                            outBuffer,
+                            0,
+                            readBuffer,
+                            0,
+                            outBytes
+                        );
+
+                        enc.copyBufferToBuffer(
+                            statsBuffer,
+                            0,
+                            statsReadBuffer,
+                            0,
+                            statsBytes
+                        );
+                    }
+
+                    if (
+                        !calibrated &&
+                        typeof gpu.queue.onSubmittedWorkDone === 'function' &&
+                        calibrationTimes.length < 2
+                    ) {
+                        var tCal = now();
+
+                        gpu.queue.submit([
+                            enc.finish()
+                        ]);
+
+                        submits++;
+
+                        await gpu.queue.onSubmittedWorkDone();
+
+                        var measured =
+                            now() -
+                            tCal;
+
+                        calibrationTimes.push(
+                            measured
+                        );
+
+                        calibrationSampleTexels =
+                            texels *
+                            sampleChunk;
+
+                        offset += texels;
+                        gpuMsSinceYield += measured;
+                        sliceSum += measured;
+                        sliceMax = Math.max(
+                            sliceMax,
+                            measured
+                        );
+
+                        sliceCount++;
+
+                        if (
+                            calibrationTimes.length === 2
+                        ) {
+                            var warmMs =
+                                calibrationTimes[1];
+
+                            budget =
+                                calibratedBudget(
+                                    calibrationSampleTexels,
+                                    warmMs,
+                                    targetMs,
+                                    p.giBudgetMin,
+                                    budgetMax
+                                );
+
+                            calibrated = true;
+                        }
+
+                        if (
+                            !finalScheduled &&
+                            gpuMsSinceYield >= yieldBudgetMs
+                        ) {
+                            await nextPlayCanvasFrame(
+                                owner
+                            );
+
+                            interleavedFrames++;
+                            gpuMsSinceYield = 0;
+                            dispatchesSinceYield = 0;
+                        }
+
+                        continue;
+                    }
+
+                    var submitStart =
+                        now();
+
+                    gpu.queue.submit([
+                        enc.finish()
+                    ]);
+
+                    submits++;
+
+                    if (
+                        typeof gpu.queue.onSubmittedWorkDone === 'function'
+                    ) {
+                        await gpu.queue.onSubmittedWorkDone();
+                    }
+
+                    var sliceMs =
+                        now() -
+                        submitStart;
+
+                    var actualWork =
+                        texels *
+                        sampleChunk;
+
+                    offset += texels;
+                    dispatchesSinceYield++;
+                    gpuMsSinceYield += sliceMs;
+                    sliceSum += sliceMs;
+
+                    sliceMax =
+                        Math.max(
+                            sliceMax,
+                            sliceMs
+                        );
+
+                    sliceCount++;
+
+                    if (fullBudgetChunk) {
+                        budget =
+                            retuneWorkBudget(
+                                budget,
+                                actualWork,
+                                sliceMs,
+                                targetMs,
+                                p.giBudgetMin,
+                                budgetMax
+                            );
+                    }
+
+                    if (
+                        now() -
+                        lastStatusMs >=
+                        5000
+                    ) {
+                        log(
+                            '    GI trabajando ~' +
+                            Math.min(
+                                p.maxSamples,
+                                (round + 1) *
+                                sampleChunk
+                            ) +
+                            ' spp offset=' +
+                            offset +
+                            '/' +
+                            pixelCount +
+                            ' budget=' +
+                            budget +
+                            ' slice=' +
+                            sliceMs.toFixed(1) +
+                            'ms frames=' +
+                            interleavedFrames
+                        );
+
+                        lastStatusMs =
+                            now();
+                    }
+
+                    if (
+                        !finalScheduled &&
+                        (
+                            gpuMsSinceYield >=
+                            yieldBudgetMs ||
+                            sliceMs >=
+                            targetMs * 1.75
+                        )
+                    ) {
+                        await nextPlayCanvasFrame(
+                            owner
+                        );
+
+                        interleavedFrames++;
+                        gpuMsSinceYield = 0;
+                        dispatchesSinceYield = 0;
+                    }
+                }
+
+                var scheduledSpp =
+                    Math.min(
+                        p.maxSamples,
+                        (round + 1) *
+                        sampleChunk
+                    );
+
+                if (
+                    p.adaptive &&
+                    scheduledSpp >=
+                    nextCheckpoint &&
+                    scheduledSpp <
+                    p.maxSamples
+                ) {
+                    var progress =
+                        await readAdaptiveProgress();
+
+                    nextCheckpoint =
+                        scheduledSpp +
+                        checkpointInterval;
+
+                    log(
+                        '    GI progreso ' +
+                        scheduledSpp +
+                        ' spp active=' +
+                        (
+                            progress.fraction *
+                            100
+                        ).toFixed(1) +
+                        '% budget=' +
+                        budget +
+                        ' sliceAvg=' +
+                        (
+                            sliceCount ?
+                                sliceSum / sliceCount :
+                                0
+                        ).toFixed(1) +
+                        'ms max=' +
+                        sliceMax.toFixed(1) +
+                        'ms frames=' +
+                        interleavedFrames
+                    );
+
+                    if (
+                        progress.active === 0
+                    ) {
+                        stopAll = true;
+                    } else if (
+                        gpuMsSinceYield > 0
+                    ) {
+                        await nextPlayCanvasFrame(
+                            owner
+                        );
+
+                        interleavedFrames++;
+                        dispatchesSinceYield = 0;
+                        gpuMsSinceYield = 0;
+                    }
+                }
+            }
+
+            if (stopAll) {
+                var fenc =
+                    gpu.createCommandEncoder({
+                        label:
+                            'BakePT607-EarlyFinalCopy'
+                    });
+
+                fenc.copyBufferToBuffer(
+                    outBuffer,
+                    0,
+                    readBuffer,
+                    0,
+                    outBytes
+                );
+
+                fenc.copyBufferToBuffer(
+                    statsBuffer,
+                    0,
+                    statsReadBuffer,
+                    0,
+                    statsBytes
+                );
+
+                gpu.queue.submit([
+                    fenc.finish()
+                ]);
+
+                submits++;
+            }
+
+            if (
+                !active(
+                    owner,
+                    epoch
+                )
+            ) {
+                throw new Error(
+                    'cancelado'
+                );
+            }
+
+            await Promise.all([
+                readBuffer.mapAsync(
+                    GPUMapModeRef.READ
+                ),
+                statsReadBuffer.mapAsync(
+                    GPUMapModeRef.READ
+                )
+            ]);
+
+            var raw =
+                new Float32Array(
+                    readBuffer
+                        .getMappedRange()
+                        .slice(0)
+                );
+
+            var rawStats =
+                new Float32Array(
+                    statsReadBuffer
+                        .getMappedRange()
+                        .slice(0)
+                );
+
+            readBuffer.unmap();
+            statsReadBuffer.unmap();
+
+            var result =
+                new Float32Array(
+                    raw.length
+                );
+
+            var sampleSum = 0;
+            var sampleMin = Infinity;
+            var sampleMax = 0;
+            var counted = 0;
+            var early = 0;
+            var relErrors = [];
+            var relSum = 0;
+            var cvSum = 0;
+
+            var lumaFloor =
+                Math.max(
+                    1e-6,
+                    p.adaptiveLumaFloor ||
+                    0.02
+                );
+
+            for (
+                var i = 0;
+                i < pixelCount;
+                i++
+            ) {
+                var o = i * 4;
+
+                if (
+                    gb.pos[o + 3] < 0.5
+                ) {
+                    result[o + 3] = 1;
+                    continue;
+                }
+
+                var n =
+                    Math.max(
+                        1,
+                        Math.round(
+                            raw[o + 3]
+                        )
+                    );
+
+                result[o] =
+                    raw[o] / n;
+
+                result[o + 1] =
+                    raw[o + 1] / n;
+
+                result[o + 2] =
+                    raw[o + 2] / n;
+
+                result[o + 3] = 1;
+
+                sampleSum += n;
+                sampleMin = Math.min(
+                    sampleMin,
+                    n
+                );
+                sampleMax = Math.max(
+                    sampleMax,
+                    n
+                );
+                counted++;
+
+                if (n < p.maxSamples) {
+                    early++;
+                }
+
+                var sn =
+                    Math.max(
+                        1,
+                        rawStats[o + 2]
+                    );
+
+                var mean =
+                    rawStats[o] / sn;
+
+                var variance =
+                    Math.max(
+                        rawStats[o + 1] /
+                        sn -
+                        mean * mean,
+                        0
+                    );
+
+                var std =
+                    Math.sqrt(variance);
+
+                var stdError =
+                    std /
+                    Math.sqrt(sn);
+
+                var rel =
+                    stdError /
+                    Math.max(
+                        Math.abs(mean),
+                        lumaFloor
+                    );
+
+                var cv =
+                    std /
+                    Math.max(
+                        Math.abs(mean),
+                        lumaFloor
+                    );
+
+                if (Number.isFinite(rel)) {
+                    relErrors.push(rel);
+                    relSum += rel;
+                    cvSum += cv;
+                }
+            }
+
+            relErrors.sort(function (a, b) {
+                return a - b;
+            });
+
+            function pct(q) {
+                if (!relErrors.length) return 0;
+
+                return relErrors[
+                    Math.min(
+                        relErrors.length - 1,
+                        Math.max(
+                            0,
+                            Math.round(
+                                (relErrors.length - 1) *
+                                q
+                            )
+                        )
+                    )
+                ];
+            }
+
+            return {
+                pixels: result,
+
+                averageSamples:
+                    counted ?
+                        sampleSum / counted :
+                        0,
+
+                minSamplesUsed:
+                    counted ?
+                        sampleMin :
+                        0,
+
+                maxSamplesUsed:
+                    sampleMax,
+
+                earlyConvergedPct:
+                    counted ?
+                        early *
+                        100 /
+                        counted :
+                        0,
+
+                dispatches:
+                    dispatches,
+
+                submits:
+                    submits,
+
+                interleavedFrames:
+                    interleavedFrames,
+
+                calibrationMs:
+                    calibrationTimes.length > 1 ?
+                        calibrationTimes[1] :
+                        (
+                            calibrationTimes[0] ||
+                            0
+                        ),
+
+                calibrationColdMs:
+                    calibrationTimes.length ?
+                        calibrationTimes[0] :
+                        0,
+
+                calibrationWarmMs:
+                    calibrationTimes.length > 1 ?
+                        calibrationTimes[1] :
+                        (
+                            calibrationTimes[0] ||
+                            0
+                        ),
+
+                calibrationSampleTexels:
+                    calibrationSampleTexels,
+
+                budgetInitial:
+                    budgetInitial,
+
+                budgetFinal:
+                    budget,
+
+                noiseThreshold:
+                    p.noiseThreshold,
+
+                adaptiveLumaFloor:
+                    lumaFloor,
+
+                adaptiveCheckInterval:
+                    p.adaptiveCheckInterval,
+
+                adaptiveConfirmations:
+                    p.adaptiveConfirmations || 1,
+
+                sampleChunk:
+                    sampleChunk,
+
+                checkpoints:
+                    checkpoints,
+
+                lastActiveFraction:
+                    lastActiveFraction,
+
+                frameBatch:
+                    frameBatch,
+
+                gpuSliceAverage:
+                    sliceCount ?
+                        sliceSum /
+                        sliceCount :
+                        0,
+
+                gpuSliceMax:
+                    sliceMax,
+
+                relativeErrorAverage:
+                    relErrors.length ?
+                        relSum /
+                        relErrors.length :
+                        0,
+
+                relativeErrorP50:
+                    pct(0.50),
+
+                relativeErrorP90:
+                    pct(0.90),
+
+                relativeErrorP95:
+                    pct(0.95),
+
+                relativeErrorMax:
+                    relErrors.length ?
+                        relErrors[
+                        relErrors.length - 1
+                        ] :
+                        0,
+
+                coefficientVariationAverage:
+                    relErrors.length ?
+                        cvSum /
+                        relErrors.length :
+                        0
+            };
         } finally {
-            [gbufBuffer, outBuffer, bentBuffer, readBuffer, bentRead, paramsBuffer].forEach(function (b) {
+            [
+                gbufBuffer,
+                statsBuffer,
+                outBuffer,
+                readBuffer,
+                statsReadBuffer,
+                paramsBuffer
+            ].forEach(function (b) {
                 try {
                     b.destroy();
-                } catch (_) { }
+                } catch (_) {
+                }
             });
         }
-    } function denoiseIndirect(src, gb, extent, p) {
-        if (p.denoise <= 0) return src; var w = gb.w, h = gb.h, a = new Float32Array(src), b = new Float32Array(src.length), K = [1, 4, 6, 4, 1], basePos = Math.max(1e-6, extent / Math.max(w, h) * p.positionScale); for (var it = 0; it < p.denoise; it++) {
-            var step = 1 << it, posSigma = basePos * Math.max(1, step * 0.5), invPos = 1 / (2 * posSigma * posSigma); for (var y = 0; y < h; y++)for (var x = 0; x < w; x++) {
-                var o = (y * w + x) * 4; if (gb.pos[o + 3] < 0.5) { b[o] = a[o]; b[o + 1] = a[o + 1]; b[o + 2] = a[o + 2]; b[o + 3] = a[o + 3]; continue; } var px = gb.pos[o], py = gb.pos[o + 1], pz = gb.pos[o + 2], nx = gb.nrm[o], ny = gb.nrm[o + 1], nz = gb.nrm[o + 2], chart = gb.nrm[o + 3], cr = a[o], cg = a[o + 1], cb = a[o + 2], cl = luminance(cr, cg, cb), sr = 0, sg = 0, sb = 0, sw = 0; for (var ky = -2; ky <= 2; ky++) {
-                    var sy = y + ky * step; if (sy < 0 || sy >= h) continue; for (var kx = -2; kx <= 2; kx++) {
-                        var sx = x + kx * step; if (sx < 0 || sx >= w) continue; var q = (sy * w + sx) * 4; if (gb.pos[q + 3] < 0.5 || gb.nrm[q + 3] !== chart) continue; var dx = gb.pos[q] - px, dy = gb.pos[q + 1] - py, dz = gb.pos[q + 2] - pz, wp = Math.exp(-(dx * dx + dy * dy + dz * dz) * invPos), nd = Math.max(0, nx * gb.nrm[q] + ny * gb.nrm[q + 1] + nz * gb.nrm[q + 2]), wn = Math.pow(nd, p.normalPower), ql = luminance(a[q], a[q + 1], a[q + 2]), wc = Math.exp(-Math.abs(ql - cl) / (0.01 + Math.max(cl, ql) * p.colorScale)), wk = K[kx + 2] * K[ky + 2], ww = wk * wp * wn * wc; sr += a[q] * ww; sg += a[q + 1] * ww;
-                        sb += a[q + 2] * ww; sw += ww;
-                    }
-                } if (sw > 1e-12) { b[o] = sr / sw; b[o + 1] = sg / sw; b[o + 2] = sb / sw; } else { b[o] = cr; b[o + 1] = cg; b[o + 2] = cb; } b[o + 3] = 1;
-            } var tmp = a; a = b; b = tmp;
-        } return a;
-    } function denoiseAO(ao, gb, extent, p) { var rgba = new Float32Array(ao.length * 4); for (var i = 0; i < ao.length; i++) { var o = i * 4; rgba[o] = ao[i]; rgba[o + 1] = ao[i]; rgba[o + 2] = ao[i]; rgba[o + 3] = 1; } rgba = denoiseIndirect(rgba, gb, extent, p); var result = new Float32Array(ao.length); for (i = 0; i < ao.length; i++)result[i] = clamp(rgba[i * 4], 0, 1); return result; } function applyStandaloneAO(pixels, ao, gb, p, strength) { if (!ao || strength <= 0) return pixels; var out = new Float32Array(pixels), contact = denoiseAO(ao.contact, gb, Math.max(1e-4, ao.sceneExtent || 1), p), s = clamp(strength, 0, 1); for (var i = 0; i < gb.w * gb.h; i++) { var o = i * 4; if (gb.pos[o + 3] < 0.5) continue; var occ = 1 - clamp(contact[i], 0, 1), f = 1 - s * p.aoContactStrength * Math.pow(occ, 1.35); out[o] *= f; out[o + 1] *= f; out[o + 2] *= f; } return out; } function canWrite(tex) { var f = tex && tex.format; return f === pc.PIXELFORMAT_RGBA8 || f === pc.PIXELFORMAT_SRGBA8 || f === pc.PIXELFORMAT_111110F || f === pc.PIXELFORMAT_RGBA16F || f === pc.PIXELFORMAT_RGBA32F || f === pc.PIXELFORMAT_RGB16F || f === pc.PIXELFORMAT_RGB32F; } async function writeTexture(tex, pixels, w, h, maxRadiance) {
-        if (!canWrite(tex)) throw new Error('Formato de lightmap no soportado: ' + tex.format);
-        var dst = tex.lock({ level: 0, face: 0 }); if (!dst) throw new Error('texture.lock() no devolvio buffer.'); var view = new DataView(dst.buffer, dst.byteOffset, dst.byteLength), count = w * h, mode = ''; try {
-            var i, r, g, b, off, ch; if (tex.format === pc.PIXELFORMAT_111110F) { mode = 'R11G11B10F'; for (i = 0; i < count; i++) { r = clamp(Number.isFinite(pixels[i * 4]) ? pixels[i * 4] : 0, 0, maxRadiance); g = clamp(Number.isFinite(pixels[i * 4 + 1]) ? pixels[i * 4 + 1] : 0, 0, maxRadiance); b = clamp(Number.isFinite(pixels[i * 4 + 2]) ? pixels[i * 4 + 2] : 0, 0, maxRadiance); view.setUint32(i * 4, packR11G11B10(r, g, b), true); } } else if (tex.format === pc.PIXELFORMAT_RGBA16F || tex.format === pc.PIXELFORMAT_RGB16F) { ch = tex.format === pc.PIXELFORMAT_RGBA16F ? 4 : 3; mode = ch === 4 ? 'RGBA16F' : 'RGB16F'; for (i = 0; i < count; i++) { r = clamp(pixels[i * 4] || 0, 0, maxRadiance); g = clamp(pixels[i * 4 + 1] || 0, 0, maxRadiance); b = clamp(pixels[i * 4 + 2] || 0, 0, maxRadiance); off = i * ch * 2; view.setUint16(off, floatToHalf(r), true); view.setUint16(off + 2, floatToHalf(g), true); view.setUint16(off + 4, floatToHalf(b), true); if (ch === 4) view.setUint16(off + 6, 0x3c00, true); } } else if (tex.format === pc.PIXELFORMAT_RGBA32F || tex.format === pc.PIXELFORMAT_RGB32F) {
-                ch = tex.format === pc.PIXELFORMAT_RGBA32F ? 4 : 3; mode = ch === 4 ? 'RGBA32F' : 'RGB32F'; for (i = 0; i < count; i++) {
-                    r = clamp(pixels[i * 4] || 0, 0, maxRadiance);
-                    g = clamp(pixels[i * 4 + 1] || 0, 0, maxRadiance); b = clamp(pixels[i * 4 + 2] || 0, 0, maxRadiance); off = i * ch * 4; view.setFloat32(off, r, true); view.setFloat32(off + 4, g, true); view.setFloat32(off + 8, b, true); if (ch === 4) view.setFloat32(off + 12, 1, true);
-                }
-            } else { var rgbm = tex.type === pc.TEXTURETYPE_RGBM || tex.encoding === 'rgbm', srgb = tex.format === pc.PIXELFORMAT_SRGBA8 || !!tex.srgb, q = [0, 0, 0, 1]; mode = rgbm ? 'RGBM8' : (srgb ? 'sRGBA8' : 'RGBA8-linear'); for (i = 0; i < count; i++) { r = clamp(pixels[i * 4] || 0, 0, maxRadiance); g = clamp(pixels[i * 4 + 1] || 0, 0, maxRadiance); b = clamp(pixels[i * 4 + 2] || 0, 0, maxRadiance); off = i * 4; if (rgbm) { encodeRGBM(r, g, b, q); dst[off] = Math.round(q[0] * 255); dst[off + 1] = Math.round(q[1] * 255); dst[off + 2] = Math.round(q[2] * 255); dst[off + 3] = Math.round(q[3] * 255); } else if (srgb) { dst[off] = Math.round(linearToSrgb1(r) * 255); dst[off + 1] = Math.round(linearToSrgb1(g) * 255); dst[off + 2] = Math.round(linearToSrgb1(b) * 255); dst[off + 3] = 255; } else { dst[off] = Math.round(clamp(r, 0, 1) * 255); dst[off + 1] = Math.round(clamp(g, 0, 1) * 255); dst[off + 2] = Math.round(clamp(b, 0, 1) * 255); dst[off + 3] = 255; } } }
-        } finally { tex.unlock(); } return { mode: mode, format: tex.format, type: tex.type, encoding: tex.encoding };
-    } function nextPow2(v) { v = Math.max(1, Math.ceil(v)); var p = 1; while (p < v) p <<= 1; return p; } function geometryArea(g) {
-        var a = 0, P = g.positions, I = g.indices;
-        for (var t = 0; t < I.length; t += 3) { var ia = I[t] * 3, ib = I[t + 1] * 3, ic = I[t + 2] * 3; var abx = P[ib] - P[ia], aby = P[ib + 1] - P[ia + 1], abz = P[ib + 2] - P[ia + 2], acx = P[ic] - P[ia], acy = P[ic + 1] - P[ia + 1], acz = P[ic + 2] - P[ia + 2]; var cx = aby * acz - abz * acy, cy = abz * acx - abx * acz, cz = abx * acy - aby * acx; a += 0.5 * Math.hypot(cx, cy, cz); } return a;
-    } function receiverResolution(g, owner, scene, atlasSize) { var mult = isNum(scene && scene.lightmapSizeMultiplier) ? scene.lightmapSizeMultiplier : 16; if (owner && owner.component && isNum(owner.component.lightmapSizeMultiplier)) mult *= owner.component.lightmapSizeMultiplier; var r = nextPow2(Math.max(16, Math.sqrt(Math.max(1e-6, geometryArea(g))) * mult)); return clamp(r, 16, Math.min(512, Math.max(16, atlasSize >> 1))); } function rawBufferView(v) { if (v instanceof ArrayBuffer) return { buffer: v, byteOffset: 0, byteLength: v.byteLength }; if (ArrayBuffer.isView(v)) return { buffer: v.buffer, byteOffset: v.byteOffset, byteLength: v.byteLength }; return null; } function findElement(format, semantic) { var es = format && format.elements || []; for (var i = 0; i < es.length; i++)if (es[i].name === semantic) return es[i]; return null; } function defaultInstanceMatrices(mi) {
-        try {
-            var id = mi && mi.instancingData, vb = id && id.vertexBuffer; if (!vb || typeof vb.lock !== 'function') return null; var fmt = vb.getFormat ? vb.getFormat() : vb.format;
-            var sems = [pc.SEMANTIC_ATTR11, pc.SEMANTIC_ATTR12, pc.SEMANTIC_ATTR14, pc.SEMANTIC_ATTR15], els = sems.map(function (s) { return findElement(fmt, s); }); if (els.some(function (e) { return !e || e.dataType !== pc.TYPE_FLOAT32 || e.numComponents !== 4; })) return null; var mem = vb.lock(), raw = rawBufferView(mem); if (!raw) return null; var dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength), n = Math.min(mi.instancingCount || vb.getNumVertices(), vb.getNumVertices()), out = []; for (var k = 0; k < n; k++) { var m = new Float32Array(16), o = 0; for (var q = 0; q < 4; q++) { var e = els[q], base = k * e.stride + e.offset; for (var c = 0; c < 4; c++)m[o++] = dv.getFloat32(base + c * 4, true); } out.push(m); } try { vb.unlock(); } catch (_) { } return { matrices: out, vertexBuffer: vb, cull: !!id.cull, format: fmt };
-        } catch (e) { warn('Instancing default no pudo leerse:', e && e.message || e); return null; }
-    } function transformUvCpu(uv, til, off, rot) { var x = uv[0] * (til && isNum(til.x) ? til.x : 1) + (off && isNum(off.x) ? off.x : 0), y = uv[1] * (til && isNum(til.y) ? til.y : 1) + (off && isNum(off.y) ? off.y : 0); if (isNum(rot) && Math.abs(rot) > 1e-7) { var a = rot * Math.PI / 180, c = Math.cos(a), s = Math.sin(a); x -= 0.5; y -= 0.5; var nx = c * x - s * y, ny = s * x + c * y; x = nx + 0.5; y = ny + 0.5; } return [x, y]; } function wrapCpu(x, mode) {
-        if (mode === pc.ADDRESS_CLAMP_TO_EDGE) return clamp(x, 0, 0.999999);
-        if (mode === pc.ADDRESS_MIRRORED_REPEAT) { var k = Math.floor(x), f = x - k; return (k & 1) ? 1 - f : f; } return x - Math.floor(x);
-    } function sampleCpuEntry(entry, u, v) { if (!entry || !entry.pixels) return [0.5, 0.5, 1, 1]; u = wrapCpu(u, entry.addressU); v = wrapCpu(v, entry.addressV); var w = entry.width, h = entry.height, xf = clamp(u * w - 0.5, 0, w - 1), yf = clamp(v * h - 0.5, 0, h - 1), x0 = Math.floor(xf), y0 = Math.floor(yf), x1 = Math.min(x0 + 1, w - 1), y1 = Math.min(y0 + 1, h - 1), tx = xf - x0, ty = yf - y0, p = entry.pixels; function at(x, y, c) { return p[(y * w + x) * 4 + c]; } var r = []; for (var c = 0; c < 4; c++) { var a = at(x0, y0, c) * (1 - tx) + at(x1, y0, c) * tx, b = at(x0, y1, c) * (1 - tx) + at(x1, y1, c) * tx; r[c] = a * (1 - ty) + b * ty; } return r; } function perturbNormalCpu(g, triIndex, bary, baseN) {
-        var mat = g.material, entry = g.normalCpu; if (!mat || !entry || !g.hasUv0) return baseN; var uvSet = isNum(mat.normalMapUv) ? mat.normalMapUv : 0; if (uvSet !== 0 && uvSet !== 1) return baseN; var I = g.indices, t = triIndex * 3, i0 = I[t], i1 = I[t + 1], i2 = I[t + 2], U = uvSet === 1 ? g.uv1 : g.uv0; if (uvSet === 1 && !g.hasUv1) return baseN; var l0 = bary[0], l1 = bary[1], l2 = bary[2], uv = [U[i0 * 2] * l0 + U[i1 * 2] * l1 + U[i2 * 2] * l2, U[i0 * 2 + 1] * l0 + U[i1 * 2 + 1] * l1 + U[i2 * 2 + 1] * l2], tuv = transformUvCpu(uv, mat.normalMapTiling, mat.normalMapOffset, mat.normalMapRotation || 0), s = sampleCpuEntry(entry, tuv[0], tuv[1]), bump = isNum(mat.bumpiness) ? mat.bumpiness : 1, nx = (s[0] * 2 - 1) * bump, ny = (s[1] * 2 - 1) * bump, nz = s[2] * 2 - 1, nl = Math.hypot(nx, ny, nz) || 1;
-        nx /= nl; ny /= nl; nz /= nl; var P = g.positions, ax = P[i0 * 3], ay = P[i0 * 3 + 1], az = P[i0 * 3 + 2], e1 = [P[i1 * 3] - ax, P[i1 * 3 + 1] - ay, P[i1 * 3 + 2] - az], e2 = [P[i2 * 3] - ax, P[i2 * 3 + 1] - ay, P[i2 * 3 + 2] - az], u0 = U[i0 * 2], v0 = U[i0 * 2 + 1], du1 = U[i1 * 2] - u0, dv1 = U[i1 * 2 + 1] - v0, du2 = U[i2 * 2] - u0, dv2 = U[i2 * 2 + 1] - v0, det = du1 * dv2 - dv1 * du2; if (Math.abs(det) < 1e-10) return baseN; var inv = 1 / det, tr = [(e1[0] * dv2 - e2[0] * dv1) * inv, (e1[1] * dv2 - e2[1] * dv1) * inv, (e1[2] * dv2 - e2[2] * dv1) * inv], br = [(-e1[0] * du2 + e2[0] * du1) * inv, (-e1[1] * du2 + e2[1] * du1) * inv, (-e1[2] * du2 + e2[2] * du1) * inv], dot = tr[0] * baseN[0] + tr[1] * baseN[1] + tr[2] * baseN[2]; tr = [tr[0] - baseN[0] * dot, tr[1] - baseN[1] * dot, tr[2] - baseN[2] * dot]; var tl = Math.hypot(tr[0], tr[1], tr[2]) || 1; tr = [tr[0] / tl, tr[1] / tl, tr[2] / tl]; var cx = baseN[1] * tr[2] - baseN[2] * tr[1], cy = baseN[2] * tr[0] - baseN[0] * tr[2], cz = baseN[0] * tr[1] - baseN[1] * tr[0], hand = (cx * br[0] + cy * br[1] + cz * br[2]) < 0 ? -1 : 1; var bt = [cx * hand, cy * hand, cz * hand], r = [tr[0] * nx + bt[0] * ny + baseN[0] * nz, tr[1] * nx + bt[1] * ny + baseN[1] * nz, tr[2] * nx + bt[2] * ny + baseN[2] * nz], rl = Math.hypot(r[0], r[1], r[2]) || 1; return [r[0] / rl, r[1] / rl, r[2] / rl];
-    } function buildGBufferStandalone(g, w, h) {
-        var pos = new Float32Array(w * h * 4), nrm = new Float32Array(w * h * 4), du = new Float32Array(w * h * 4), dv = new Float32Array(w * h * 4), valid = 0, uv = g.uv1, P = g.positions, N = g.normals;
-        for (var t = 0; t < g.triCount; t++) {
-            var i0 = g.indices[t * 3], i1 = g.indices[t * 3 + 1], i2 = g.indices[t * 3 + 2], u0 = uv[i0 * 2], v0 = uv[i0 * 2 + 1], u1 = uv[i1 * 2], v1 = uv[i1 * 2 + 1], u2 = uv[i2 * 2], v2 = uv[i2 * 2 + 1], x0 = u0 * w, y0 = v0 * h, x1 = u1 * w, y1 = v1 * h, x2 = u2 * w, y2 = v2 * h, den = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2); if (Math.abs(den) < 1e-12) continue; var p0x = P[i0 * 3], p0y = P[i0 * 3 + 1], p0z = P[i0 * 3 + 2], p1x = P[i1 * 3], p1y = P[i1 * 3 + 1], p1z = P[i1 * 3 + 2], p2x = P[i2 * 3], p2y = P[i2 * 3 + 1], p2z = P[i2 * 3 + 2], eu1 = u1 - u0, ev1 = v1 - v0, eu2 = u2 - u0, ev2 = v2 - v0, uvDet = eu1 * ev2 - ev1 * eu2, dpdu = [0, 0, 0], dpdv = [0, 0, 0]; if (Math.abs(uvDet) > 1e-12) { var inv = 1 / uvDet, e1x = p1x - p0x, e1y = p1y - p0y, e1z = p1z - p0z, e2x = p2x - p0x, e2y = p2y - p0y, e2z = p2z - p0z; dpdu = [(e1x * ev2 - e2x * ev1) * inv, (e1y * ev2 - e2y * ev1) * inv, (e1z * ev2 - e2z * ev1) * inv]; dpdv = [(-e1x * eu2 + e2x * eu1) * inv, (-e1y * eu2 + e2y * eu1) * inv, (-e1z * eu2 + e2z * eu1) * inv]; } var minX = Math.max(0, Math.floor(Math.min(x0, x1, x2))), maxX = Math.min(w - 1, Math.ceil(Math.max(x0, x1, x2))), minY = Math.max(0, Math.floor(Math.min(y0, y1, y2))), maxY = Math.min(h - 1, Math.ceil(Math.max(y0, y1, y2))); for (var y = minY; y <= maxY; y++)for (var x = minX; x <= maxX; x++) {
-                var px = x + 0.5, py = y + 0.5, l0 = ((y1 - y2) * (px - x2) + (x2 - x1) * (py - y2)) / den, l1 = ((y2 - y0) * (px - x2) + (x0 - x2) * (py - y2)) / den, l2 = 1 - l0 - l1; if (l0 < -1e-4 || l1 < -1e-4 || l2 < -1e-4) continue; var o = (y * w + x) * 4; if (pos[o + 3] === 0) valid++;
-                pos[o] = l0 * p0x + l1 * p1x + l2 * p2x; pos[o + 1] = l0 * p0y + l1 * p1y + l2 * p2y; pos[o + 2] = l0 * p0z + l1 * p1z + l2 * p2z; pos[o + 3] = 1; var nx = l0 * N[i0 * 3] + l1 * N[i1 * 3] + l2 * N[i2 * 3], ny = l0 * N[i0 * 3 + 1] + l1 * N[i1 * 3 + 1] + l2 * N[i2 * 3 + 1], nz = l0 * N[i0 * 3 + 2] + l1 * N[i1 * 3 + 2] + l2 * N[i2 * 3 + 2], nl = Math.hypot(nx, ny, nz) || 1, nn = perturbNormalCpu(g, t, [l0, l1, l2], [nx / nl, ny / nl, nz / nl]); nrm[o] = nn[0]; nrm[o + 1] = nn[1]; nrm[o + 2] = nn[2]; nrm[o + 3] = 1; du[o] = dpdu[0]; du[o + 1] = dpdu[1]; du[o + 2] = dpdu[2]; dv[o] = dpdv[0]; dv[o + 1] = dpdv[1]; dv[o + 2] = dpdv[2];
-            }
-        } return { pos: pos, nrm: nrm, du: du, dv: dv, w: w, h: h, valid: valid };
-    } function collectStandalone(ctx, p, texDB) {
-        var ix = indexComponents(ctx); var receivers = [], transport = []; var stats = { componentsScanned: ix.stats.scanned, receivers: 0, transportMeshes: 0, transportTris: 0, missingUv1: 0, transparentExcluded: 0, instancedGroups: 0, instancedInstances: 0, instancingUnsupported: 0, normalMappedReceivers: 0, heightMappedReceivers: 0, sharedMaterials: 0 }; var materialCounts = new Map(); ix.map.forEach(function (owner, mi) {
-            if (!owner.enabled || !mi || mi.visible === false) return; if (!(owner.isStatic || owner.lightmapped)) return; var inst = mi.instancingCount > 0 ? defaultInstanceMatrices(mi) : null; if (mi.instancingCount > 0 && !inst) {
-                stats.instancingUnsupported++; warn('GPU instancing preservado pero no bakeado para "' + owner.entityName + '": formato custom/attributeless no expone Mat4 CPU default.');
-                return;
-            } var mats = inst ? inst.matrices : [null]; if (inst) { stats.instancedGroups++; stats.instancedInstances += mats.length; } for (var ii = 0; ii < mats.length; ii++) { var g = buildGeometry(mi, owner, texDB, mats[ii]); if (!g.ok) continue; g.instanceIndex = inst ? ii : -1; g.instancing = inst; g.instanceGroup = inst ? mi : null; if (!g.transparent && owner.castShadowsLightmap) { transport.push(g); stats.transportTris += g.triCount; } else if (g.transparent) { stats.transparentExcluded++; } if (owner.lightmapped) { if (!g.hasUv1) { stats.missingUv1++; warn('Receiver "' + owner.entityName + '" sin UV1 valido: PT6 no usa UV0 como lightmap fallback.'); continue; } var r = { mi: mi, owner: owner, geom: g, instanceIndex: g.instanceIndex, instanced: !!inst, instancing: inst, material: mi.material }; receivers.push(r); if (mi.material) { materialCounts.set(mi.material, (materialCounts.get(mi.material) || 0) + 1); if (mi.material.normalMap) stats.normalMappedReceivers++; if (mi.material.heightMap) stats.heightMappedReceivers++; } } }
-        }); materialCounts.forEach(function (n) { if (n > 1) stats.sharedMaterials++; }); stats.receivers = receivers.length; stats.transportMeshes = transport.length; var records = [], bmin = [Infinity, Infinity, Infinity], bmax = [-Infinity, -Infinity, -Infinity]; transport.forEach(function (g) {
-            var P = g.positions, N = g.normals, U0 = g.uv0, U1 = g.uv1;
-            var d = g.diff, e = g.emis, mt = g.metal; for (var t = 0; t < g.triCount; t++) {
-                var ia = g.indices[t * 3], ib = g.indices[t * 3 + 1], ic = g.indices[t * 3 + 2]; var ax = P[ia * 3], ay = P[ia * 3 + 1], az = P[ia * 3 + 2]; var bx = P[ib * 3], by = P[ib * 3 + 1], bz = P[ib * 3 + 2]; var cx = P[ic * 3], cy = P[ic * 3 + 1], cz = P[ic * 3 + 2]; var e1x = bx - ax, e1y = by - ay, e1z = bz - az; var e2x = cx - ax, e2y = cy - ay, e2z = cz - az; var crx = e1y * e2z - e1z * e2y, cry = e1z * e2x - e1x * e2z, crz = e1x * e2y - e1y * e2x; if (Math.hypot(crx, cry, crz) < 1e-12) continue; var mn = [Math.min(ax, bx, cx), Math.min(ay, by, cy), Math.min(az, bz, cz)]; var mx = [Math.max(ax, bx, cx), Math.max(ay, by, cy), Math.max(az, bz, cz)]; for (var k = 0; k < 3; k++) { bmin[k] = Math.min(bmin[k], mn[k]); bmax[k] = Math.max(bmax[k], mx[k]); } records.push({ min: mn, max: mx, centroid: [(ax + bx + cx) / 3, (ay + by + cy) / 3, (az + bz + cz) / 3], data: [ax, ay, az, 0, e1x, e1y, e1z, 0, e2x, e2y, e2z, 0, N[ia * 3], N[ia * 3 + 1], N[ia * 3 + 2], 0, N[ib * 3], N[ib * 3 + 1], N[ib * 3 + 2], 0, N[ic * 3], N[ic * 3 + 1], N[ic * 3 + 2], 0, g.albedo[0], g.albedo[1], g.albedo[2], g.owner.castShadowsLightmap ? 1 : 0, g.emission[0], g.emission[1], g.emission[2], g.metalness, U0[ia * 2], U0[ia * 2 + 1], U0[ib * 2], U0[ib * 2 + 1], U0[ic * 2], U0[ic * 2 + 1], 0, 0, U1[ia * 2], U1[ia * 2 + 1], U1[ib * 2], U1[ib * 2 + 1], U1[ic * 2], U1[ic * 2 + 1], 0, 0, d.info[0], d.info[1], d.info[2], d.info[3], d.xform[0], d.xform[1], d.xform[2], d.xform[3], d.misc[0], d.misc[1], d.misc[2], d.misc[3], e.info[0], e.info[1], e.info[2], e.info[3], e.xform[0], e.xform[1], e.xform[2], e.xform[3], e.misc[0], e.misc[1], e.misc[2], e.misc[3], mt.info[0], mt.info[1], mt.info[2], mt.info[3], mt.xform[0], mt.xform[1], mt.xform[2], mt.xform[3], mt.misc[0], mt.misc[1], mt.misc[2], mt.misc[3]] });
-            }
-        }); if (!records.length) { bmin = [0, 0, 0]; bmax = [0, 0, 0]; } var built = buildBVH(records, p.leaf); var extent = Math.max(1e-4, bmax[0] - bmin[0], bmax[1] - bmin[1], bmax[2] - bmin[2]); return { receivers: receivers, transport: transport, tris: built.tris, triCount: built.triCount, bvh: built.nodes, bvhCount: built.nodeCount, boundsMin: bmin, boundsMax: bmax, extent: extent, stats: stats, materialCounts: materialCounts };
-    } function shelfPack(items, size, pad) { var x = pad, y = pad, rowH = 0; for (var i = 0; i < items.length; i++) { var r = items[i], rw = r.res + pad * 2, rh = r.res + pad * 2; if (rw > size || rh > size) return false; if (x + rw > size) { x = pad; y += rowH; rowH = 0; } if (y + rh > size) return false; r.rect = { x: x + pad, y: y + pad, w: r.res, h: r.res }; x += rw; rowH = Math.max(rowH, rh); } return true; } function packAtlases(receivers, scene, device) {
-        var maxScene = isNum(scene.lightmapMaxResolution) ? scene.lightmapMaxResolution : 2048, maxGpu = device && device.maxTextureSize || 4096, size = Math.min(maxScene, maxGpu, 2048); size = Math.max(256, 1 << Math.floor(Math.log2(size))); receivers.forEach(function (r) { r.res = receiverResolution(r.geom, r.owner, scene, size); }); var atlases = [], instGroups = new Map(), normal = []; receivers.forEach(function (r) {
-            if (r.instanced) { var a = instGroups.get(r.mi); if (!a) { a = []; instGroups.set(r.mi, a); } a.push(r); } else normal.push(r);
-        }); instGroups.forEach(function (items, mi) { var copy = items.slice().sort(function (a, b) { return b.res - a.res; }), ok = shelfPack(copy, size, 4); while (!ok && copy.some(function (r) { return r.res > 16; })) { copy.forEach(function (r) { r.res = Math.max(16, r.res >> 1); }); ok = shelfPack(copy, size, 4); } if (!ok) { warn('Grupo instanciado no cabe en atlas ' + size + '; se preserva instancing pero no se aplica lightmap PT6 a ese grupo.'); items.forEach(function (r) { r.skip = true; }); return; } var at = { index: atlases.length, size: size, items: copy, pixels: new Float32Array(size * size * 4), instanced: true, mi: mi }; copy.forEach(function (r) { r.atlas = at; }); atlases.push(at); }); normal = normal.filter(function (r) { return !r.skip; }).sort(function (a, b) { return b.res - a.res; }); while (normal.length) {
-            var at = { index: atlases.length, size: size, items: [], pixels: new Float32Array(size * size * 4), instanced: false }; var x = 4, y = 4, rowH = 0, keep = []; for (var i = 0; i < normal.length; i++) { var r = normal[i], rw = r.res + 8, rh = r.res + 8; if (x + rw > size) { x = 4; y += rowH; rowH = 0; } if (y + rh > size) { keep.push(r); continue; } r.rect = { x: x + 4, y: y + 4, w: r.res, h: r.res }; r.atlas = at; at.items.push(r); x += rw; rowH = Math.max(rowH, rh); } if (!at.items.length) {
-                var bad = normal.shift(); bad.res = Math.max(16, Math.min(bad.res, size - 8)); bad.rect = { x: 4, y: 4, w: bad.res, h: bad.res };
-                bad.atlas = at; at.items.push(bad);
-            } else normal = keep; atlases.push(at);
-        } return atlases;
-    } function blitTile(atlas, tile, pix) { var s = atlas.size, r = tile.rect, w = r.w, h = r.h; for (var y = 0; y < h; y++) { var so = y * w * 4, doff = ((r.y + y) * s + r.x) * 4; atlas.pixels.set(pix.subarray(so, so + w * 4), doff); } for (var p = 1; p <= 4; p++) { for (y = 0; y < h; y++) { var srcL = ((r.y + y) * s + r.x) * 4, dstL = ((r.y + y) * s + Math.max(0, r.x - p)) * 4, srcR = ((r.y + y) * s + r.x + w - 1) * 4, dstR = ((r.y + y) * s + Math.min(s - 1, r.x + w - 1 + p)) * 4; atlas.pixels.set(atlas.pixels.subarray(srcL, srcL + 4), dstL); atlas.pixels.set(atlas.pixels.subarray(srcR, srcR + 4), dstR); } for (var x = 0; x < w; x++) { var srcT = (r.y * s + r.x + x) * 4, dstT = (Math.max(0, r.y - p) * s + r.x + x) * 4, srcB = ((r.y + h - 1) * s + r.x + x) * 4, dstB = (Math.min(s - 1, r.y + h - 1 + p) * s + r.x + x) * 4; atlas.pixels.set(atlas.pixels.subarray(srcT, srcT + 4), dstT); atlas.pixels.set(atlas.pixels.subarray(srcB, srcB + 4), dstB); } } } function createLightmapTexture(gd, atlas, hdr, maxRadiance) {
-        var tex = new pc.Texture(gd, { name: 'PT6_LightmapAtlas_' + atlas.index, width: atlas.size, height: atlas.size, format: hdr ? pc.PIXELFORMAT_RGBA16F : pc.PIXELFORMAT_RGBA8, type: hdr ? pc.TEXTURETYPE_DEFAULT : pc.TEXTURETYPE_RGBM, mipmaps: false, minFilter: pc.FILTER_LINEAR, magFilter: pc.FILTER_LINEAR, addressU: pc.ADDRESS_CLAMP_TO_EDGE, addressV: pc.ADDRESS_CLAMP_TO_EDGE });
-        writeTexture(tex, atlas.pixels, atlas.size, atlas.size, maxRadiance); return tex;
-    } function ensureMaterialPt6(mat, state, fallbackTex) {
-        if (!mat || typeof mat.update !== 'function') return; if (!state.materialBackups.has(mat)) { state.materialBackups.set(mat, { lightMap: mat.lightMap || null, lightMapUv: mat.lightMapUv, lightMapTiling: mat.lightMapTiling && mat.lightMapTiling.clone ? mat.lightMapTiling.clone() : null, lightMapOffset: mat.lightMapOffset && mat.lightMapOffset.clone ? mat.lightMapOffset.clone() : null, lightMapRotation: mat.lightMapRotation, shaderChunksVersion: mat.shaderChunksVersion, glslDecl: mat.getShaderChunks ? mat.getShaderChunks(pc.SHADERLANGUAGE_GLSL).get('litUserDeclarationVS') : null, glslEnd: mat.getShaderChunks ? mat.getShaderChunks(pc.SHADERLANGUAGE_GLSL).get('litUserMainEndVS') : null, wgslDecl: mat.getShaderChunks ? mat.getShaderChunks(pc.SHADERLANGUAGE_WGSL).get('litUserDeclarationVS') : null, wgslEnd: mat.getShaderChunks ? mat.getShaderChunks(pc.SHADERLANGUAGE_WGSL).get('litUserMainEndVS') : null, attr13Name: mat.userAttributes && typeof mat.userAttributes.get === 'function' ? mat.userAttributes.get(pc.SEMANTIC_ATTR13) : undefined }); } mat.lightMap = fallbackTex; mat.lightMapUv = 1; if (mat.lightMapTiling && mat.lightMapTiling.set) mat.lightMapTiling.set(1, 1);
-        if (mat.lightMapOffset && mat.lightMapOffset.set) mat.lightMapOffset.set(0, 0); mat.lightMapRotation = 0; mat.shaderChunksVersion = '2.22'; var gdcl = '\n#if INSTANCING\nattribute vec4 aPT6LmRect;\n#else\nuniform vec4 uPT6LmRect;\n#endif\n'; var gend = '\n#ifdef UV1_UNMODIFIED\n#if INSTANCING\nvUv1 = vUv1 * aPT6LmRect.zw + aPT6LmRect.xy;\n#else\nvUv1 = vUv1 * uPT6LmRect.zw + uPT6LmRect.xy;\n#endif\n#endif\n'; var wdcl = '\n#if INSTANCING\nattribute aPT6LmRect: vec4f;\n#else\nuniform uPT6LmRect: vec4f;\n#endif\n'; var wend = '\n#ifdef UV1_UNMODIFIED\n#if INSTANCING\noutput.vUv1 = output.vUv1 * aPT6LmRect.zw + aPT6LmRect.xy;\n#else\noutput.vUv1 = output.vUv1 * uniform.uPT6LmRect.zw + uniform.uPT6LmRect.xy;\n#endif\n#endif\n'; if (mat.getShaderChunks) { var g = mat.getShaderChunks(pc.SHADERLANGUAGE_GLSL); var w = mat.getShaderChunks(pc.SHADERLANGUAGE_WGSL); var bk = state.materialBackups.get(mat); g.set('litUserDeclarationVS', (bk.glslDecl || '') + gdcl); g.set('litUserMainEndVS', (bk.glslEnd || '') + gend); w.set('litUserDeclarationVS', (bk.wgslDecl || '') + wdcl); w.set('litUserMainEndVS', (bk.wgslEnd || '') + wend); } if (typeof mat.setAttribute === 'function') mat.setAttribute('aPT6LmRect', pc.SEMANTIC_ATTR13); mat.update();
-    } function restoreMaterials(state) {
-        state.materialBackups.forEach(function (b, mat) {
-            try {
-                mat.lightMap = b.lightMap;
-                mat.lightMapUv = b.lightMapUv; if (b.lightMapTiling && mat.lightMapTiling && mat.lightMapTiling.copy) mat.lightMapTiling.copy(b.lightMapTiling); if (b.lightMapOffset && mat.lightMapOffset && mat.lightMapOffset.copy) mat.lightMapOffset.copy(b.lightMapOffset); mat.lightMapRotation = b.lightMapRotation; mat.shaderChunksVersion = b.shaderChunksVersion; if (mat.getShaderChunks) { var g = mat.getShaderChunks(pc.SHADERLANGUAGE_GLSL); var w = mat.getShaderChunks(pc.SHADERLANGUAGE_WGSL); if (b.glslDecl == null) g.delete('litUserDeclarationVS'); else g.set('litUserDeclarationVS', b.glslDecl); if (b.glslEnd == null) g.delete('litUserMainEndVS'); else g.set('litUserMainEndVS', b.glslEnd); if (b.wgslDecl == null) w.delete('litUserDeclarationVS'); else w.set('litUserDeclarationVS', b.wgslDecl); if (b.wgslEnd == null) w.delete('litUserMainEndVS'); else w.set('litUserMainEndVS', b.wgslEnd); } if (mat.userAttributes && typeof mat.userAttributes.delete === 'function') { if (b.attr13Name === undefined) mat.userAttributes.delete(pc.SEMANTIC_ATTR13); else mat.userAttributes.set(pc.SEMANTIC_ATTR13, b.attr13Name); } mat.update();
-            } catch (_) { }
-        }); state.materialBackups.clear();
-    } function installInstanceRects(group, state, gd) {
-        var mi = group[0].mi, inst = group[0].instancing; if (!inst || !inst.vertexBuffer) return false;
-        var n = inst.matrices.length; var fmt = new pc.VertexFormat(gd, [{ semantic: pc.SEMANTIC_ATTR11, components: 4, type: pc.TYPE_FLOAT32 }, { semantic: pc.SEMANTIC_ATTR12, components: 4, type: pc.TYPE_FLOAT32 }, { semantic: pc.SEMANTIC_ATTR14, components: 4, type: pc.TYPE_FLOAT32 }, { semantic: pc.SEMANTIC_ATTR15, components: 4, type: pc.TYPE_FLOAT32 }, { semantic: pc.SEMANTIC_ATTR13, components: 4, type: pc.TYPE_FLOAT32 }]); var data = new Float32Array(n * 20); for (var i = 0; i < n; i++) { var m = inst.matrices[i], r = group[i]; var rect = r && r.atlas && !r.skip ? [r.rect.x / r.atlas.size, r.rect.y / r.atlas.size, r.rect.w / r.atlas.size, r.rect.h / r.atlas.size] : [0, 0, 0, 0]; var o = i * 20; data.set(m, o); data.set(rect, o + 16); } var vb = new pc.VertexBuffer(gd, fmt, n, { data: data }); if (!state.instancingBackups.has(mi)) { state.instancingBackups.set(mi, { vertexBuffer: inst.vertexBuffer, cull: inst.cull, count: mi.instancingCount }); } mi.setInstancing(vb, inst.cull); mi.instancingCount = n; state.createdInstanceBuffers.push(vb); return true;
-    } function assignRuntime(atlases, state, gd) {
-        var byMi = new Map(); atlases.forEach(function (a) {
-            a.texture = createLightmapTexture(gd, a, !!state.owner.app.scene.lightmapHDR, preset(state.owner).maxRadiance); a.items.forEach(function (r) {
-                if (r.skip) return; var arr = byMi.get(r.mi);
-                if (!arr) { arr = []; byMi.set(r.mi, arr); } arr.push(r);
+    }
+
+    function aoParamArray(
+        gb,
+        scene,
+        si,
+        p,
+        seed,
+        sampleCount,
+        pixelOffset
+    ) {
+        var ab =
+            new ArrayBuffer(64);
+
+        var u =
+            new Uint32Array(ab);
+
+        var f =
+            new Float32Array(ab);
+
+        u[0] = gb.w;
+        u[1] = gb.h;
+        u[2] = scene.triCount;
+        u[3] = scene.bvhCount;
+        u[4] = sampleCount;
+        u[5] = p.aoSamples;
+        u[6] = seed >>> 0;
+        u[7] = pixelOffset || 0;
+
+        f[8] = si.rayBias;
+        f[9] = scene.extent;
+        f[10] = p.aoContactRadiusFraction;
+        f[11] = p.aoCavityRadiusFraction;
+
+        return ab;
+    }
+
+    async function traceAO(
+        gd,
+        sb,
+        gb,
+        scene,
+        si,
+        p,
+        seed,
+        owner,
+        epoch
+    ) {
+        var ds =
+            await aoDeviceState(gd);
+
+        if (
+            !active(
+                owner,
+                epoch
+            )
+        ) {
+            throw new Error(
+                'cancelado'
+            );
+        }
+
+        var gpu = ds.gpu;
+        var w = gb.w;
+        var h = gb.h;
+
+        var pixelCount =
+            w * h;
+
+        var gPacked =
+            packGBuffer(gb);
+
+        var gBytes =
+            gPacked.byteLength;
+
+        var outBytes =
+            pixelCount * 16;
+
+        assertBindingSize(
+            gpu,
+            gBytes,
+            'AO G-buffer ' +
+            w +
+            'x' +
+            h
+        );
+
+        assertBindingSize(
+            gpu,
+            outBytes,
+            'AO output ' +
+            w +
+            'x' +
+            h
+        );
+
+        var gbufBuffer =
+            storage(
+                gpu,
+                gPacked,
+                'BakePT607-AO-GBuf'
+            );
+
+        var outBuffer =
+            emptyStorage(
+                gpu,
+                outBytes,
+                'BakePT607-AO-Out',
+                true
+            );
+
+        var bentBuffer =
+            emptyStorage(
+                gpu,
+                outBytes,
+                'BakePT607-Bent-Out',
+                true
+            );
+
+        var readBuffer =
+            gpu.createBuffer({
+                label:
+                    'BakePT607-AO-Read',
+
+                size:
+                    outBytes,
+
+                usage:
+                    GPUBufferUsageRef.COPY_DST |
+                    GPUBufferUsageRef.MAP_READ
             });
-        }); byMi.forEach(function (items, mi) { items.sort(function (a, b) { return a.instanceIndex - b.instanceIndex; }); var first = items[0], mat = mi.material; if (!mat) return; ensureMaterialPt6(mat, state, first.atlas.texture); if (first.instanced) { if (items.length !== first.instancing.matrices.length) { warn('Instancing "' + first.owner.entityName + '": faltan tiles; se conserva buffer original sin lightmap.'); return; } if (installInstanceRects(items, state, gd)) { mi.setParameter('texture_lightMap', first.atlas.texture); if (typeof mi.setLightmapped === 'function') mi.setLightmapped(true); } } else { var r = first; var rect = [r.rect.x / r.atlas.size, r.rect.y / r.atlas.size, r.rect.w / r.atlas.size, r.rect.h / r.atlas.size]; mi.setParameter('texture_lightMap', r.atlas.texture); mi.setParameter('uPT6LmRect', new Float32Array(rect)); if (typeof mi.setLightmapped === 'function') mi.setLightmapped(true); } });
-    } function restoreRuntime(state) {
-        state.instancingBackups.forEach(function (b, mi) { try { mi.setInstancing(b.vertexBuffer, b.cull); mi.instancingCount = b.count; } catch (_) { } }); state.instancingBackups.clear(); state.createdInstanceBuffers.forEach(function (v) { try { v.destroy(); } catch (_) { } }); state.createdInstanceBuffers.length = 0;
-        state.createdTextures.forEach(function (t) { try { t.destroy(); } catch (_) { } }); state.createdTextures.length = 0; restoreMaterials(state);
-    } async function runStandalone(owner, epoch) {
-        var app = owner.app, gd = app.graphicsDevice, sceneObj = app.scene, ctx = { root: app.root, scene: sceneObj }, p = preset(owner), t0 = now(), aoStrength = clamp((owner.aoStrength || 0) / 100, 0, 1); if (!webgpuOK(gd)) throw new Error('PT6.0.2 Standalone requiere WebGPU Compute.'); var env = await buildEnvironment(sceneObj, p); if (!active(owner, epoch)) return; var texDB = await prepareMaterialTextures(ctx, p, env.pixels.length / 4); if (!active(owner, epoch)) return; var scene = collectStandalone(ctx, p, texDB), lights = collectLights(ctx); if (!scene.receivers.length) { warn('No hay receivers lightmapped con UV1 valido.'); return; } if (!scene.triCount) { warn('No hay geometria de transporte estatica.'); return; } var pool = new Float32Array(env.pixels.length + texDB.pixels.length); pool.set(env.pixels); pool.set(texDB.pixels, env.pixels.length); var atlases = packAtlases(scene.receivers, sceneObj, gd), rayBias = Math.max(0.00005, scene.extent * 0.000025), gpu = nativeGPUDevice(gd), ds = await deviceState(gd), sb = { tris: storage(gpu, scene.tris, 'BakePT602-Tris'), bvh: storage(gpu, scene.bvh, 'BakePT602-BVH'), lights: storage(gpu, lights.data, 'BakePT602-Lights') }, eb = { pixels: storage(gpu, pool, 'BakePT602-PixelPool'), alias: storage(gpu, env.alias, 'BakePT602-EnvAlias'), pixelBytes: pool.byteLength, aliasBytes: env.alias.byteLength }, si = { triCount: scene.triCount, bvhCount: scene.bvhCount, lightCount: lights.count, ambient: [0, 0, 0], rayBias: rayBias, env: env, customEnvDirect: env.mode !== 0, bentStrength: aoStrength };
-        var report = { version: VERSION, standalone: true, quality: p.label, receivers: scene.receivers.length, atlases: atlases.length, geometry: scene.stats, triangles: scene.triCount, bvhNodes: scene.bvhCount, lights: lights.stats, nodes: [] }; G.__bakePathTracingLastReport = report; log('Version ' + VERSION + ' | STANDALONE: pc.Lightmapper no genera iluminacion | ' + p.label + ' | receivers=' + scene.receivers.length + ' atlas=' + atlases.length + ' | tris=' + scene.triCount + ' BVH=' + scene.bvhCount + ' | normalMappedReceivers=' + scene.stats.normalMappedReceivers + ' | instancedGroups=' + scene.stats.instancedGroups + ' (' + scene.stats.instancedInstances + ' instances).'); log('Draw-call policy: materiales NO clonados; atlas compartidos; GPU instancing default Mat4 conserva un MeshInstance: Mat4 usa ATTR11/ATTR12/ATTR14/ATTR15 y PT6 usa ATTR13 exclusivamente para el rect del lightmap.'); log('Environment: ' + env.source + ' face=' + env.faceSize + ' intensity=' + env.intensity.toFixed(3) + ' | luces baked=' + lights.count + ' | HDR=' + !!sceneObj.lightmapHDR); log('PBR texture pool: color=' + texDB.colorTextureCount + ' data=' + texDB.dataTextureCount + ' entradas, ' + texDB.texelCount + ' texels, maxMap=' + p.materialResolution + ', fallos=' + texDB.failedCount + ' | normal/metalness se leen como datos lineales.');
-        if (lights.stats.runtimeAffectLightmapped > 0) warn(lights.stats.runtimeAffectLightmapped + ' luz/luces NO baked siguen con Affect Lightmapped=true.'); logMaterialDiagnostics(scene); atlases.forEach(function (a) { log('Atlas #' + a.index + ' ' + a.size + 'x' + a.size + ' tiles=' + a.items.length + (a.instanced ? ' GPU-INSTANCED' : '')); a.items.forEach(function (rr) { log('  plan tile "' + rr.owner.entityName + '"' + (rr.instanceIndex >= 0 ? '#' + rr.instanceIndex : '') + ' ' + rr.res + 'x' + rr.res); }); }); if (scene.stats.heightMappedReceivers) log('Height/parallax maps detectados=' + scene.stats.heightMappedReceivers + ': se preservan en runtime; PT6.0.2 no convierte height map en microgeometria para BVH.'); try {
-            for (var ai = 0; ai < atlases.length; ai++) {
-                var at = atlases[ai]; for (var ri = 0; ri < at.items.length; ri++) {
-                    if (!active(owner, epoch)) throw new Error('cancelado'); var r = at.items[ri]; if (r.skip) continue; var tileLabel = '"' + r.owner.entityName + '"' + (r.instanceIndex >= 0 ? '#' + r.instanceIndex : ''); log('  INICIO Tile ' + tileLabel + ' ' + r.res + 'x' + r.res + ' (' + (ri + 1) + '/' + at.items.length + ' atlas ' + (ai + 1) + '/' + atlases.length + ')'); var gb = buildGBufferStandalone(r.geom, r.res, r.res); dilateGB(gb, p.dilation); applyBentNormalsToGBuffer(gb, null); if (!gb.valid) {
-                        warn('Receiver sin cobertura UV1 ' + tileLabel);
+
+        var bentRead =
+            gpu.createBuffer({
+                label:
+                    'BakePT607-Bent-Read',
+
+                size:
+                    outBytes,
+
+                usage:
+                    GPUBufferUsageRef.COPY_DST |
+                    GPUBufferUsageRef.MAP_READ
+            });
+
+        var paramsBuffer =
+            gpu.createBuffer({
+                label:
+                    'BakePT607-AO-Params',
+
+                size:
+                    64,
+
+                usage:
+                    GPUBufferUsageRef.UNIFORM |
+                    GPUBufferUsageRef.COPY_DST
+            });
+
+        var sampleChunk =
+            Math.max(
+                1,
+                p.aoBatch | 0
+            );
+
+        var rounds =
+            Math.ceil(
+                p.aoSamples /
+                sampleChunk
+            );
+
+        var budgetMax =
+            Math.max(
+                p.aoBudgetMax,
+                Math.min(
+                    16777216,
+                    p.aoBudgetInitial *
+                    256
+                )
+            );
+
+        var budget =
+            clamp(
+                p.aoBudgetInitial,
+                p.aoBudgetMin,
+                budgetMax
+            );
+
+        var budgetInitial =
+            budget;
+
+        var targetMs =
+            p.targetGpuSliceMs ||
+            12;
+
+        var yieldBudgetMs =
+            p.yieldBudgetMs ||
+            26;
+
+        gpu.queue.writeBuffer(
+            paramsBuffer,
+            0,
+            aoParamArray(
+                gb,
+                scene,
+                si,
+                p,
+                seed,
+                sampleChunk,
+                0
+            )
+        );
+
+        var bind =
+            gpu.createBindGroup({
+                layout:
+                    ds.bgl,
+
+                entries: [
+                    {
+                        binding: 0,
+                        resource: {
+                            buffer:
+                                paramsBuffer
+                        }
+                    },
+                    {
+                        binding: 1,
+                        resource: {
+                            buffer:
+                                gbufBuffer
+                        }
+                    },
+                    {
+                        binding: 2,
+                        resource: {
+                            buffer:
+                                sb.tris
+                        }
+                    },
+                    {
+                        binding: 3,
+                        resource: {
+                            buffer:
+                                sb.bvh
+                        }
+                    },
+                    {
+                        binding: 4,
+                        resource: {
+                            buffer:
+                                outBuffer
+                        }
+                    },
+                    {
+                        binding: 5,
+                        resource: {
+                            buffer:
+                                bentBuffer
+                        }
+                    }
+                ]
+            });
+
+        var offsetU32 =
+            new Uint32Array(1);
+
+        var submits = 0;
+        var dispatches = 0;
+        var interleavedFrames = 0;
+        var calibrationTimes = [];
+        var calibrationSampleTexels = 0;
+        var calibrated = false;
+        var gpuMsSinceYield = 0;
+        var sliceSum = 0;
+        var sliceMax = 0;
+        var sliceCount = 0;
+        var lastStatusMs = now();
+
+        try {
+            for (
+                var round = 0;
+                round < rounds;
+                round++
+            ) {
+                var offset = 0;
+
+                while (
+                    offset <
+                    pixelCount
+                ) {
+                    if (
+                        !active(
+                            owner,
+                            epoch
+                        )
+                    ) {
+                        throw new Error(
+                            'cancelado'
+                        );
+                    }
+
+                    var plannedTexels =
+                        alignedTexelChunk(
+                            pixelCount,
+                            sampleChunk,
+                            budget
+                        );
+
+                    var remaining =
+                        pixelCount -
+                        offset;
+
+                    var texels =
+                        Math.min(
+                            plannedTexels,
+                            remaining
+                        );
+
+                    var fullBudgetChunk =
+                        texels ===
+                        plannedTexels;
+
+                    offsetU32[0] =
+                        offset;
+
+                    gpu.queue.writeBuffer(
+                        paramsBuffer,
+                        28,
+                        offsetU32
+                    );
+
+                    var enc =
+                        gpu.createCommandEncoder({
+                            label:
+                                'BakePT607-AO-Encoder-r' +
+                                round +
+                                '-o' +
+                                offset
+                        });
+
+                    var pass =
+                        enc.beginComputePass({
+                            label:
+                                'BakePT607-AO-Pass-r' +
+                                round +
+                                '-o' +
+                                offset
+                        });
+
+                    pass.setPipeline(
+                        ds.pipeline
+                    );
+
+                    pass.setBindGroup(
+                        0,
+                        bind
+                    );
+
+                    pass.dispatchWorkgroups(
+                        Math.ceil(
+                            texels / 64
+                        ),
+                        1,
+                        1
+                    );
+
+                    pass.end();
+
+                    dispatches++;
+
+                    var last =
+                        round === rounds - 1 &&
+                        offset + texels >=
+                        pixelCount;
+
+                    if (last) {
+                        enc.copyBufferToBuffer(
+                            outBuffer,
+                            0,
+                            readBuffer,
+                            0,
+                            outBytes
+                        );
+
+                        enc.copyBufferToBuffer(
+                            bentBuffer,
+                            0,
+                            bentRead,
+                            0,
+                            outBytes
+                        );
+                    }
+
+                    if (
+                        !calibrated &&
+                        typeof gpu.queue.onSubmittedWorkDone === 'function' &&
+                        calibrationTimes.length < 2
+                    ) {
+                        var tCal =
+                            now();
+
+                        gpu.queue.submit([
+                            enc.finish()
+                        ]);
+
+                        submits++;
+
+                        await gpu.queue.onSubmittedWorkDone();
+
+                        var measured =
+                            now() -
+                            tCal;
+
+                        calibrationTimes.push(
+                            measured
+                        );
+
+                        calibrationSampleTexels =
+                            texels *
+                            sampleChunk;
+
+                        offset +=
+                            texels;
+
+                        gpuMsSinceYield +=
+                            measured;
+
+                        sliceSum +=
+                            measured;
+
+                        sliceMax =
+                            Math.max(
+                                sliceMax,
+                                measured
+                            );
+
+                        sliceCount++;
+
+                        if (
+                            calibrationTimes.length ===
+                            2
+                        ) {
+                            var warmMs =
+                                calibrationTimes[1];
+
+                            budget =
+                                calibratedBudget(
+                                    calibrationSampleTexels,
+                                    warmMs,
+                                    targetMs,
+                                    p.aoBudgetMin,
+                                    budgetMax
+                                );
+
+                            calibrated =
+                                true;
+                        }
+
+                        if (
+                            !last &&
+                            gpuMsSinceYield >=
+                            yieldBudgetMs
+                        ) {
+                            await nextPlayCanvasFrame(
+                                owner
+                            );
+
+                            interleavedFrames++;
+                            gpuMsSinceYield = 0;
+                        }
+
                         continue;
-                    } log('    GBuffer coverage=' + (100 * gb.valid / (r.res * r.res)).toFixed(1) + '%'); var ao = null; if (aoStrength > 0) { log('    AO inicio ' + p.aoSamples + ' spp'); var ta = now(), aor = await traceAO(gd, sb, gb, scene, si, p, 9187 + ai * 101 + ri * 3571, owner, epoch); ao = aor; applyBentNormalsToGBuffer(gb, aor.bent); var aoMs = Math.round(now() - ta); log('    AO fin ' + aoMs + 'ms dispatches=' + aor.dispatches + ' frames=' + aor.interleavedFrames + ' budget=' + aor.budgetInitial + '->' + aor.budgetFinal + ' calibration=[' + aor.calibrationColdMs.toFixed(1) + '/' + aor.calibrationWarmMs.toFixed(1) + ']ms sliceAvg=' + aor.gpuSliceAverage.toFixed(1) + 'ms max=' + aor.gpuSliceMax.toFixed(1) + 'ms'); report.nodes.push({ name: r.owner.entityName, instance: r.instanceIndex, res: r.res, coverage: gb.valid / (r.res * r.res), aoMs: aoMs }); } log('    GI inicio ' + p.minSamples + '..' + p.maxSamples + ' spp, ' + p.bounces + ' bounces'); var tg = now(), tr = await traceGPU(ds, sb, eb, gb, si, p, 1234 + ai * 7919 + ri * 97, owner, epoch), den = denoiseIndirect(tr.pixels, gb, scene.extent, p); if (ao) { ao.sceneExtent = scene.extent; den = applyStandaloneAO(den, ao, gb, p, aoStrength); } for (var pi = 0; pi < den.length / 4; pi++)den[pi * 4 + 3] = 1; blitTile(at, r, den); var rec = { name: r.owner.entityName, instance: r.instanceIndex, res: r.res, coverage: gb.valid / (r.res * r.res), traceMs: Math.round(now() - tg), avgSpp: tr.averageSamples, early: tr.earlyConvergedPct, frames: tr.interleavedFrames };
-                    report.nodes.push(rec); log('  Tile "' + r.owner.entityName + '"' + (r.instanceIndex >= 0 ? '#' + r.instanceIndex : '') + ' ' + r.res + 'x' + r.res + ' coverage=' + (rec.coverage * 100).toFixed(1) + '% GI=' + rec.traceMs + 'ms avg=' + rec.avgSpp.toFixed(0) + 'spp early=' + rec.early.toFixed(1) + '% frames=' + rec.frames + ' sliceAvg=' + tr.gpuSliceAverage.toFixed(1) + 'ms max=' + tr.gpuSliceMax.toFixed(1) + 'ms' + (r.material && r.material.normalMap ? ' normalMap=BAKED' : '')); await nextPlayCanvasFrame(owner);
+                    }
+
+                    var submitStart =
+                        now();
+
+                    gpu.queue.submit([
+                        enc.finish()
+                    ]);
+
+                    submits++;
+
+                    if (
+                        typeof gpu.queue.onSubmittedWorkDone === 'function'
+                    ) {
+                        await gpu.queue.onSubmittedWorkDone();
+                    }
+
+                    var sliceMs =
+                        now() -
+                        submitStart;
+
+                    var actualWork =
+                        texels *
+                        sampleChunk;
+
+                    offset +=
+                        texels;
+
+                    gpuMsSinceYield +=
+                        sliceMs;
+
+                    sliceSum +=
+                        sliceMs;
+
+                    sliceMax =
+                        Math.max(
+                            sliceMax,
+                            sliceMs
+                        );
+
+                    sliceCount++;
+
+                    if (fullBudgetChunk) {
+                        budget =
+                            retuneWorkBudget(
+                                budget,
+                                actualWork,
+                                sliceMs,
+                                targetMs,
+                                p.aoBudgetMin,
+                                budgetMax
+                            );
+                    }
+
+                    if (
+                        now() -
+                        lastStatusMs >=
+                        5000
+                    ) {
+                        log(
+                            '    AO trabajando ~' +
+                            Math.min(
+                                p.aoSamples,
+                                (round + 1) *
+                                sampleChunk
+                            ) +
+                            ' spp offset=' +
+                            offset +
+                            '/' +
+                            pixelCount +
+                            ' budget=' +
+                            budget +
+                            ' slice=' +
+                            sliceMs.toFixed(1) +
+                            'ms frames=' +
+                            interleavedFrames
+                        );
+
+                        lastStatusMs =
+                            now();
+                    }
+
+                    if (
+                        !last &&
+                        (
+                            gpuMsSinceYield >=
+                            yieldBudgetMs ||
+                            sliceMs >=
+                            targetMs *
+                            1.75
+                        )
+                    ) {
+                        await nextPlayCanvasFrame(
+                            owner
+                        );
+
+                        interleavedFrames++;
+                        gpuMsSinceYield = 0;
+                    }
                 }
-            } assignRuntime(atlases, getState(), gd); atlases.forEach(function (a) { if (a.texture) getState().createdTextures.push(a.texture); }); log('PT6.0.2 Standalone terminado en ' + Math.round(now() - t0) + 'ms. Atlases=' + atlases.length + '; materiales compartidos=' + scene.stats.sharedMaterials + '; native Lightmapper=NO usado para iluminacion.');
-        } finally { [sb.tris, sb.bvh, sb.lights, eb.pixels, eb.alias].forEach(function (b) { try { b.destroy(); } catch (_) { } }); }
-    } function restoreLegacy(LP) {
-        var names = ['__bakePathTracingPT601', '__bakePathTracingPT600', '__bakePathTracingPT545', '__bakePathTracingPT544', '__bakePathTracingPT543', '__bakePathTracingPT542', '__bakePathTracingPT541', '__bakePathTracingPT540', '__bakePathTracingPT532', '__bakePathTracingPT531', '__bakePathTracingPT530']; for (var i = 0;
-            i < names.length; i++) { var old = G[names[i]] && G[names[i]].state; if (old && old.installed) { try { if (old.materialBackups && old.instancingBackups && old.createdInstanceBuffers && old.createdTextures) restoreRuntime(old); } catch (_) { } if (typeof old.nativeBake === 'function') LP.bake = old.nativeBake; if (typeof old.nativePost === 'function') LP.postprocessTextures = old.nativePost; old.installed = false; old.owner = null; old.epoch = (old.epoch || 0) + 1; } }
-    } function scheduleBake(owner) { var s = getState(); s.epoch++; var epoch = s.epoch; if (s.runningEpoch === epoch) return; s.runningEpoch = epoch; Promise.resolve().then(function () { return nextPlayCanvasFrame(owner); }).then(function () { return runStandalone(owner, epoch); }).catch(function (e) { var txt = String(e && e.message || e); if (txt.indexOf('cancelado') >= 0) log('Bake standalone cancelado.'); else fail('PT6 Standalone fallo:', e); }); } function install(owner) {
-        if (!pc.Lightmapper || !pc.Lightmapper.prototype) { fail('pc.Lightmapper no disponible para interceptar el auto-bake del Editor.'); return; } var LP = pc.Lightmapper.prototype, s = getState(); if (!s.materialBackups) s.materialBackups = new Map(); if (!s.instancingBackups) s.instancingBackups = new Map(); if (!s.createdInstanceBuffers) s.createdInstanceBuffers = []; if (!s.createdTextures) s.createdTextures = [];
-        s.owner = owner; if (s.installed) { scheduleBake(owner); return; } restoreLegacy(LP); s.nativeBake = LP.bake; s.nativePost = LP.postprocessTextures; s.patchedBake = function () { var ownerNow = s.owner; if (!s.installed || !ownerNow || !ownerNow.enabled) return s.nativeBake.apply(this, arguments); log('pc.Lightmapper.bake() interceptado: PT6.0.2 NO llama al bake nativo; inicia standalone WebGPU.'); scheduleBake(ownerNow); return undefined; }; LP.bake = s.patchedBake; s.installed = true; s.epoch++; G.__bakePathTracingPT602 = { version: VERSION, state: s, shader: WGSL, aoShader: AO_WGSL, quality: QUALITY, bake: function () { if (s.owner) scheduleBake(s.owner); }, lastReport: function () { return G.__bakePathTracingLastReport; } }; log('Hook ' + VERSION + ' ACTIVADO. Standalone direct+shadows+Environment+GI+AO por WebGPU; shared atlases; materiales compartidos; default GPU instancing compatible; normalMap aplicado al receiver; native Lightmapper suprimido.');
-    } function uninstall(owner) {
-        var s = getState(); if (!s.installed) return; if (owner && s.owner && s.owner !== owner) return; s.epoch++; try { restoreRuntime(s); } catch (e) { warn('Restore runtime:', e); } if (pc.Lightmapper && pc.Lightmapper.prototype && s.nativeBake) pc.Lightmapper.prototype.bake = s.nativeBake; s.installed = false; s.owner = null;
-        console.log('[BakePT6.0.2] Hook DESACTIVADO. PlayCanvas Lightmapper vuelve a su bake nativo.');
-    } BakePathTracing.prototype.initialize = function () { var self = this; this.on('enable', function () { install(self); }); this.on('disable', function () { uninstall(self); }); this.on('destroy', function () { uninstall(self); }); this.on('attr:quality', function () { log('Calidad=' + preset(self).label + '; se rebakea standalone.'); if (self.enabled) scheduleBake(self); }); this.on('attr:aoStrength', function () { log('AO=' + Math.round(clamp(self.aoStrength || 0, 0, 100)) + '%; se rebakea standalone.'); if (self.enabled) scheduleBake(self); }); if (this.enabled) install(this); }; BakePathTracing.prototype.bake = function () { scheduleBake(this); }; BakePathTracing.prototype.swap = function () { if (this.enabled) install(this); };
+            }
+
+            if (
+                !active(
+                    owner,
+                    epoch
+                )
+            ) {
+                throw new Error(
+                    'cancelado'
+                );
+            }
+
+            await Promise.all([
+                readBuffer.mapAsync(
+                    GPUMapModeRef.READ
+                ),
+                bentRead.mapAsync(
+                    GPUMapModeRef.READ
+                )
+            ]);
+
+            var raw =
+                new Float32Array(
+                    readBuffer
+                        .getMappedRange()
+                        .slice(0)
+                );
+
+            var br =
+                new Float32Array(
+                    bentRead
+                        .getMappedRange()
+                        .slice(0)
+                );
+
+            readBuffer.unmap();
+            bentRead.unmap();
+
+            var contact =
+                new Float32Array(
+                    pixelCount
+                );
+
+            var cavity =
+                new Float32Array(
+                    pixelCount
+                );
+
+            var bent =
+                new Float32Array(
+                    pixelCount * 4
+                );
+
+            var radiusSum = 0;
+            var valid = 0;
+
+            for (
+                var i = 0;
+                i < pixelCount;
+                i++
+            ) {
+                var o = i * 4;
+
+                if (
+                    gb.pos[o + 3] < 0.5
+                ) {
+                    contact[i] = 1;
+                    cavity[i] = 1;
+
+                    bent[o] =
+                        gb.nrm[o];
+
+                    bent[o + 1] =
+                        gb.nrm[o + 1];
+
+                    bent[o + 2] =
+                        gb.nrm[o + 2];
+
+                    bent[o + 3] = 1;
+
+                    continue;
+                }
+
+                var samples =
+                    Math.max(
+                        1,
+                        Math.round(
+                            raw[o + 3]
+                        )
+                    );
+
+                contact[i] =
+                    clamp(
+                        raw[o] /
+                        samples,
+                        0,
+                        1
+                    );
+
+                cavity[i] =
+                    clamp(
+                        raw[o + 1] /
+                        samples,
+                        0,
+                        1
+                    );
+
+                radiusSum +=
+                    raw[o + 2];
+
+                valid++;
+
+                var bx = br[o];
+                var by = br[o + 1];
+                var bz = br[o + 2];
+
+                var bl =
+                    Math.hypot(
+                        bx,
+                        by,
+                        bz
+                    );
+
+                if (bl < 1e-8) {
+                    bx = gb.nrm[o];
+                    by = gb.nrm[o + 1];
+                    bz = gb.nrm[o + 2];
+
+                    bl =
+                        Math.hypot(
+                            bx,
+                            by,
+                            bz
+                        ) ||
+                        1;
+                }
+
+                bent[o] =
+                    bx / bl;
+
+                bent[o + 1] =
+                    by / bl;
+
+                bent[o + 2] =
+                    bz / bl;
+
+                bent[o + 3] = 1;
+            }
+
+            return {
+                contact: contact,
+                cavity: cavity,
+                bent: bent,
+
+                averageRadius:
+                    valid ?
+                        radiusSum /
+                        valid :
+                        0,
+
+                dispatches:
+                    dispatches,
+
+                submits:
+                    submits,
+
+                interleavedFrames:
+                    interleavedFrames,
+
+                calibrationMs:
+                    calibrationTimes.length ?
+                        Math.min.apply(
+                            Math,
+                            calibrationTimes
+                        ) :
+                        0,
+
+                calibrationColdMs:
+                    calibrationTimes.length ?
+                        calibrationTimes[0] :
+                        0,
+
+                calibrationWarmMs:
+                    calibrationTimes.length > 1 ?
+                        calibrationTimes[1] :
+                        (
+                            calibrationTimes[0] ||
+                            0
+                        ),
+
+                calibrationSampleTexels:
+                    calibrationSampleTexels,
+
+                budgetInitial:
+                    budgetInitial,
+
+                budgetFinal:
+                    budget,
+
+                sampleChunk:
+                    sampleChunk,
+
+                gpuSliceAverage:
+                    sliceCount ?
+                        sliceSum /
+                        sliceCount :
+                        0,
+
+                gpuSliceMax:
+                    sliceMax
+            };
+        } finally {
+            [
+                gbufBuffer,
+                outBuffer,
+                bentBuffer,
+                readBuffer,
+                bentRead,
+                paramsBuffer
+            ].forEach(function (b) {
+                try {
+                    b.destroy();
+                } catch (_) {
+                }
+            });
+        }
+    }
+
+    function denoiseIndirect(src, gb, extent, p) {
+        if (p.denoise <= 0) return src;
+
+        var w = gb.w;
+        var h = gb.h;
+
+        var a =
+            new Float32Array(src);
+
+        var b =
+            new Float32Array(
+                src.length
+            );
+
+        var K = [
+            1,
+            4,
+            6,
+            4,
+            1
+        ];
+
+        var basePos =
+            Math.max(
+                1e-6,
+                extent /
+                Math.max(w, h) *
+                p.positionScale
+            );
+
+        for (
+            var it = 0;
+            it < p.denoise;
+            it++
+        ) {
+            var step =
+                1 << it;
+
+            var posSigma =
+                basePos *
+                Math.max(
+                    1,
+                    step * 0.5
+                );
+
+            var invPos =
+                1 /
+                (
+                    2 *
+                    posSigma *
+                    posSigma
+                );
+
+            for (var y = 0; y < h; y++) {
+                for (var x = 0; x < w; x++) {
+                    var o =
+                        (y * w + x) *
+                        4;
+
+                    if (
+                        gb.pos[o + 3] < 0.5
+                    ) {
+                        b[o] = a[o];
+                        b[o + 1] = a[o + 1];
+                        b[o + 2] = a[o + 2];
+                        b[o + 3] = a[o + 3];
+
+                        continue;
+                    }
+
+                    var px = gb.pos[o];
+                    var py = gb.pos[o + 1];
+                    var pz = gb.pos[o + 2];
+
+                    var nx = gb.nrm[o];
+                    var ny = gb.nrm[o + 1];
+                    var nz = gb.nrm[o + 2];
+
+                    var chart =
+                        gb.nrm[o + 3];
+
+                    var cr = a[o];
+                    var cg = a[o + 1];
+                    var cb = a[o + 2];
+
+                    var cl =
+                        luminance(
+                            cr,
+                            cg,
+                            cb
+                        );
+
+                    var sr = 0;
+                    var sg = 0;
+                    var sb = 0;
+                    var sw = 0;
+
+                    for (
+                        var ky = -2;
+                        ky <= 2;
+                        ky++
+                    ) {
+                        var sy =
+                            y +
+                            ky *
+                            step;
+
+                        if (
+                            sy < 0 ||
+                            sy >= h
+                        ) continue;
+
+                        for (
+                            var kx = -2;
+                            kx <= 2;
+                            kx++
+                        ) {
+                            var sx =
+                                x +
+                                kx *
+                                step;
+
+                            if (
+                                sx < 0 ||
+                                sx >= w
+                            ) continue;
+
+                            var q =
+                                (
+                                    sy *
+                                    w +
+                                    sx
+                                ) *
+                                4;
+
+                            if (
+                                gb.pos[q + 3] < 0.5 ||
+                                gb.nrm[q + 3] !==
+                                chart
+                            ) continue;
+
+                            var dx =
+                                gb.pos[q] -
+                                px;
+
+                            var dy =
+                                gb.pos[q + 1] -
+                                py;
+
+                            var dz =
+                                gb.pos[q + 2] -
+                                pz;
+
+                            var wp =
+                                Math.exp(
+                                    -(
+                                        dx * dx +
+                                        dy * dy +
+                                        dz * dz
+                                    ) *
+                                    invPos
+                                );
+
+                            var nd =
+                                Math.max(
+                                    0,
+                                    nx *
+                                    gb.nrm[q] +
+                                    ny *
+                                    gb.nrm[q + 1] +
+                                    nz *
+                                    gb.nrm[q + 2]
+                                );
+
+                            var wn =
+                                Math.pow(
+                                    nd,
+                                    p.normalPower
+                                );
+
+                            var ql =
+                                luminance(
+                                    a[q],
+                                    a[q + 1],
+                                    a[q + 2]
+                                );
+
+                            var wc =
+                                Math.exp(
+                                    -Math.abs(
+                                        ql -
+                                        cl
+                                    ) /
+                                    (
+                                        0.01 +
+                                        Math.max(
+                                            cl,
+                                            ql
+                                        ) *
+                                        p.colorScale
+                                    )
+                                );
+
+                            var wk =
+                                K[kx + 2] *
+                                K[ky + 2];
+
+                            var ww =
+                                wk *
+                                wp *
+                                wn *
+                                wc;
+
+                            sr +=
+                                a[q] *
+                                ww;
+
+                            sg +=
+                                a[q + 1] *
+                                ww;
+
+                            sb +=
+                                a[q + 2] *
+                                ww;
+
+                            sw += ww;
+                        }
+                    }
+
+                    if (sw > 1e-12) {
+                        b[o] =
+                            sr / sw;
+
+                        b[o + 1] =
+                            sg / sw;
+
+                        b[o + 2] =
+                            sb / sw;
+                    } else {
+                        b[o] = cr;
+                        b[o + 1] = cg;
+                        b[o + 2] = cb;
+                    }
+
+                    b[o + 3] = 1;
+                }
+            }
+
+            var tmp = a;
+            a = b;
+            b = tmp;
+        }
+
+        return a;
+    }
+
+    function denoiseAO(ao, gb, extent, p) {
+        var rgba =
+            new Float32Array(
+                ao.length * 4
+            );
+
+        for (
+            var i = 0;
+            i < ao.length;
+            i++
+        ) {
+            var o = i * 4;
+
+            rgba[o] = ao[i];
+            rgba[o + 1] = ao[i];
+            rgba[o + 2] = ao[i];
+            rgba[o + 3] = 1;
+        }
+
+        rgba =
+            denoiseIndirect(
+                rgba,
+                gb,
+                extent,
+                p
+            );
+
+        var result =
+            new Float32Array(
+                ao.length
+            );
+
+        for (
+            i = 0;
+            i < ao.length;
+            i++
+        ) {
+            result[i] =
+                clamp(
+                    rgba[i * 4],
+                    0,
+                    1
+                );
+        }
+
+        return result;
+    }
+
+    function applyStandaloneAO(
+        pixels,
+        ao,
+        gb,
+        p,
+        strength
+    ) {
+        if (
+            !ao ||
+            strength <= 0
+        ) {
+            return pixels;
+        }
+
+        var out =
+            new Float32Array(
+                pixels
+            );
+
+        var contact =
+            denoiseAO(
+                ao.contact,
+                gb,
+                Math.max(
+                    1e-4,
+                    ao.sceneExtent ||
+                    1
+                ),
+                p
+            );
+
+        var s =
+            clamp(
+                strength,
+                0,
+                1
+            );
+
+        for (
+            var i = 0;
+            i < gb.w * gb.h;
+            i++
+        ) {
+            var o = i * 4;
+
+            if (
+                gb.pos[o + 3] < 0.5
+            ) continue;
+
+            var occ =
+                1 -
+                clamp(
+                    contact[i],
+                    0,
+                    1
+                );
+
+            var f =
+                1 -
+                s *
+                p.aoContactStrength *
+                Math.pow(
+                    occ,
+                    1.35
+                );
+
+            out[o] *= f;
+            out[o + 1] *= f;
+            out[o + 2] *= f;
+        }
+
+        return out;
+    }
+
+    function canWrite(tex) {
+        var f =
+            tex &&
+            tex.format;
+
+        return (
+            f === pc.PIXELFORMAT_RGBA8 ||
+            f === pc.PIXELFORMAT_SRGBA8 ||
+            f === pc.PIXELFORMAT_111110F ||
+            f === pc.PIXELFORMAT_RGBA16F ||
+            f === pc.PIXELFORMAT_RGBA32F ||
+            f === pc.PIXELFORMAT_RGB16F ||
+            f === pc.PIXELFORMAT_RGB32F
+        );
+    }
+
+    async function writeTexture(
+        tex,
+        pixels,
+        w,
+        h,
+        maxRadiance
+    ) {
+        if (!canWrite(tex)) {
+            throw new Error(
+                'Formato de lightmap no soportado: ' +
+                tex.format
+            );
+        }
+
+        var dst =
+            tex.lock({
+                level: 0,
+                face: 0
+            });
+
+        if (!dst) {
+            throw new Error(
+                'texture.lock() no devolvio buffer.'
+            );
+        }
+
+        var view =
+            new DataView(
+                dst.buffer,
+                dst.byteOffset,
+                dst.byteLength
+            );
+
+        var count =
+            w * h;
+
+        var mode = '';
+
+        try {
+            var i, r, g, b, off, ch;
+
+            if (
+                tex.format ===
+                pc.PIXELFORMAT_111110F
+            ) {
+                mode =
+                    'R11G11B10F';
+
+                for (
+                    i = 0;
+                    i < count;
+                    i++
+                ) {
+                    r =
+                        clamp(
+                            Number.isFinite(
+                                pixels[i * 4]
+                            ) ?
+                                pixels[i * 4] :
+                                0,
+                            0,
+                            maxRadiance
+                        );
+
+                    g =
+                        clamp(
+                            Number.isFinite(
+                                pixels[i * 4 + 1]
+                            ) ?
+                                pixels[i * 4 + 1] :
+                                0,
+                            0,
+                            maxRadiance
+                        );
+
+                    b =
+                        clamp(
+                            Number.isFinite(
+                                pixels[i * 4 + 2]
+                            ) ?
+                                pixels[i * 4 + 2] :
+                                0,
+                            0,
+                            maxRadiance
+                        );
+
+                    view.setUint32(
+                        i * 4,
+                        packR11G11B10(
+                            r,
+                            g,
+                            b
+                        ),
+                        true
+                    );
+                }
+            } else if (
+                tex.format ===
+                pc.PIXELFORMAT_RGBA16F ||
+                tex.format ===
+                pc.PIXELFORMAT_RGB16F
+            ) {
+                ch =
+                    tex.format ===
+                        pc.PIXELFORMAT_RGBA16F ?
+                        4 :
+                        3;
+
+                mode =
+                    ch === 4 ?
+                        'RGBA16F' :
+                        'RGB16F';
+
+                for (
+                    i = 0;
+                    i < count;
+                    i++
+                ) {
+                    r =
+                        clamp(
+                            pixels[i * 4] || 0,
+                            0,
+                            maxRadiance
+                        );
+
+                    g =
+                        clamp(
+                            pixels[i * 4 + 1] || 0,
+                            0,
+                            maxRadiance
+                        );
+
+                    b =
+                        clamp(
+                            pixels[i * 4 + 2] || 0,
+                            0,
+                            maxRadiance
+                        );
+
+                    off =
+                        i *
+                        ch *
+                        2;
+
+                    view.setUint16(
+                        off,
+                        floatToHalf(r),
+                        true
+                    );
+
+                    view.setUint16(
+                        off + 2,
+                        floatToHalf(g),
+                        true
+                    );
+
+                    view.setUint16(
+                        off + 4,
+                        floatToHalf(b),
+                        true
+                    );
+
+                    if (ch === 4) {
+                        view.setUint16(
+                            off + 6,
+                            0x3c00,
+                            true
+                        );
+                    }
+                }
+            } else if (
+                tex.format ===
+                pc.PIXELFORMAT_RGBA32F ||
+                tex.format ===
+                pc.PIXELFORMAT_RGB32F
+            ) {
+                ch =
+                    tex.format ===
+                        pc.PIXELFORMAT_RGBA32F ?
+                        4 :
+                        3;
+
+                mode =
+                    ch === 4 ?
+                        'RGBA32F' :
+                        'RGB32F';
+
+                for (
+                    i = 0;
+                    i < count;
+                    i++
+                ) {
+                    r =
+                        clamp(
+                            pixels[i * 4] || 0,
+                            0,
+                            maxRadiance
+                        );
+
+                    g =
+                        clamp(
+                            pixels[i * 4 + 1] || 0,
+                            0,
+                            maxRadiance
+                        );
+
+                    b =
+                        clamp(
+                            pixels[i * 4 + 2] || 0,
+                            0,
+                            maxRadiance
+                        );
+
+                    off =
+                        i *
+                        ch *
+                        4;
+
+                    view.setFloat32(
+                        off,
+                        r,
+                        true
+                    );
+
+                    view.setFloat32(
+                        off + 4,
+                        g,
+                        true
+                    );
+
+                    view.setFloat32(
+                        off + 8,
+                        b,
+                        true
+                    );
+
+                    if (ch === 4) {
+                        view.setFloat32(
+                            off + 12,
+                            1,
+                            true
+                        );
+                    }
+                }
+            } else {
+                var rgbm =
+                    tex.type ===
+                    pc.TEXTURETYPE_RGBM ||
+                    tex.encoding ===
+                    'rgbm';
+
+                var srgb =
+                    tex.format ===
+                    pc.PIXELFORMAT_SRGBA8 ||
+                    !!tex.srgb;
+
+                var q =
+                    [0, 0, 0, 1];
+
+                mode =
+                    rgbm ?
+                        'RGBM8' :
+                        (
+                            srgb ?
+                                'sRGBA8' :
+                                'RGBA8-linear'
+                        );
+
+                for (
+                    i = 0;
+                    i < count;
+                    i++
+                ) {
+                    r =
+                        clamp(
+                            pixels[i * 4] || 0,
+                            0,
+                            maxRadiance
+                        );
+
+                    g =
+                        clamp(
+                            pixels[i * 4 + 1] || 0,
+                            0,
+                            maxRadiance
+                        );
+
+                    b =
+                        clamp(
+                            pixels[i * 4 + 2] || 0,
+                            0,
+                            maxRadiance
+                        );
+
+                    off =
+                        i * 4;
+
+                    if (rgbm) {
+                        encodeRGBM(
+                            r,
+                            g,
+                            b,
+                            q
+                        );
+
+                        dst[off] =
+                            Math.round(
+                                q[0] * 255
+                            );
+
+                        dst[off + 1] =
+                            Math.round(
+                                q[1] * 255
+                            );
+
+                        dst[off + 2] =
+                            Math.round(
+                                q[2] * 255
+                            );
+
+                        dst[off + 3] =
+                            Math.round(
+                                q[3] * 255
+                            );
+                    } else if (srgb) {
+                        dst[off] =
+                            Math.round(
+                                linearToSrgb1(r) *
+                                255
+                            );
+
+                        dst[off + 1] =
+                            Math.round(
+                                linearToSrgb1(g) *
+                                255
+                            );
+
+                        dst[off + 2] =
+                            Math.round(
+                                linearToSrgb1(b) *
+                                255
+                            );
+
+                        dst[off + 3] = 255;
+                    } else {
+                        dst[off] =
+                            Math.round(
+                                clamp(
+                                    r,
+                                    0,
+                                    1
+                                ) *
+                                255
+                            );
+
+                        dst[off + 1] =
+                            Math.round(
+                                clamp(
+                                    g,
+                                    0,
+                                    1
+                                ) *
+                                255
+                            );
+
+                        dst[off + 2] =
+                            Math.round(
+                                clamp(
+                                    b,
+                                    0,
+                                    1
+                                ) *
+                                255
+                            );
+
+                        dst[off + 3] = 255;
+                    }
+                }
+            }
+        } finally {
+            tex.unlock();
+        }
+
+        return {
+            mode: mode,
+            format: tex.format,
+            type: tex.type,
+            encoding: tex.encoding
+        };
+    }
+
+    function nextPow2(v) {
+        v =
+            Math.max(
+                1,
+                Math.ceil(v)
+            );
+
+        var p = 1;
+
+        while (p < v) {
+            p <<= 1;
+        }
+
+        return p;
+    }
+
+    function geometryArea(g) {
+        var a = 0;
+        var P = g.positions;
+        var I = g.indices;
+
+        for (
+            var t = 0;
+            t < I.length;
+            t += 3
+        ) {
+            var ia =
+                I[t] * 3;
+
+            var ib =
+                I[t + 1] * 3;
+
+            var ic =
+                I[t + 2] * 3;
+
+            var abx =
+                P[ib] -
+                P[ia];
+
+            var aby =
+                P[ib + 1] -
+                P[ia + 1];
+
+            var abz =
+                P[ib + 2] -
+                P[ia + 2];
+
+            var acx =
+                P[ic] -
+                P[ia];
+
+            var acy =
+                P[ic + 1] -
+                P[ia + 1];
+
+            var acz =
+                P[ic + 2] -
+                P[ia + 2];
+
+            var cx =
+                aby * acz -
+                abz * acy;
+
+            var cy =
+                abz * acx -
+                abx * acz;
+
+            var cz =
+                abx * acy -
+                aby * acx;
+
+            a +=
+                0.5 *
+                Math.hypot(
+                    cx,
+                    cy,
+                    cz
+                );
+        }
+
+        return a;
+    }
+
+    function receiverResolution(
+        g,
+        owner,
+        scene,
+        atlasSize
+    ) {
+        var mult =
+            isNum(
+                scene &&
+                scene.lightmapSizeMultiplier
+            ) ?
+                scene.lightmapSizeMultiplier :
+                16;
+
+        if (
+            owner &&
+            owner.component &&
+            isNum(
+                owner.component
+                    .lightmapSizeMultiplier
+            )
+        ) {
+            mult *=
+                owner.component
+                    .lightmapSizeMultiplier;
+        }
+
+        var r =
+            nextPow2(
+                Math.max(
+                    16,
+                    Math.sqrt(
+                        Math.max(
+                            1e-6,
+                            geometryArea(g)
+                        )
+                    ) *
+                    mult
+                )
+            );
+
+        return clamp(
+            r,
+            16,
+            Math.min(
+                512,
+                Math.max(
+                    16,
+                    atlasSize >> 1
+                )
+            )
+        );
+    }
+
+    function rawBufferView(v) {
+        if (
+            v instanceof
+            ArrayBuffer
+        ) {
+            return {
+                buffer: v,
+                byteOffset: 0,
+                byteLength: v.byteLength
+            };
+        }
+
+        if (
+            ArrayBuffer.isView(v)
+        ) {
+            return {
+                buffer: v.buffer,
+                byteOffset: v.byteOffset,
+                byteLength: v.byteLength
+            };
+        }
+
+        return null;
+    }
+
+    function findElement(format, semantic) {
+        var es =
+            format &&
+            format.elements ||
+            [];
+
+        for (
+            var i = 0;
+            i < es.length;
+            i++
+        ) {
+            if (
+                es[i].name ===
+                semantic
+            ) {
+                return es[i];
+            }
+        }
+
+        return null;
+    }
+
+    function defaultInstanceLayout(mi) {
+        var id =
+            mi &&
+            mi.instancingData;
+
+        var vb =
+            id &&
+            id.vertexBuffer;
+
+        if (
+            !vb ||
+            typeof vb.lock !==
+            'function'
+        ) {
+            return null;
+        }
+
+        var fmt =
+            vb.getFormat ?
+                vb.getFormat() :
+                vb.format;
+
+        var sems = [
+            pc.SEMANTIC_ATTR11,
+            pc.SEMANTIC_ATTR12,
+            pc.SEMANTIC_ATTR14,
+            pc.SEMANTIC_ATTR15
+        ];
+
+        var els =
+            sems.map(function (s) {
+                return findElement(
+                    fmt,
+                    s
+                );
+            });
+
+        if (
+            els.some(function (e) {
+                return (
+                    !e ||
+                    e.dataType !== pc.TYPE_FLOAT32 ||
+                    e.numComponents !== 4
+                );
+            })
+        ) {
+            return null;
+        }
+
+        return {
+            instancingData: id,
+            vertexBuffer: vb,
+            format: fmt,
+            semantics: sems,
+            elements: els,
+            cull: !!id.cull
+        };
+    }
+
+    function defaultInstanceMatrices(mi) {
+        var layout =
+            defaultInstanceLayout(mi);
+
+        if (!layout) return null;
+
+        var vb =
+            layout.vertexBuffer;
+
+        var mem = null;
+
+        try {
+            mem =
+                vb.lock();
+
+            var raw =
+                rawBufferView(mem);
+
+            if (!raw) return null;
+
+            var dv =
+                new DataView(
+                    raw.buffer,
+                    raw.byteOffset,
+                    raw.byteLength
+                );
+
+            var n =
+                Math.min(
+                    mi.instancingCount ||
+                    vb.getNumVertices(),
+                    vb.getNumVertices()
+                );
+
+            var out = [];
+
+            for (
+                var k = 0;
+                k < n;
+                k++
+            ) {
+                var m =
+                    new Float32Array(16);
+
+                var o = 0;
+
+                for (
+                    var q = 0;
+                    q < 4;
+                    q++
+                ) {
+                    var e =
+                        layout.elements[q];
+
+                    var base =
+                        k *
+                        e.stride +
+                        e.offset;
+
+                    for (
+                        var c = 0;
+                        c < 4;
+                        c++
+                    ) {
+                        m[o++] =
+                            dv.getFloat32(
+                                base +
+                                c * 4,
+                                true
+                            );
+                    }
+                }
+
+                out.push(m);
+            }
+
+            return {
+                matrices: out,
+                vertexBuffer: vb,
+                cull: layout.cull,
+                format: layout.format,
+                elements: layout.elements
+            };
+        } catch (e) {
+            warn(
+                'Instancing Mat4 default no pudo leerse:',
+                e && e.message || e
+            );
+
+            return null;
+        } finally {
+            if (mem !== null) {
+                try {
+                    vb.unlock();
+                } catch (_) {
+                }
+            }
+        }
+    }
+
+    function affineMat4WFree(m) {
+        return !!(
+            m &&
+            m.length >= 16 &&
+            Math.abs(m[3]) <= 1e-6 &&
+            Math.abs(m[7]) <= 1e-6 &&
+            Math.abs(m[11]) <= 1e-6 &&
+            Math.abs(m[15] - 1) <= 1e-6
+        );
+    }
+
+    function instanceMatricesWFree(inst) {
+        if (
+            !inst ||
+            !inst.matrices ||
+            !inst.matrices.length
+        ) {
+            return false;
+        }
+
+        for (
+            var i = 0;
+            i < inst.matrices.length;
+            i++
+        ) {
+            if (
+                !affineMat4WFree(
+                    inst.matrices[i]
+                )
+            ) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    function mapDefaultInstanceAttributes(mat) {
+        if (
+            !mat ||
+            typeof mat.setAttribute !==
+            'function'
+        ) {
+            return false;
+        }
+
+        var pairs = [
+            [
+                'instance_line1',
+                pc.SEMANTIC_ATTR11
+            ],
+            [
+                'instance_line2',
+                pc.SEMANTIC_ATTR12
+            ],
+            [
+                'instance_line3',
+                pc.SEMANTIC_ATTR14
+            ],
+            [
+                'instance_line4',
+                pc.SEMANTIC_ATTR15
+            ]
+        ];
+
+        for (
+            var i = 0;
+            i < pairs.length;
+            i++
+        ) {
+            if (!pairs[i][1]) {
+                return false;
+            }
+
+            if (
+                mat.userAttributes instanceof
+                Map
+            ) {
+                var currentName =
+                    mat.userAttributes.get(
+                        pairs[i][1]
+                    );
+
+                if (
+                    currentName &&
+                    currentName !==
+                    pairs[i][0]
+                ) {
+                    warn(
+                        'Semantica de instancing ' +
+                        pairs[i][1] +
+                        ' ya esta vinculada a "' +
+                        currentName +
+                        '" en material "' +
+                        (
+                            mat.name ||
+                            '(sin nombre)'
+                        ) +
+                        '". PT6.0.7 la preserva y omite lightmap por instancia.'
+                    );
+
+                    return false;
+                }
+            }
+        }
+
+        for (
+            i = 0;
+            i < pairs.length;
+            i++
+        ) {
+            mat.setAttribute(
+                pairs[i][0],
+                pairs[i][1]
+            );
+        }
+
+        return true;
+    }
+
+    function findUranusApi(app) {
+        try {
+            if (
+                G.UranusInstancer &&
+                G.UranusInstancer.api &&
+                G.UranusInstancer.api.enabled !== false
+            ) {
+                return G.UranusInstancer.api;
+            }
+        } catch (_) {
+        }
+
+        try {
+            var scripts =
+                app &&
+                    app.root &&
+                    typeof app.root.findComponents ===
+                    'function' ?
+                    (
+                        app.root.findComponents(
+                            'script'
+                        ) ||
+                        []
+                    ) :
+                    [];
+
+            for (
+                var i = 0;
+                i < scripts.length;
+                i++
+            ) {
+                var sc = scripts[i];
+                var u =
+                    sc &&
+                    sc.uranusInstancer;
+
+                if (
+                    u &&
+                    u.enabled !== false &&
+                    u.payloads &&
+                    typeof u.updatePayload ===
+                    'function'
+                ) {
+                    return u;
+                }
+            }
+        } catch (_) {
+        }
+
+        return null;
+    }
+
+    async function waitForUranus(
+        app,
+        owner,
+        epoch
+    ) {
+        var api =
+            findUranusApi(app);
+
+        if (!api) return null;
+
+        for (
+            var i = 0;
+            i < 3;
+            i++
+        ) {
+            if (
+                !active(
+                    owner,
+                    epoch
+                )
+            ) {
+                throw new Error(
+                    'cancelado'
+                );
+            }
+
+            var hasPayload =
+                false;
+
+            try {
+                for (
+                    var k in api.payloads
+                ) {
+                    if (
+                        api.payloads[k] &&
+                        api.payloads[k]
+                            .meshInstance
+                    ) {
+                        hasPayload = true;
+                        break;
+                    }
+                }
+            } catch (_) {
+            }
+
+            if (hasPayload) break;
+
+            await nextPlayCanvasFrame(
+                owner
+            );
+
+            api =
+                findUranusApi(app) ||
+                api;
+        }
+
+        return api;
+    }
+
+    function uranusMaterialUsesExtraData(
+        api,
+        mat
+    ) {
+        var list =
+            api &&
+            api.materialExtraData;
+
+        if (
+            !list ||
+            !list.length ||
+            !mat
+        ) {
+            return false;
+        }
+
+        for (
+            var i = 0;
+            i < list.length;
+            i++
+        ) {
+            var a = list[i];
+
+            if (
+                a === mat ||
+                (
+                    a &&
+                    a.resource === mat
+                )
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function annotateUranusReceivers(
+        receivers,
+        api
+    ) {
+        var info = {
+            api: api || null,
+            payloads: 0,
+            visiblePayloads: 0,
+            shadowPayloads: 0,
+            payloadInstances: 0,
+            mappedReceivers: 0,
+            mappedGroups: 0,
+            skippedExistingExtraData: 0,
+            unsupportedCells: false,
+            cloneMaterials: false,
+            frustumCulling: false
+        };
+
+        if (
+            !api ||
+            !api.payloads
+        ) {
+            return info;
+        }
+
+        info.cloneMaterials =
+            api.cloneMaterials === true;
+
+        info.frustumCulling =
+            api.frustumCulling === true;
+
+        if (
+            api.cells &&
+            api.cells.length
+        ) {
+            info.unsupportedCells = true;
+
+            warn(
+                'UranusInstancer tiene Cells configuradas. PT6.0.7 no escribe rects ' +
+                'de lightmap en payloads con Cells porque esa ruta reconstruye matrices ' +
+                'desde Entity; se preservan los draw calls pero esos payloads quedan sin ' +
+                'lightmap PT por instancia.'
+            );
+
+            return info;
+        }
+
+        var byRefMi =
+            new Map();
+
+        var visibleSet =
+            new Set();
+
+        for (
+            var key in api.payloads
+        ) {
+            var p =
+                api.payloads[key];
+
+            if (
+                !p ||
+                !p.meshInstance
+            ) continue;
+
+            info.payloads++;
+
+            if (p.shadowCaster) {
+                info.shadowPayloads++;
+            } else {
+                info.visiblePayloads++;
+            }
+
+            var refs =
+                p.refMeshInstances ||
+                [];
+
+            var inst =
+                p.instances ||
+                [];
+
+            if (
+                !p.shadowCaster &&
+                !p.refPayload
+            ) {
+                info.payloadInstances +=
+                    inst.length;
+            }
+
+            for (
+                var i = 0;
+                i < refs.length;
+                i++
+            ) {
+                var mi = refs[i];
+
+                if (!mi) continue;
+
+                var arr =
+                    byRefMi.get(mi);
+
+                if (!arr) {
+                    arr = [];
+
+                    byRefMi.set(
+                        mi,
+                        arr
+                    );
+                }
+
+                arr.push({
+                    payload: p,
+                    instance:
+                        inst[i] ||
+                        null,
+                    index: i
+                });
+            }
+        }
+
+        receivers.forEach(function (r) {
+            var binds =
+                byRefMi.get(r.mi);
+
+            if (
+                !binds ||
+                !binds.length
+            ) {
+                return;
+            }
+
+            var primary =
+                null;
+
+            for (
+                var i = 0;
+                i < binds.length;
+                i++
+            ) {
+                var b =
+                    binds[i];
+
+                if (
+                    !b.payload.shadowCaster &&
+                    !b.payload.refPayload
+                ) {
+                    primary = b;
+                    break;
+                }
+            }
+
+            if (!primary) return;
+
+            if (
+                uranusMaterialUsesExtraData(
+                    api,
+                    primary.payload
+                        .meshInstance &&
+                    primary.payload
+                        .meshInstance
+                        .material
+                )
+            ) {
+                info.skippedExistingExtraData++;
+
+                warn(
+                    'Uranus payload para "' +
+                    r.owner.entityName +
+                    '" usa Material Extra Data. ' +
+                    'Sus cuatro .w ya estan reservados; PT6.0.7 no los pisa y deja ese receiver fuera del lightmap instanciado.'
+                );
+
+                return;
+            }
+
+            var wConflict =
+                false;
+
+            for (
+                var bi = 0;
+                bi < binds.length;
+                bi++
+            ) {
+                var bd =
+                    binds[bi] &&
+                    binds[bi].instance &&
+                    binds[bi].instance.data;
+
+                if (
+                    bd &&
+                    !affineMat4WFree(bd)
+                ) {
+                    wConflict = true;
+                    break;
+                }
+            }
+
+            if (wConflict) {
+                info.skippedExistingExtraData++;
+
+                warn(
+                    'Uranus payload para "' +
+                    r.owner.entityName +
+                    '" ya contiene datos en Mat4.w. ' +
+                    'PT6.0.7 los preserva y no aplica lightmap por instancia sobre ese payload.'
+                );
+
+                return;
+            }
+
+            r.instanced = true;
+            r.uranusPayload = primary.payload;
+            r.uranusBindings = binds;
+            r.uranusInstanceIndex = primary.index;
+            r.uranusApi = api;
+
+            info.mappedReceivers++;
+
+            visibleSet.add(
+                primary.payload
+            );
+        });
+
+        info.mappedGroups =
+            visibleSet.size;
+
+        return info;
+    }
+
+    function uranusGroupComplete(
+        items,
+        payload
+    ) {
+        if (
+            !payload ||
+            !payload.refMeshInstances
+        ) {
+            return false;
+        }
+
+        var covered =
+            new Set();
+
+        for (
+            var i = 0;
+            i < items.length;
+            i++
+        ) {
+            if (
+                items[i] &&
+                items[i].mi
+            ) {
+                covered.add(
+                    items[i].mi
+                );
+            }
+        }
+
+        for (
+            i = 0;
+            i < payload.refMeshInstances.length;
+            i++
+        ) {
+            if (
+                !covered.has(
+                    payload.refMeshInstances[i]
+                )
+            ) {
+                return false;
+            }
+        }
+
+        return (
+            covered.size ===
+            payload.refMeshInstances.length
+        );
+    }
+
+    function transformUvCpu(
+        uv,
+        til,
+        off,
+        rot
+    ) {
+        var x =
+            uv[0] *
+            (
+                til &&
+                    isNum(til.x) ?
+                    til.x :
+                    1
+            ) +
+            (
+                off &&
+                    isNum(off.x) ?
+                    off.x :
+                    0
+            );
+
+        var y =
+            uv[1] *
+            (
+                til &&
+                    isNum(til.y) ?
+                    til.y :
+                    1
+            ) +
+            (
+                off &&
+                    isNum(off.y) ?
+                    off.y :
+                    0
+            );
+
+        if (
+            isNum(rot) &&
+            Math.abs(rot) >
+            1e-7
+        ) {
+            var a =
+                rot *
+                Math.PI /
+                180;
+
+            var c =
+                Math.cos(a);
+
+            var s =
+                Math.sin(a);
+
+            x -= 0.5;
+            y -= 0.5;
+
+            var nx =
+                c * x -
+                s * y;
+
+            var ny =
+                s * x +
+                c * y;
+
+            x = nx + 0.5;
+            y = ny + 0.5;
+        }
+
+        return [
+            x,
+            y
+        ];
+    }
+
+    function wrapCpu(x, mode) {
+        if (
+            mode ===
+            pc.ADDRESS_CLAMP_TO_EDGE
+        ) {
+            return clamp(
+                x,
+                0,
+                0.999999
+            );
+        }
+
+        if (
+            mode ===
+            pc.ADDRESS_MIRRORED_REPEAT
+        ) {
+            var k =
+                Math.floor(x);
+
+            var f =
+                x - k;
+
+            return (
+                k & 1
+            ) ?
+                1 - f :
+                f;
+        }
+
+        return (
+            x -
+            Math.floor(x)
+        );
+    }
+
+    function sampleCpuEntry(
+        entry,
+        u,
+        v
+    ) {
+        if (
+            !entry ||
+            !entry.pixels
+        ) {
+            return [
+                0.5,
+                0.5,
+                1,
+                1
+            ];
+        }
+
+        u =
+            wrapCpu(
+                u,
+                entry.addressU
+            );
+
+        v =
+            wrapCpu(
+                v,
+                entry.addressV
+            );
+
+        var w =
+            entry.width;
+
+        var h =
+            entry.height;
+
+        var xf =
+            clamp(
+                u * w - 0.5,
+                0,
+                w - 1
+            );
+
+        var yf =
+            clamp(
+                v * h - 0.5,
+                0,
+                h - 1
+            );
+
+        var x0 =
+            Math.floor(xf);
+
+        var y0 =
+            Math.floor(yf);
+
+        var x1 =
+            Math.min(
+                x0 + 1,
+                w - 1
+            );
+
+        var y1 =
+            Math.min(
+                y0 + 1,
+                h - 1
+            );
+
+        var tx =
+            xf - x0;
+
+        var ty =
+            yf - y0;
+
+        var p =
+            entry.pixels;
+
+        function at(x, y, c) {
+            return p[
+                (
+                    y * w +
+                    x
+                ) *
+                4 +
+                c
+            ];
+        }
+
+        var r = [];
+
+        for (
+            var c = 0;
+            c < 4;
+            c++
+        ) {
+            var a =
+                at(
+                    x0,
+                    y0,
+                    c
+                ) *
+                (1 - tx) +
+                at(
+                    x1,
+                    y0,
+                    c
+                ) *
+                tx;
+
+            var b =
+                at(
+                    x0,
+                    y1,
+                    c
+                ) *
+                (1 - tx) +
+                at(
+                    x1,
+                    y1,
+                    c
+                ) *
+                tx;
+
+            r[c] =
+                a *
+                (1 - ty) +
+                b *
+                ty;
+        }
+
+        return r;
+    }
+
+    function perturbNormalCpu(
+        g,
+        triIndex,
+        bary,
+        baseN
+    ) {
+        var mat = g.material;
+        var entry = g.normalCpu;
+
+        if (
+            !mat ||
+            !entry ||
+            !g.hasUv0
+        ) {
+            return baseN;
+        }
+
+        var uvSet =
+            isNum(mat.normalMapUv) ?
+                mat.normalMapUv :
+                0;
+
+        if (
+            uvSet !== 0 &&
+            uvSet !== 1
+        ) {
+            return baseN;
+        }
+
+        var I = g.indices;
+        var t = triIndex * 3;
+
+        var i0 = I[t];
+        var i1 = I[t + 1];
+        var i2 = I[t + 2];
+
+        var U =
+            uvSet === 1 ?
+                g.uv1 :
+                g.uv0;
+
+        if (
+            uvSet === 1 &&
+            !g.hasUv1
+        ) {
+            return baseN;
+        }
+
+        var l0 = bary[0];
+        var l1 = bary[1];
+        var l2 = bary[2];
+
+        var uv = [
+            U[i0 * 2] * l0 +
+            U[i1 * 2] * l1 +
+            U[i2 * 2] * l2,
+
+            U[i0 * 2 + 1] * l0 +
+            U[i1 * 2 + 1] * l1 +
+            U[i2 * 2 + 1] * l2
+        ];
+
+        var tuv =
+            transformUvCpu(
+                uv,
+                mat.normalMapTiling,
+                mat.normalMapOffset,
+                mat.normalMapRotation || 0
+            );
+
+        var s =
+            sampleCpuEntry(
+                entry,
+                tuv[0],
+                tuv[1]
+            );
+
+        var bump =
+            isNum(mat.bumpiness) ?
+                mat.bumpiness :
+                1;
+
+        var nx =
+            (s[0] * 2 - 1) *
+            bump;
+
+        var ny =
+            (s[1] * 2 - 1) *
+            bump;
+
+        var nz =
+            s[2] * 2 - 1;
+
+        var nl =
+            Math.hypot(
+                nx,
+                ny,
+                nz
+            ) ||
+            1;
+
+        nx /= nl;
+        ny /= nl;
+        nz /= nl;
+
+        var P =
+            g.positions;
+
+        var ax = P[i0 * 3];
+        var ay = P[i0 * 3 + 1];
+        var az = P[i0 * 3 + 2];
+
+        var e1 = [
+            P[i1 * 3] - ax,
+            P[i1 * 3 + 1] - ay,
+            P[i1 * 3 + 2] - az
+        ];
+
+        var e2 = [
+            P[i2 * 3] - ax,
+            P[i2 * 3 + 1] - ay,
+            P[i2 * 3 + 2] - az
+        ];
+
+        var u0 =
+            U[i0 * 2];
+
+        var v0 =
+            U[i0 * 2 + 1];
+
+        var du1 =
+            U[i1 * 2] -
+            u0;
+
+        var dv1 =
+            U[i1 * 2 + 1] -
+            v0;
+
+        var du2 =
+            U[i2 * 2] -
+            u0;
+
+        var dv2 =
+            U[i2 * 2 + 1] -
+            v0;
+
+        var det =
+            du1 * dv2 -
+            dv1 * du2;
+
+        if (
+            Math.abs(det) <
+            1e-10
+        ) {
+            return baseN;
+        }
+
+        var inv =
+            1 / det;
+
+        var tr = [
+            (
+                e1[0] * dv2 -
+                e2[0] * dv1
+            ) *
+            inv,
+
+            (
+                e1[1] * dv2 -
+                e2[1] * dv1
+            ) *
+            inv,
+
+            (
+                e1[2] * dv2 -
+                e2[2] * dv1
+            ) *
+            inv
+        ];
+
+        var br = [
+            (
+                -e1[0] * du2 +
+                e2[0] * du1
+            ) *
+            inv,
+
+            (
+                -e1[1] * du2 +
+                e2[1] * du1
+            ) *
+            inv,
+
+            (
+                -e1[2] * du2 +
+                e2[2] * du1
+            ) *
+            inv
+        ];
+
+        var dot =
+            tr[0] * baseN[0] +
+            tr[1] * baseN[1] +
+            tr[2] * baseN[2];
+
+        tr = [
+            tr[0] -
+            baseN[0] *
+            dot,
+
+            tr[1] -
+            baseN[1] *
+            dot,
+
+            tr[2] -
+            baseN[2] *
+            dot
+        ];
+
+        var tl =
+            Math.hypot(
+                tr[0],
+                tr[1],
+                tr[2]
+            ) ||
+            1;
+
+        tr = [
+            tr[0] / tl,
+            tr[1] / tl,
+            tr[2] / tl
+        ];
+
+        var cx =
+            baseN[1] * tr[2] -
+            baseN[2] * tr[1];
+
+        var cy =
+            baseN[2] * tr[0] -
+            baseN[0] * tr[2];
+
+        var cz =
+            baseN[0] * tr[1] -
+            baseN[1] * tr[0];
+
+        var hand =
+            (
+                cx * br[0] +
+                cy * br[1] +
+                cz * br[2]
+            ) < 0 ?
+                -1 :
+                1;
+
+        var bt = [
+            cx * hand,
+            cy * hand,
+            cz * hand
+        ];
+
+        var r = [
+            tr[0] * nx +
+            bt[0] * ny +
+            baseN[0] * nz,
+
+            tr[1] * nx +
+            bt[1] * ny +
+            baseN[1] * nz,
+
+            tr[2] * nx +
+            bt[2] * ny +
+            baseN[2] * nz
+        ];
+
+        var rl =
+            Math.hypot(
+                r[0],
+                r[1],
+                r[2]
+            ) ||
+            1;
+
+        return [
+            r[0] / rl,
+            r[1] / rl,
+            r[2] / rl
+        ];
+    }
+
+    function buildGBufferStandalone(
+        g,
+        w,
+        h
+    ) {
+        var pos =
+            new Float32Array(
+                w * h * 4
+            );
+
+        var nrm =
+            new Float32Array(
+                w * h * 4
+            );
+
+        var du =
+            new Float32Array(
+                w * h * 4
+            );
+
+        var dv =
+            new Float32Array(
+                w * h * 4
+            );
+
+        var valid = 0;
+
+        var uv = g.uv1;
+        var P = g.positions;
+        var N = g.normals;
+
+        for (
+            var t = 0;
+            t < g.triCount;
+            t++
+        ) {
+            var i0 =
+                g.indices[t * 3];
+
+            var i1 =
+                g.indices[t * 3 + 1];
+
+            var i2 =
+                g.indices[t * 3 + 2];
+
+            var u0 =
+                uv[i0 * 2];
+
+            var v0 =
+                uv[i0 * 2 + 1];
+
+            var u1 =
+                uv[i1 * 2];
+
+            var v1 =
+                uv[i1 * 2 + 1];
+
+            var u2 =
+                uv[i2 * 2];
+
+            var v2 =
+                uv[i2 * 2 + 1];
+
+            var x0 = u0 * w;
+            var y0 = v0 * h;
+
+            var x1 = u1 * w;
+            var y1 = v1 * h;
+
+            var x2 = u2 * w;
+            var y2 = v2 * h;
+
+            var den =
+                (y1 - y2) *
+                (x0 - x2) +
+                (x2 - x1) *
+                (y0 - y2);
+
+            if (
+                Math.abs(den) <
+                1e-12
+            ) {
+                continue;
+            }
+
+            var p0x =
+                P[i0 * 3];
+
+            var p0y =
+                P[i0 * 3 + 1];
+
+            var p0z =
+                P[i0 * 3 + 2];
+
+            var p1x =
+                P[i1 * 3];
+
+            var p1y =
+                P[i1 * 3 + 1];
+
+            var p1z =
+                P[i1 * 3 + 2];
+
+            var p2x =
+                P[i2 * 3];
+
+            var p2y =
+                P[i2 * 3 + 1];
+
+            var p2z =
+                P[i2 * 3 + 2];
+
+            var eu1 =
+                u1 - u0;
+
+            var ev1 =
+                v1 - v0;
+
+            var eu2 =
+                u2 - u0;
+
+            var ev2 =
+                v2 - v0;
+
+            var uvDet =
+                eu1 * ev2 -
+                ev1 * eu2;
+
+            var dpdu = [
+                0,
+                0,
+                0
+            ];
+
+            var dpdv = [
+                0,
+                0,
+                0
+            ];
+
+            if (
+                Math.abs(uvDet) >
+                1e-12
+            ) {
+                var inv =
+                    1 / uvDet;
+
+                var e1x =
+                    p1x - p0x;
+
+                var e1y =
+                    p1y - p0y;
+
+                var e1z =
+                    p1z - p0z;
+
+                var e2x =
+                    p2x - p0x;
+
+                var e2y =
+                    p2y - p0y;
+
+                var e2z =
+                    p2z - p0z;
+
+                dpdu = [
+                    (
+                        e1x * ev2 -
+                        e2x * ev1
+                    ) *
+                    inv,
+
+                    (
+                        e1y * ev2 -
+                        e2y * ev1
+                    ) *
+                    inv,
+
+                    (
+                        e1z * ev2 -
+                        e2z * ev1
+                    ) *
+                    inv
+                ];
+
+                dpdv = [
+                    (
+                        -e1x * eu2 +
+                        e2x * eu1
+                    ) *
+                    inv,
+
+                    (
+                        -e1y * eu2 +
+                        e2y * eu1
+                    ) *
+                    inv,
+
+                    (
+                        -e1z * eu2 +
+                        e2z * eu1
+                    ) *
+                    inv
+                ];
+            }
+
+            var minX =
+                Math.max(
+                    0,
+                    Math.floor(
+                        Math.min(
+                            x0,
+                            x1,
+                            x2
+                        )
+                    )
+                );
+
+            var maxX =
+                Math.min(
+                    w - 1,
+                    Math.ceil(
+                        Math.max(
+                            x0,
+                            x1,
+                            x2
+                        )
+                    )
+                );
+
+            var minY =
+                Math.max(
+                    0,
+                    Math.floor(
+                        Math.min(
+                            y0,
+                            y1,
+                            y2
+                        )
+                    )
+                );
+
+            var maxY =
+                Math.min(
+                    h - 1,
+                    Math.ceil(
+                        Math.max(
+                            y0,
+                            y1,
+                            y2
+                        )
+                    )
+                );
+
+            for (
+                var y = minY;
+                y <= maxY;
+                y++
+            ) {
+                for (
+                    var x = minX;
+                    x <= maxX;
+                    x++
+                ) {
+                    var px =
+                        x + 0.5;
+
+                    var py =
+                        y + 0.5;
+
+                    var l0 =
+                        (
+                            (y1 - y2) *
+                            (px - x2) +
+                            (x2 - x1) *
+                            (py - y2)
+                        ) /
+                        den;
+
+                    var l1 =
+                        (
+                            (y2 - y0) *
+                            (px - x2) +
+                            (x0 - x2) *
+                            (py - y2)
+                        ) /
+                        den;
+
+                    var l2 =
+                        1 -
+                        l0 -
+                        l1;
+
+                    if (
+                        l0 < -1e-4 ||
+                        l1 < -1e-4 ||
+                        l2 < -1e-4
+                    ) {
+                        continue;
+                    }
+
+                    var o =
+                        (
+                            y *
+                            w +
+                            x
+                        ) *
+                        4;
+
+                    if (
+                        pos[o + 3] === 0
+                    ) {
+                        valid++;
+                    }
+
+                    pos[o] =
+                        l0 * p0x +
+                        l1 * p1x +
+                        l2 * p2x;
+
+                    pos[o + 1] =
+                        l0 * p0y +
+                        l1 * p1y +
+                        l2 * p2y;
+
+                    pos[o + 2] =
+                        l0 * p0z +
+                        l1 * p1z +
+                        l2 * p2z;
+
+                    pos[o + 3] = 1;
+
+                    var nx =
+                        l0 *
+                        N[i0 * 3] +
+                        l1 *
+                        N[i1 * 3] +
+                        l2 *
+                        N[i2 * 3];
+
+                    var ny =
+                        l0 *
+                        N[i0 * 3 + 1] +
+                        l1 *
+                        N[i1 * 3 + 1] +
+                        l2 *
+                        N[i2 * 3 + 1];
+
+                    var nz =
+                        l0 *
+                        N[i0 * 3 + 2] +
+                        l1 *
+                        N[i1 * 3 + 2] +
+                        l2 *
+                        N[i2 * 3 + 2];
+
+                    var nl =
+                        Math.hypot(
+                            nx,
+                            ny,
+                            nz
+                        ) ||
+                        1;
+
+                    var nn =
+                        perturbNormalCpu(
+                            g,
+                            t,
+                            [
+                                l0,
+                                l1,
+                                l2
+                            ],
+                            [
+                                nx / nl,
+                                ny / nl,
+                                nz / nl
+                            ]
+                        );
+
+                    nrm[o] = nn[0];
+                    nrm[o + 1] = nn[1];
+                    nrm[o + 2] = nn[2];
+                    nrm[o + 3] = 1;
+
+                    du[o] = dpdu[0];
+                    du[o + 1] = dpdu[1];
+                    du[o + 2] = dpdu[2];
+
+                    dv[o] = dpdv[0];
+                    dv[o + 1] = dpdv[1];
+                    dv[o + 2] = dpdv[2];
+                }
+            }
+        }
+
+        return {
+            pos: pos,
+            nrm: nrm,
+            du: du,
+            dv: dv,
+            w: w,
+            h: h,
+            valid: valid
+        };
+    }
+
+    function collectStandalone(ctx, p, texDB) {
+        var ix = indexComponents(ctx);
+
+        var receivers = [];
+        var transport = [];
+
+        var stats = {
+            componentsScanned: ix.stats.scanned,
+            receivers: 0,
+            transportMeshes: 0,
+            transportTris: 0,
+            missingUv1: 0,
+            transparentExcluded: 0,
+            instancedGroups: 0,
+            instancedInstances: 0,
+            instancingUnsupported: 0,
+            instancedReceiversSkipped: 0,
+            instancedTransportMeshes: 0,
+            normalMappedReceivers: 0,
+            heightMappedReceivers: 0,
+            sharedMaterials: 0
+        };
+
+        var materialCounts =
+            new Map();
+
+        ix.map.forEach(function (owner, mi) {
+            if (
+                !owner.enabled ||
+                !mi ||
+                mi.visible === false
+            ) return;
+
+            if (
+                !(
+                    owner.isStatic ||
+                    owner.lightmapped
+                )
+            ) return;
+
+            var hasInstancing =
+                !!(
+                    mi.instancingCount > 0 ||
+                    (
+                        mi.instancingData &&
+                        mi.instancingData
+                            .vertexBuffer
+                    )
+                );
+
+            var inst =
+                hasInstancing ?
+                    defaultInstanceMatrices(mi) :
+                    null;
+
+            if (hasInstancing) {
+                stats.instancedGroups++;
+
+                if (!inst) {
+                    stats.instancingUnsupported++;
+
+                    if (owner.lightmapped) {
+                        stats.instancedReceiversSkipped++;
+                    }
+
+                    warn(
+                        'GPU instancing externo preservado para "' +
+                        owner.entityName +
+                        '": el baker no encontro un stream Mat4 CPU con semanticas PlayCanvas ATTR11/12/14/15. ' +
+                        'No se toca el buffer ni se inventa una integracion.'
+                    );
+
+                    return;
+                }
+
+                stats.instancedInstances +=
+                    inst.matrices.length;
+
+                var canBakeInstances =
+                    owner.lightmapped &&
+                    instanceMatricesWFree(inst);
+
+                if (
+                    owner.lightmapped &&
+                    !canBakeInstances
+                ) {
+                    stats.instancedReceiversSkipped++;
+
+                    warn(
+                        'GPU instancing "' +
+                        owner.entityName +
+                        '" usa los componentes .w del Mat4 o un layout no-afine. ' +
+                        'PT6.0.7 preserva esos datos y no aplica rects de lightmap por instancia.'
+                    );
+                } else if (canBakeInstances) {
+                    log(
+                        'GPU instancing generico "' +
+                        owner.entityName +
+                        '": ' +
+                        inst.matrices.length +
+                        ' instancia(s), Mat4 default detectado. ' +
+                        'Se hornearan rects por instancia sin reemplazar el VertexBuffer ni aumentar draw calls.'
+                    );
+                }
+
+                var warnedUv1 =
+                    false;
+
+                for (
+                    var ii = 0;
+                    ii < inst.matrices.length;
+                    ii++
+                ) {
+                    var ig =
+                        buildGeometry(
+                            mi,
+                            owner,
+                            texDB,
+                            inst.matrices[ii]
+                        );
+
+                    if (!ig.ok) continue;
+
+                    ig.instanceIndex = ii;
+                    ig.instancing = inst;
+                    ig.instanceGroup = mi;
+
+                    if (
+                        !ig.transparent &&
+                        owner.castShadowsLightmap
+                    ) {
+                        transport.push(ig);
+
+                        stats.transportTris +=
+                            ig.triCount;
+
+                        stats.instancedTransportMeshes++;
+                    } else if (ig.transparent) {
+                        stats.transparentExcluded++;
+                    }
+
+                    if (canBakeInstances) {
+                        if (!ig.hasUv1) {
+                            if (!warnedUv1) {
+                                stats.missingUv1++;
+
+                                warnedUv1 = true;
+
+                                warn(
+                                    'Receiver instanciado "' +
+                                    owner.entityName +
+                                    '" sin UV1 valido: el grupo se conserva sin lightmap por instancia.'
+                                );
+                            }
+
+                            canBakeInstances = false;
+
+                            continue;
+                        }
+
+                        receivers.push({
+                            mi: mi,
+                            owner: owner,
+                            geom: ig,
+                            instanceIndex: ii,
+                            instanced: true,
+                            instancing: inst,
+                            genericInstanced: true,
+                            material: mi.material
+                        });
+
+                        if (mi.material) {
+                            materialCounts.set(
+                                mi.material,
+                                (
+                                    materialCounts.get(
+                                        mi.material
+                                    ) ||
+                                    0
+                                ) +
+                                1
+                            );
+
+                            if (
+                                mi.material.normalMap
+                            ) {
+                                stats.normalMappedReceivers++;
+                            }
+
+                            if (
+                                mi.material.heightMap
+                            ) {
+                                stats.heightMappedReceivers++;
+                            }
+                        }
+                    }
+                }
+
+                if (
+                    owner.lightmapped &&
+                    !canBakeInstances
+                ) {
+                    for (
+                        var rr = receivers.length - 1;
+                        rr >= 0;
+                        rr--
+                    ) {
+                        if (
+                            receivers[rr].mi === mi &&
+                            receivers[rr].genericInstanced
+                        ) {
+                            receivers.splice(
+                                rr,
+                                1
+                            );
+                        }
+                    }
+                }
+
+                return;
+            }
+
+            var g =
+                buildGeometry(
+                    mi,
+                    owner,
+                    texDB,
+                    null
+                );
+
+            if (!g.ok) return;
+
+            g.instanceIndex = -1;
+            g.instancing = null;
+            g.instanceGroup = null;
+
+            if (
+                !g.transparent &&
+                owner.castShadowsLightmap
+            ) {
+                transport.push(g);
+
+                stats.transportTris +=
+                    g.triCount;
+            } else if (g.transparent) {
+                stats.transparentExcluded++;
+            }
+
+            if (owner.lightmapped) {
+                if (!g.hasUv1) {
+                    stats.missingUv1++;
+
+                    warn(
+                        'Receiver "' +
+                        owner.entityName +
+                        '" sin UV1 valido: PT6 no usa UV0 como lightmap fallback.'
+                    );
+
+                    return;
+                }
+
+                receivers.push({
+                    mi: mi,
+                    owner: owner,
+                    geom: g,
+                    instanceIndex: -1,
+                    instanced: false,
+                    instancing: null,
+                    material: mi.material
+                });
+
+                if (mi.material) {
+                    materialCounts.set(
+                        mi.material,
+                        (
+                            materialCounts.get(
+                                mi.material
+                            ) ||
+                            0
+                        ) +
+                        1
+                    );
+
+                    if (
+                        mi.material.normalMap
+                    ) {
+                        stats.normalMappedReceivers++;
+                    }
+
+                    if (
+                        mi.material.heightMap
+                    ) {
+                        stats.heightMappedReceivers++;
+                    }
+                }
+            }
+        });
+
+        materialCounts.forEach(function (n) {
+            if (n > 1) {
+                stats.sharedMaterials++;
+            }
+        });
+
+        stats.receivers =
+            receivers.length;
+
+        stats.transportMeshes =
+            transport.length;
+
+        var records = [];
+
+        var bmin = [
+            Infinity,
+            Infinity,
+            Infinity
+        ];
+
+        var bmax = [
+            -Infinity,
+            -Infinity,
+            -Infinity
+        ];
+
+        transport.forEach(function (g) {
+            var P = g.positions;
+            var N = g.normals;
+            var U0 = g.uv0;
+            var U1 = g.uv1;
+
+            var d = g.diff;
+            var e = g.emis;
+            var mt = g.metal;
+
+            for (
+                var t = 0;
+                t < g.triCount;
+                t++
+            ) {
+                var ia =
+                    g.indices[t * 3];
+
+                var ib =
+                    g.indices[t * 3 + 1];
+
+                var ic =
+                    g.indices[t * 3 + 2];
+
+                var ax =
+                    P[ia * 3];
+
+                var ay =
+                    P[ia * 3 + 1];
+
+                var az =
+                    P[ia * 3 + 2];
+
+                var bx =
+                    P[ib * 3];
+
+                var by =
+                    P[ib * 3 + 1];
+
+                var bz =
+                    P[ib * 3 + 2];
+
+                var cx =
+                    P[ic * 3];
+
+                var cy =
+                    P[ic * 3 + 1];
+
+                var cz =
+                    P[ic * 3 + 2];
+
+                var e1x =
+                    bx - ax;
+
+                var e1y =
+                    by - ay;
+
+                var e1z =
+                    bz - az;
+
+                var e2x =
+                    cx - ax;
+
+                var e2y =
+                    cy - ay;
+
+                var e2z =
+                    cz - az;
+
+                var crx =
+                    e1y * e2z -
+                    e1z * e2y;
+
+                var cry =
+                    e1z * e2x -
+                    e1x * e2z;
+
+                var crz =
+                    e1x * e2y -
+                    e1y * e2x;
+
+                if (
+                    Math.hypot(
+                        crx,
+                        cry,
+                        crz
+                    ) < 1e-12
+                ) continue;
+
+                var mn = [
+                    Math.min(
+                        ax,
+                        bx,
+                        cx
+                    ),
+                    Math.min(
+                        ay,
+                        by,
+                        cy
+                    ),
+                    Math.min(
+                        az,
+                        bz,
+                        cz
+                    )
+                ];
+
+                var mx = [
+                    Math.max(
+                        ax,
+                        bx,
+                        cx
+                    ),
+                    Math.max(
+                        ay,
+                        by,
+                        cy
+                    ),
+                    Math.max(
+                        az,
+                        bz,
+                        cz
+                    )
+                ];
+
+                for (
+                    var k = 0;
+                    k < 3;
+                    k++
+                ) {
+                    bmin[k] =
+                        Math.min(
+                            bmin[k],
+                            mn[k]
+                        );
+
+                    bmax[k] =
+                        Math.max(
+                            bmax[k],
+                            mx[k]
+                        );
+                }
+
+                records.push({
+                    min: mn,
+                    max: mx,
+
+                    centroid: [
+                        (
+                            ax +
+                            bx +
+                            cx
+                        ) /
+                        3,
+
+                        (
+                            ay +
+                            by +
+                            cy
+                        ) /
+                        3,
+
+                        (
+                            az +
+                            bz +
+                            cz
+                        ) /
+                        3
+                    ],
+
+                    data: [
+                        ax, ay, az, 0,
+                        e1x, e1y, e1z, 0,
+                        e2x, e2y, e2z, 0,
+
+                        N[ia * 3],
+                        N[ia * 3 + 1],
+                        N[ia * 3 + 2],
+                        0,
+
+                        N[ib * 3],
+                        N[ib * 3 + 1],
+                        N[ib * 3 + 2],
+                        0,
+
+                        N[ic * 3],
+                        N[ic * 3 + 1],
+                        N[ic * 3 + 2],
+                        0,
+
+                        g.albedo[0],
+                        g.albedo[1],
+                        g.albedo[2],
+                        g.owner.castShadowsLightmap ? 1 : 0,
+
+                        g.emission[0],
+                        g.emission[1],
+                        g.emission[2],
+                        g.metalness,
+
+                        U0[ia * 2],
+                        U0[ia * 2 + 1],
+                        U0[ib * 2],
+                        U0[ib * 2 + 1],
+                        U0[ic * 2],
+                        U0[ic * 2 + 1],
+                        0,
+                        0,
+
+                        U1[ia * 2],
+                        U1[ia * 2 + 1],
+                        U1[ib * 2],
+                        U1[ib * 2 + 1],
+                        U1[ic * 2],
+                        U1[ic * 2 + 1],
+                        0,
+                        0,
+
+                        d.info[0],
+                        d.info[1],
+                        d.info[2],
+                        d.info[3],
+
+                        d.xform[0],
+                        d.xform[1],
+                        d.xform[2],
+                        d.xform[3],
+
+                        d.misc[0],
+                        d.misc[1],
+                        d.misc[2],
+                        d.misc[3],
+
+                        e.info[0],
+                        e.info[1],
+                        e.info[2],
+                        e.info[3],
+
+                        e.xform[0],
+                        e.xform[1],
+                        e.xform[2],
+                        e.xform[3],
+
+                        e.misc[0],
+                        e.misc[1],
+                        e.misc[2],
+                        e.misc[3],
+
+                        mt.info[0],
+                        mt.info[1],
+                        mt.info[2],
+                        mt.info[3],
+
+                        mt.xform[0],
+                        mt.xform[1],
+                        mt.xform[2],
+                        mt.xform[3],
+
+                        mt.misc[0],
+                        mt.misc[1],
+                        mt.misc[2],
+                        mt.misc[3]
+                    ]
+                });
+            }
+        });
+
+        if (!records.length) {
+            bmin = [0, 0, 0];
+            bmax = [0, 0, 0];
+        }
+
+        var built =
+            buildBVH(
+                records,
+                p.leaf
+            );
+
+        var extent =
+            Math.max(
+                1e-4,
+                bmax[0] - bmin[0],
+                bmax[1] - bmin[1],
+                bmax[2] - bmin[2]
+            );
+
+        return {
+            receivers: receivers,
+            transport: transport,
+            tris: built.tris,
+            triCount: built.triCount,
+            bvh: built.nodes,
+            bvhCount: built.nodeCount,
+            boundsMin: bmin,
+            boundsMax: bmax,
+            extent: extent,
+            stats: stats,
+            materialCounts: materialCounts
+        };
+    }
+
+    function shelfPack(items, size, pad) {
+        var x = pad;
+        var y = pad;
+        var rowH = 0;
+
+        for (
+            var i = 0;
+            i < items.length;
+            i++
+        ) {
+            var r = items[i];
+
+            var rw =
+                r.res +
+                pad * 2;
+
+            var rh =
+                r.res +
+                pad * 2;
+
+            if (
+                rw > size ||
+                rh > size
+            ) {
+                return false;
+            }
+
+            if (
+                x + rw >
+                size
+            ) {
+                x = pad;
+                y += rowH;
+                rowH = 0;
+            }
+
+            if (
+                y + rh >
+                size
+            ) {
+                return false;
+            }
+
+            r.rect = {
+                x: x + pad,
+                y: y + pad,
+                w: r.res,
+                h: r.res
+            };
+
+            x += rw;
+
+            rowH =
+                Math.max(
+                    rowH,
+                    rh
+                );
+        }
+
+        return true;
+    }
+
+    function packAtlases(
+        receivers,
+        scene,
+        device
+    ) {
+        var maxScene =
+            isNum(
+                scene.lightmapMaxResolution
+            ) ?
+                scene.lightmapMaxResolution :
+                2048;
+
+        var maxGpu =
+            device &&
+            device.maxTextureSize ||
+            4096;
+
+        var size =
+            Math.min(
+                maxScene,
+                maxGpu,
+                2048
+            );
+
+        size =
+            Math.max(
+                256,
+                1 <<
+                Math.floor(
+                    Math.log2(size)
+                )
+            );
+
+        receivers.forEach(function (r) {
+            r.res =
+                receiverResolution(
+                    r.geom,
+                    r.owner,
+                    scene,
+                    size
+                );
+        });
+
+        var atlases = [];
+        var instGroups = new Map();
+        var normal = [];
+
+        receivers.forEach(function (r) {
+            if (
+                r.instanced &&
+                r.uranusPayload
+            ) {
+                var key =
+                    r.uranusPayload;
+
+                var a =
+                    instGroups.get(key);
+
+                if (!a) {
+                    a = [];
+
+                    instGroups.set(
+                        key,
+                        a
+                    );
+                }
+
+                a.push(r);
+            } else if (
+                r.instanced
+            ) {
+                var key2 = r.mi;
+
+                var a2 =
+                    instGroups.get(key2);
+
+                if (!a2) {
+                    a2 = [];
+
+                    instGroups.set(
+                        key2,
+                        a2
+                    );
+                }
+
+                a2.push(r);
+            } else {
+                normal.push(r);
+            }
+        });
+
+        instGroups.forEach(function (
+            items,
+            groupKey
+        ) {
+            var uranusPayload =
+                items[0] &&
+                items[0].uranusPayload ||
+                null;
+
+            if (
+                uranusPayload &&
+                !uranusGroupComplete(
+                    items,
+                    uranusPayload
+                )
+            ) {
+                warn(
+                    'Uranus payload mixto detectado: no todas sus instancias son receivers lightmapped con UV1. ' +
+                    'PT6.0.7 no puede activar un lightmap por MeshInstance para solo una parte del draw call; ' +
+                    'se preserva el payload sin lightmap PT.'
+                );
+
+                items.forEach(function (r) {
+                    r.skipInstancedRuntime = true;
+                    r.instanced = false;
+
+                    normal.push(r);
+                });
+
+                return;
+            }
+
+            var copy =
+                items
+                    .slice()
+                    .sort(function (a, b) {
+                        return b.res - a.res;
+                    });
+
+            var ok =
+                shelfPack(
+                    copy,
+                    size,
+                    4
+                );
+
+            while (
+                !ok &&
+                copy.some(function (r) {
+                    return r.res > 16;
+                })
+            ) {
+                copy.forEach(function (r) {
+                    r.res =
+                        Math.max(
+                            16,
+                            r.res >> 1
+                        );
+                });
+
+                ok =
+                    shelfPack(
+                        copy,
+                        size,
+                        4
+                    );
+            }
+
+            if (!ok) {
+                warn(
+                    'Grupo instanciado no cabe en atlas ' +
+                    size +
+                    '; se preserva instancing pero no se aplica lightmap PT6 a ese grupo.'
+                );
+
+                items.forEach(function (r) {
+                    r.skip = true;
+                });
+
+                return;
+            }
+
+            var at = {
+                index: atlases.length,
+                size: size,
+                items: copy,
+                pixels:
+                    new Float32Array(
+                        size *
+                        size *
+                        4
+                    ),
+                instanced: true,
+                mi:
+                    uranusPayload ?
+                        uranusPayload.meshInstance :
+                        groupKey,
+                uranusPayload:
+                    uranusPayload
+            };
+
+            copy.forEach(function (r) {
+                r.atlas = at;
+            });
+
+            atlases.push(at);
+        });
+
+        normal =
+            normal
+                .filter(function (r) {
+                    return !r.skip;
+                })
+                .sort(function (a, b) {
+                    return b.res - a.res;
+                });
+
+        while (normal.length) {
+            var at = {
+                index: atlases.length,
+                size: size,
+                items: [],
+                pixels:
+                    new Float32Array(
+                        size *
+                        size *
+                        4
+                    ),
+                instanced: false,
+                uranusPayload: null
+            };
+
+            var x = 4;
+            var y = 4;
+            var rowH = 0;
+            var keep = [];
+
+            for (
+                var i = 0;
+                i < normal.length;
+                i++
+            ) {
+                var r = normal[i];
+
+                var rw =
+                    r.res + 8;
+
+                var rh =
+                    r.res + 8;
+
+                if (
+                    x + rw >
+                    size
+                ) {
+                    x = 4;
+                    y += rowH;
+                    rowH = 0;
+                }
+
+                if (
+                    y + rh >
+                    size
+                ) {
+                    keep.push(r);
+                    continue;
+                }
+
+                r.rect = {
+                    x: x + 4,
+                    y: y + 4,
+                    w: r.res,
+                    h: r.res
+                };
+
+                r.atlas = at;
+
+                at.items.push(r);
+
+                x += rw;
+
+                rowH =
+                    Math.max(
+                        rowH,
+                        rh
+                    );
+            }
+
+            if (!at.items.length) {
+                var bad =
+                    normal.shift();
+
+                bad.res =
+                    Math.max(
+                        16,
+                        Math.min(
+                            bad.res,
+                            size - 8
+                        )
+                    );
+
+                bad.rect = {
+                    x: 4,
+                    y: 4,
+                    w: bad.res,
+                    h: bad.res
+                };
+
+                bad.atlas = at;
+
+                at.items.push(bad);
+            } else {
+                normal = keep;
+            }
+
+            atlases.push(at);
+        }
+
+        return atlases;
+    }
+
+    function blitTile(atlas, tile, pix) {
+        var s = atlas.size;
+        var r = tile.rect;
+        var w = r.w;
+        var h = r.h;
+
+        for (var y = 0; y < h; y++) {
+            var so =
+                y *
+                w *
+                4;
+
+            var doff =
+                (
+                    (
+                        r.y +
+                        y
+                    ) *
+                    s +
+                    r.x
+                ) *
+                4;
+
+            atlas.pixels.set(
+                pix.subarray(
+                    so,
+                    so +
+                    w *
+                    4
+                ),
+                doff
+            );
+        }
+
+        for (
+            var p = 1;
+            p <= 4;
+            p++
+        ) {
+            for (
+                y = 0;
+                y < h;
+                y++
+            ) {
+                var srcL =
+                    (
+                        (
+                            r.y +
+                            y
+                        ) *
+                        s +
+                        r.x
+                    ) *
+                    4;
+
+                var dstL =
+                    (
+                        (
+                            r.y +
+                            y
+                        ) *
+                        s +
+                        Math.max(
+                            0,
+                            r.x -
+                            p
+                        )
+                    ) *
+                    4;
+
+                var srcR =
+                    (
+                        (
+                            r.y +
+                            y
+                        ) *
+                        s +
+                        r.x +
+                        w -
+                        1
+                    ) *
+                    4;
+
+                var dstR =
+                    (
+                        (
+                            r.y +
+                            y
+                        ) *
+                        s +
+                        Math.min(
+                            s - 1,
+                            r.x +
+                            w -
+                            1 +
+                            p
+                        )
+                    ) *
+                    4;
+
+                atlas.pixels.set(
+                    atlas.pixels.subarray(
+                        srcL,
+                        srcL + 4
+                    ),
+                    dstL
+                );
+
+                atlas.pixels.set(
+                    atlas.pixels.subarray(
+                        srcR,
+                        srcR + 4
+                    ),
+                    dstR
+                );
+            }
+
+            for (
+                var x = 0;
+                x < w;
+                x++
+            ) {
+                var srcT =
+                    (
+                        r.y *
+                        s +
+                        r.x +
+                        x
+                    ) *
+                    4;
+
+                var dstT =
+                    (
+                        Math.max(
+                            0,
+                            r.y -
+                            p
+                        ) *
+                        s +
+                        r.x +
+                        x
+                    ) *
+                    4;
+
+                var srcB =
+                    (
+                        (
+                            r.y +
+                            h -
+                            1
+                        ) *
+                        s +
+                        r.x +
+                        x
+                    ) *
+                    4;
+
+                var dstB =
+                    (
+                        Math.min(
+                            s - 1,
+                            r.y +
+                            h -
+                            1 +
+                            p
+                        ) *
+                        s +
+                        r.x +
+                        x
+                    ) *
+                    4;
+
+                atlas.pixels.set(
+                    atlas.pixels.subarray(
+                        srcT,
+                        srcT + 4
+                    ),
+                    dstT
+                );
+
+                atlas.pixels.set(
+                    atlas.pixels.subarray(
+                        srcB,
+                        srcB + 4
+                    ),
+                    dstB
+                );
+            }
+        }
+    }
+
+    function createLightmapTexture(
+        gd,
+        atlas,
+        hdr,
+        maxRadiance
+    ) {
+        var tex =
+            new pc.Texture(
+                gd,
+                {
+                    name:
+                        'PT6_LightmapAtlas_' +
+                        atlas.index,
+
+                    width:
+                        atlas.size,
+
+                    height:
+                        atlas.size,
+
+                    format:
+                        hdr ?
+                            pc.PIXELFORMAT_RGBA16F :
+                            pc.PIXELFORMAT_RGBA8,
+
+                    type:
+                        hdr ?
+                            pc.TEXTURETYPE_DEFAULT :
+                            pc.TEXTURETYPE_RGBM,
+
+                    mipmaps:
+                        false,
+
+                    minFilter:
+                        pc.FILTER_LINEAR,
+
+                    magFilter:
+                        pc.FILTER_LINEAR,
+
+                    addressU:
+                        pc.ADDRESS_CLAMP_TO_EDGE,
+
+                    addressV:
+                        pc.ADDRESS_CLAMP_TO_EDGE
+                }
+            );
+
+        writeTexture(
+            tex,
+            atlas.pixels,
+            atlas.size,
+            atlas.size,
+            maxRadiance
+        );
+
+        return tex;
+    }
+
+    function ensureMaterialPt6(
+        mat,
+        state,
+        useInstanceRect
+    ) {
+        if (
+            !mat ||
+            typeof mat.update !==
+            'function'
+        ) {
+            return false;
+        }
+
+        if (
+            !state.materialBackups.has(mat)
+        ) {
+            var oldRect =
+                typeof mat.getParameter ===
+                    'function' ?
+                    mat.getParameter(
+                        'uPT6LmRect'
+                    ) :
+                    undefined;
+
+            var gg =
+                mat.getShaderChunks ?
+                    mat.getShaderChunks(
+                        pc.SHADERLANGUAGE_GLSL
+                    ) :
+                    null;
+
+            var ww =
+                mat.getShaderChunks ?
+                    mat.getShaderChunks(
+                        pc.SHADERLANGUAGE_WGSL
+                    ) :
+                    null;
+
+            state.materialBackups.set(
+                mat,
+                {
+                    shaderChunksVersion:
+                        mat.shaderChunksVersion,
+
+                    glslDecl:
+                        gg ?
+                            gg.get(
+                                'litUserDeclarationVS'
+                            ) :
+                            null,
+
+                    glslEnd:
+                        gg ?
+                            gg.get(
+                                'litUserMainEndVS'
+                            ) :
+                            null,
+
+                    wgslDecl:
+                        ww ?
+                            ww.get(
+                                'litUserDeclarationVS'
+                            ) :
+                            null,
+
+                    wgslEnd:
+                        ww ?
+                            ww.get(
+                                'litUserMainEndVS'
+                            ) :
+                            null,
+
+                    glslInstancing:
+                        gg ?
+                            gg.get(
+                                'transformInstancingVS'
+                            ) :
+                            null,
+
+                    wgslInstancing:
+                        ww ?
+                            ww.get(
+                                'transformInstancingVS'
+                            ) :
+                            null,
+
+                    userAttributes:
+                        mat.userAttributes instanceof Map ?
+                            new Map(
+                                mat.userAttributes
+                            ) :
+                            null,
+
+                    ptRectParameter:
+                        oldRect,
+
+                    hadPtRectParameter:
+                        oldRect !== undefined,
+
+                    instanceRectEnabled:
+                        false
+                }
+            );
+        }
+
+        var bk =
+            state.materialBackups.get(
+                mat
+            );
+
+        if (useInstanceRect) {
+            if (
+                (
+                    bk.glslInstancing != null ||
+                    bk.wgslInstancing != null
+                ) &&
+                !bk.instanceRectEnabled
+            ) {
+                warn(
+                    'Material "' +
+                    (
+                        mat.name ||
+                        '(sin nombre)'
+                    ) +
+                    '" ya tiene transformInstancingVS personalizado. ' +
+                    'PT6.0.7 no lo reemplaza para evitar romper otro sistema de instancing.'
+                );
+
+                return false;
+            }
+
+            if (
+                !mapDefaultInstanceAttributes(
+                    mat
+                )
+            ) {
+                warn(
+                    'Material "' +
+                    (
+                        mat.name ||
+                        '(sin nombre)'
+                    ) +
+                    '" no permite mapear los atributos de instancing. ' +
+                    'Se preserva sin lightmap por instancia.'
+                );
+
+                return false;
+            }
+
+            bk.instanceRectEnabled =
+                true;
+        }
+
+        mat.shaderChunksVersion =
+            '2.22';
+
+        var gdcl =
+            '\nuniform vec4 uPT6LmRect;\n';
+
+        var wdcl =
+            '\nuniform uPT6LmRect: vec4f;\n';
+
+        var normalGend =
+            '\n#ifdef UV1_UNMODIFIED\n' +
+            'vUv1 = vUv1 * uPT6LmRect.zw + uPT6LmRect.xy;\n' +
+            '#endif\n';
+
+        var normalWend =
+            '\n#ifdef UV1_UNMODIFIED\n' +
+            'output.vUv1 = output.vUv1 * uniform.uPT6LmRect.zw + uniform.uPT6LmRect.xy;\n' +
+            '#endif\n';
+
+        var instGend =
+            '\n#ifdef UV1_UNMODIFIED\n' +
+            '#ifdef INSTANCING\n' +
+            'vUv1 = vUv1 * pt6InstanceLmRect.zw + pt6InstanceLmRect.xy;\n' +
+            '#else\n' +
+            'vUv1 = vUv1 * uPT6LmRect.zw + uPT6LmRect.xy;\n' +
+            '#endif\n' +
+            '#endif\n';
+
+        var instWend =
+            '\n#ifdef UV1_UNMODIFIED\n' +
+            '#ifdef INSTANCING\n' +
+            'output.vUv1 = output.vUv1 * pt6InstanceLmRect.zw + pt6InstanceLmRect.xy;\n' +
+            '#else\n' +
+            'output.vUv1 = output.vUv1 * uniform.uPT6LmRect.zw + uniform.uPT6LmRect.xy;\n' +
+            '#endif\n' +
+            '#endif\n';
+
+        var ginst =
+            '\nattribute vec4 instance_line1;\n' +
+            'attribute vec4 instance_line2;\n' +
+            'attribute vec4 instance_line3;\n' +
+            'attribute vec4 instance_line4;\n' +
+            'vec4 pt6InstanceLmRect;\n' +
+            'mat4 getModelMatrix() {\n' +
+            '    pt6InstanceLmRect = vec4(instance_line1.w, instance_line2.w, instance_line3.w, instance_line4.w);\n' +
+            '    return mat4(vec4(instance_line1.xyz, 0.0), vec4(instance_line2.xyz, 0.0), vec4(instance_line3.xyz, 0.0), vec4(instance_line4.xyz, 1.0));\n' +
+            '}\n';
+
+        var winst =
+            '\nattribute instance_line1: vec4f;\n' +
+            'attribute instance_line2: vec4f;\n' +
+            'attribute instance_line3: vec4f;\n' +
+            'attribute instance_line4: vec4f;\n' +
+            'var<private> pt6InstanceLmRect: vec4f;\n' +
+            'fn getModelMatrix() -> mat4x4f {\n' +
+            '    pt6InstanceLmRect = vec4f(instance_line1.w, instance_line2.w, instance_line3.w, instance_line4.w);\n' +
+            '    return mat4x4f(vec4f(instance_line1.xyz, 0.0), vec4f(instance_line2.xyz, 0.0), vec4f(instance_line3.xyz, 0.0), vec4f(instance_line4.xyz, 1.0));\n' +
+            '}\n';
+
+        if (
+            mat.getShaderChunks
+        ) {
+            var g =
+                mat.getShaderChunks(
+                    pc.SHADERLANGUAGE_GLSL
+                );
+
+            var w =
+                mat.getShaderChunks(
+                    pc.SHADERLANGUAGE_WGSL
+                );
+
+            g.set(
+                'litUserDeclarationVS',
+                (bk.glslDecl || '') +
+                gdcl
+            );
+
+            w.set(
+                'litUserDeclarationVS',
+                (bk.wgslDecl || '') +
+                wdcl
+            );
+
+            if (
+                bk.instanceRectEnabled
+            ) {
+                g.set(
+                    'transformInstancingVS',
+                    ginst
+                );
+
+                w.set(
+                    'transformInstancingVS',
+                    winst
+                );
+
+                g.set(
+                    'litUserMainEndVS',
+                    (bk.glslEnd || '') +
+                    instGend
+                );
+
+                w.set(
+                    'litUserMainEndVS',
+                    (bk.wgslEnd || '') +
+                    instWend
+                );
+            } else {
+                g.set(
+                    'litUserMainEndVS',
+                    (bk.glslEnd || '') +
+                    normalGend
+                );
+
+                w.set(
+                    'litUserMainEndVS',
+                    (bk.wgslEnd || '') +
+                    normalWend
+                );
+            }
+        }
+
+        mat.setParameter(
+            'uPT6LmRect',
+            new Float32Array([
+                0,
+                0,
+                1,
+                1
+            ])
+        );
+
+        mat.update();
+
+        return true;
+    }
+
+    function restoreMaterials(state) {
+        if (
+            !state.materialBackups
+        ) {
+            return;
+        }
+
+        state.materialBackups.forEach(
+            function (b, mat) {
+                try {
+                    mat.shaderChunksVersion =
+                        b.shaderChunksVersion;
+
+                    if (
+                        mat.getShaderChunks
+                    ) {
+                        var g =
+                            mat.getShaderChunks(
+                                pc.SHADERLANGUAGE_GLSL
+                            );
+
+                        var w =
+                            mat.getShaderChunks(
+                                pc.SHADERLANGUAGE_WGSL
+                            );
+
+                        if (
+                            b.glslDecl == null
+                        ) {
+                            g.delete(
+                                'litUserDeclarationVS'
+                            );
+                        } else {
+                            g.set(
+                                'litUserDeclarationVS',
+                                b.glslDecl
+                            );
+                        }
+
+                        if (
+                            b.glslEnd == null
+                        ) {
+                            g.delete(
+                                'litUserMainEndVS'
+                            );
+                        } else {
+                            g.set(
+                                'litUserMainEndVS',
+                                b.glslEnd
+                            );
+                        }
+
+                        if (
+                            b.wgslDecl == null
+                        ) {
+                            w.delete(
+                                'litUserDeclarationVS'
+                            );
+                        } else {
+                            w.set(
+                                'litUserDeclarationVS',
+                                b.wgslDecl
+                            );
+                        }
+
+                        if (
+                            b.wgslEnd == null
+                        ) {
+                            w.delete(
+                                'litUserMainEndVS'
+                            );
+                        } else {
+                            w.set(
+                                'litUserMainEndVS',
+                                b.wgslEnd
+                            );
+                        }
+
+                        if (
+                            Object.prototype
+                                .hasOwnProperty
+                                .call(
+                                    b,
+                                    'glslInstancing'
+                                )
+                        ) {
+                            if (
+                                b.glslInstancing == null
+                            ) {
+                                g.delete(
+                                    'transformInstancingVS'
+                                );
+                            } else {
+                                g.set(
+                                    'transformInstancingVS',
+                                    b.glslInstancing
+                                );
+                            }
+                        }
+
+                        if (
+                            Object.prototype
+                                .hasOwnProperty
+                                .call(
+                                    b,
+                                    'wgslInstancing'
+                                )
+                        ) {
+                            if (
+                                b.wgslInstancing == null
+                            ) {
+                                w.delete(
+                                    'transformInstancingVS'
+                                );
+                            } else {
+                                w.set(
+                                    'transformInstancingVS',
+                                    b.wgslInstancing
+                                );
+                            }
+                        }
+                    }
+
+                    if (
+                        b.hadPtRectParameter
+                    ) {
+                        mat.setParameter(
+                            'uPT6LmRect',
+                            b.ptRectParameter &&
+                                b.ptRectParameter.data !== undefined ?
+                                b.ptRectParameter.data :
+                                b.ptRectParameter
+                        );
+                    } else if (
+                        typeof mat.deleteParameter ===
+                        'function'
+                    ) {
+                        mat.deleteParameter(
+                            'uPT6LmRect'
+                        );
+                    }
+
+                    if (
+                        b.userAttributes &&
+                        mat.userAttributes instanceof
+                        Map
+                    ) {
+                        mat.userAttributes =
+                            new Map(
+                                b.userAttributes
+                            );
+                    }
+
+                    mat.update();
+                } catch (_) {
+                }
+            }
+        );
+
+        state.materialBackups.clear();
+    }
+
+    function backupMeshInstancePt6(
+        mi,
+        state
+    ) {
+        if (
+            !mi ||
+            state.meshBackups.has(mi)
+        ) {
+            return;
+        }
+
+        var lm =
+            typeof mi.getParameter ===
+                'function' ?
+                mi.getParameter(
+                    'texture_lightMap'
+                ) :
+                undefined;
+
+        var rect =
+            typeof mi.getParameter ===
+                'function' ?
+                mi.getParameter(
+                    'uPT6LmRect'
+                ) :
+                undefined;
+
+        state.meshBackups.set(
+            mi,
+            {
+                shaderDefs:
+                    isNum(mi._shaderDefs) ?
+                        mi._shaderDefs :
+                        null,
+
+                lightmapParameter:
+                    lm,
+
+                hadLightmapParameter:
+                    lm !== undefined,
+
+                rectParameter:
+                    rect,
+
+                hadRectParameter:
+                    rect !== undefined
+            }
+        );
+    }
+
+    function enableMeshInstancePt6Lightmap(
+        mi,
+        state
+    ) {
+        backupMeshInstancePt6(
+            mi,
+            state
+        );
+
+        var lmFlag =
+            isNum(pc.SHADERDEF_LM) ?
+                pc.SHADERDEF_LM :
+                64;
+
+        var ambientFlag =
+            isNum(pc.SHADERDEF_LMAMBIENT) ?
+                pc.SHADERDEF_LMAMBIENT :
+                4096;
+
+        if (
+            isNum(mi._shaderDefs)
+        ) {
+            var defs =
+                mi._shaderDefs |
+                lmFlag |
+                ambientFlag;
+
+            if (
+                typeof mi._updateShaderDefs ===
+                'function'
+            ) {
+                mi._updateShaderDefs(
+                    defs
+                );
+            } else {
+                mi._shaderDefs =
+                    defs;
+
+                if (
+                    typeof mi.clearShaders ===
+                    'function'
+                ) {
+                    mi.clearShaders();
+                }
+            }
+        } else {
+            warn(
+                'MeshInstance sin _shaderDefs accesible; no se puede activar el lightmap PT de forma aislada sin modificar su material.'
+            );
+        }
+
+        if (
+            typeof mi.setLightmapped ===
+            'function'
+        ) {
+            mi.setLightmapped(
+                true
+            );
+        }
+    }
+
+    function restoreMeshInstances(state) {
+        if (
+            !state.meshBackups
+        ) {
+            return;
+        }
+
+        state.meshBackups.forEach(
+            function (b, mi) {
+                try {
+                    if (
+                        b.hadLightmapParameter
+                    ) {
+                        mi.setParameter(
+                            'texture_lightMap',
+                            b.lightmapParameter &&
+                                b.lightmapParameter.data !== undefined ?
+                                b.lightmapParameter.data :
+                                b.lightmapParameter
+                        );
+                    } else if (
+                        typeof mi.deleteParameter ===
+                        'function'
+                    ) {
+                        mi.deleteParameter(
+                            'texture_lightMap'
+                        );
+                    }
+
+                    if (
+                        b.hadRectParameter
+                    ) {
+                        mi.setParameter(
+                            'uPT6LmRect',
+                            b.rectParameter &&
+                                b.rectParameter.data !== undefined ?
+                                b.rectParameter.data :
+                                b.rectParameter
+                        );
+                    } else if (
+                        typeof mi.deleteParameter ===
+                        'function'
+                    ) {
+                        mi.deleteParameter(
+                            'uPT6LmRect'
+                        );
+                    }
+
+                    if (
+                        b.shaderDefs !== null
+                    ) {
+                        if (
+                            typeof mi._updateShaderDefs ===
+                            'function'
+                        ) {
+                            mi._updateShaderDefs(
+                                b.shaderDefs
+                            );
+                        } else {
+                            mi._shaderDefs =
+                                b.shaderDefs;
+
+                            if (
+                                typeof mi.clearShaders ===
+                                'function'
+                            ) {
+                                mi.clearShaders();
+                            }
+                        }
+                    }
+                } catch (_) {
+                }
+            }
+        );
+
+        state.meshBackups.clear();
+    }
+
+    function writeGenericInstanceRects(
+        mi,
+        items,
+        state
+    ) {
+        var layout =
+            defaultInstanceLayout(mi);
+
+        if (
+            !layout ||
+            !items ||
+            !items.length
+        ) {
+            return 0;
+        }
+
+        var vb =
+            layout.vertexBuffer;
+
+        var mem = null;
+
+        try {
+            mem =
+                vb.lock();
+
+            var raw =
+                rawBufferView(mem);
+
+            if (!raw) return 0;
+
+            var dv =
+                new DataView(
+                    raw.buffer,
+                    raw.byteOffset,
+                    raw.byteLength
+                );
+
+            var count =
+                Math.min(
+                    mi.instancingCount ||
+                    vb.getNumVertices(),
+                    vb.getNumVertices()
+                );
+
+            var rects =
+                new Array(count);
+
+            for (
+                var i = 0;
+                i < items.length;
+                i++
+            ) {
+                var r =
+                    items[i];
+
+                var idx =
+                    r.instanceIndex | 0;
+
+                if (
+                    idx < 0 ||
+                    idx >= count ||
+                    !r.rect ||
+                    !r.atlas
+                ) {
+                    return 0;
+                }
+
+                rects[idx] = [
+                    r.rect.x /
+                    r.atlas.size,
+
+                    r.rect.y /
+                    r.atlas.size,
+
+                    r.rect.w /
+                    r.atlas.size,
+
+                    r.rect.h /
+                    r.atlas.size
+                ];
+            }
+
+            for (
+                i = 0;
+                i < count;
+                i++
+            ) {
+                if (!rects[i]) {
+                    return 0;
+                }
+            }
+
+            var backup =
+                state
+                    .genericInstanceBackups
+                    .get(mi);
+
+            if (
+                !backup ||
+                backup.vertexBuffer !== vb
+            ) {
+                var expected = [
+                    0,
+                    0,
+                    0,
+                    1
+                ];
+
+                for (
+                    var k = 0;
+                    k < count;
+                    k++
+                ) {
+                    for (
+                        var q = 0;
+                        q < 4;
+                        q++
+                    ) {
+                        var el =
+                            layout.elements[q];
+
+                        var base =
+                            k *
+                            el.stride +
+                            el.offset;
+
+                        var wv =
+                            dv.getFloat32(
+                                base + 12,
+                                true
+                            );
+
+                        if (
+                            Math.abs(
+                                wv -
+                                expected[q]
+                            ) >
+                            1e-6
+                        ) {
+                            warn(
+                                'Instancing generico "' +
+                                (
+                                    (
+                                        mi.node &&
+                                        mi.node.name
+                                    ) ||
+                                    '(sin nombre)'
+                                ) +
+                                '" ya usa Mat4.w; PT6.0.7 no pisa datos de otra libreria.'
+                            );
+
+                            return 0;
+                        }
+                    }
+                }
+
+                var copy =
+                    new Uint8Array(
+                        raw.byteLength
+                    );
+
+                copy.set(
+                    new Uint8Array(
+                        raw.buffer,
+                        raw.byteOffset,
+                        raw.byteLength
+                    )
+                );
+
+                backup = {
+                    vertexBuffer: vb,
+                    bytes: copy,
+                    count: count
+                };
+
+                state
+                    .genericInstanceBackups
+                    .set(
+                        mi,
+                        backup
+                    );
+            }
+
+            for (
+                k = 0;
+                k < count;
+                k++
+            ) {
+                for (
+                    q = 0;
+                    q < 4;
+                    q++
+                ) {
+                    el =
+                        layout.elements[q];
+
+                    base =
+                        k *
+                        el.stride +
+                        el.offset;
+
+                    dv.setFloat32(
+                        base + 12,
+                        rects[k][q],
+                        true
+                    );
+                }
+            }
+
+            return count;
+        } catch (e) {
+            warn(
+                'No se pudieron escribir rects en el instancing generico:',
+                e && e.message || e
+            );
+
+            return 0;
+        } finally {
+            if (mem !== null) {
+                try {
+                    vb.unlock();
+                } catch (_) {
+                }
+            }
+        }
+    }
+
+    function restoreGenericInstanceBuffers(state) {
+        if (
+            !state.genericInstanceBackups
+        ) {
+            return;
+        }
+
+        state.genericInstanceBackups.forEach(
+            function (b, mi) {
+                var vb =
+                    b &&
+                    b.vertexBuffer;
+
+                var mem = null;
+
+                if (
+                    !vb ||
+                    !b.bytes ||
+                    !mi ||
+                    !mi.instancingData ||
+                    mi.instancingData.vertexBuffer !==
+                    vb
+                ) {
+                    return;
+                }
+
+                try {
+                    mem =
+                        vb.lock();
+
+                    var raw =
+                        rawBufferView(mem);
+
+                    if (
+                        raw &&
+                        raw.byteLength ===
+                        b.bytes.byteLength
+                    ) {
+                        new Uint8Array(
+                            raw.buffer,
+                            raw.byteOffset,
+                            raw.byteLength
+                        ).set(
+                            b.bytes
+                        );
+                    }
+                } catch (_) {
+                } finally {
+                    if (mem !== null) {
+                        try {
+                            vb.unlock();
+                        } catch (_) {
+                        }
+                    }
+                }
+            }
+        );
+
+        state.genericInstanceBackups.clear();
+    }
+
+    function backupUranusInstanceData(
+        inst,
+        state
+    ) {
+        if (
+            !inst ||
+            state
+                .uranusInstanceBackups
+                .has(inst)
+        ) {
+            return;
+        }
+
+        state
+            .uranusInstanceBackups
+            .set(
+                inst,
+                {
+                    hadData:
+                        inst.data !== undefined &&
+                        inst.data !== null,
+
+                    dataRef:
+                        inst.data ||
+                        null,
+
+                    dataValues:
+                        inst.data ?
+                            Array.prototype.slice.call(
+                                inst.data
+                            ) :
+                            null,
+
+                    hadCullPosition:
+                        inst.cullPosition !== undefined &&
+                        inst.cullPosition !== null,
+
+                    cullPositionRef:
+                        inst.cullPosition ||
+                        null
+                }
+            );
+    }
+
+    function setUranusInstanceRect(
+        binding,
+        receiver,
+        rect,
+        state
+    ) {
+        if (
+            !binding ||
+            !binding.instance
+        ) {
+            return false;
+        }
+
+        var inst =
+            binding.instance;
+
+        backupUranusInstanceData(
+            inst,
+            state
+        );
+
+        var data =
+            inst.data;
+
+        if (!data) {
+            if (
+                !receiver.owner ||
+                receiver.owner.isStatic !== true
+            ) {
+                warn(
+                    'Receiver Uranus "' +
+                    receiver.owner.entityName +
+                    '" no tiene instance.data estatica. PT6.0.7 no congela una instancia dinamica para aplicar lightmap.'
+                );
+
+                return false;
+            }
+
+            var node =
+                inst.node ||
+                (
+                    receiver.mi &&
+                    receiver.mi.node
+                );
+
+            var world =
+                node &&
+                    node.getWorldTransform ?
+                    node.getWorldTransform() :
+                    null;
+
+            var wm =
+                world &&
+                world.data;
+
+            if (!wm) {
+                return false;
+            }
+
+            data =
+                Array.prototype.slice.call(
+                    wm
+                );
+
+            inst.data =
+                data;
+
+            if (
+                !inst.cullPosition
+            ) {
+                if (
+                    world &&
+                    typeof world.getTranslation ===
+                    'function'
+                ) {
+                    var tr =
+                        world.getTranslation();
+
+                    inst.cullPosition =
+                        new pc.Vec3(
+                            tr.x,
+                            tr.y,
+                            tr.z
+                        );
+                } else {
+                    inst.cullPosition =
+                        new pc.Vec3(
+                            wm[12] || 0,
+                            wm[13] || 0,
+                            wm[14] || 0
+                        );
+                }
+            }
+        } else if (
+            !inst.cullPosition
+        ) {
+            var n =
+                inst.node ||
+                (
+                    receiver.mi &&
+                    receiver.mi.node
+                );
+
+            var wt =
+                n &&
+                    n.getWorldTransform ?
+                    n.getWorldTransform() :
+                    null;
+
+            if (
+                wt &&
+                typeof wt.getTranslation ===
+                'function'
+            ) {
+                var t =
+                    wt.getTranslation();
+
+                inst.cullPosition =
+                    new pc.Vec3(
+                        t.x,
+                        t.y,
+                        t.z
+                    );
+            } else {
+                inst.cullPosition =
+                    new pc.Vec3(
+                        data[12] || 0,
+                        data[13] || 0,
+                        data[14] || 0
+                    );
+            }
+        }
+
+        data[3] = rect[0];
+        data[7] = rect[1];
+        data[11] = rect[2];
+        data[15] = rect[3];
+
+        state
+            .uranusPayloadsTouched
+            .add(
+                binding.payload
+            );
+
+        return true;
+    }
+
+    function refreshUranusPayloads(state) {
+        var api =
+            state.uranusApi;
+
+        if (
+            !api ||
+            typeof api.updatePayload !==
+            'function' ||
+            !state.uranusPayloadsTouched
+        ) {
+            return;
+        }
+
+        state
+            .uranusPayloadsTouched
+            .forEach(function (p) {
+                try {
+                    if (
+                        p &&
+                        p.meshInstance
+                    ) {
+                        api.updatePayload(
+                            p,
+                            null
+                        );
+                    }
+                } catch (e) {
+                    warn(
+                        'No se pudo refrescar Uranus payload:',
+                        e && e.message || e
+                    );
+                }
+            });
+    }
+
+    function restoreUranusInstances(state) {
+        if (
+            !state.uranusInstanceBackups
+        ) {
+            return;
+        }
+
+        state
+            .uranusInstanceBackups
+            .forEach(function (b, inst) {
+                try {
+                    if (b.hadData) {
+                        var target =
+                            b.dataRef ||
+                            b.dataValues;
+
+                        if (
+                            target &&
+                            b.dataValues &&
+                            target.length >=
+                            b.dataValues.length
+                        ) {
+                            for (
+                                var i = 0;
+                                i < b.dataValues.length;
+                                i++
+                            ) {
+                                target[i] =
+                                    b.dataValues[i];
+                            }
+                        }
+
+                        inst.data =
+                            target;
+                    } else {
+                        inst.data =
+                            undefined;
+                    }
+
+                    inst.cullPosition =
+                        b.hadCullPosition ?
+                            b.cullPositionRef :
+                            undefined;
+                } catch (_) {
+                }
+            });
+
+        state
+            .uranusInstanceBackups
+            .clear();
+
+        refreshUranusPayloads(
+            state
+        );
+
+        if (
+            state.uranusPayloadsTouched
+        ) {
+            state
+                .uranusPayloadsTouched
+                .clear();
+        }
+    }
+
+    function assignRuntime(
+        atlases,
+        state,
+        gd
+    ) {
+        var byMi =
+            new Map();
+
+        var genericAtlases =
+            [];
+
+        var uranusAtlases =
+            [];
+
+        var runtimeStats = {
+            genericPayloads: 0,
+            genericInstances: 0,
+            genericSkipped: 0,
+            uranusPayloads: 0,
+            uranusInstances: 0,
+            uranusSkipped: 0
+        };
+
+        atlases.forEach(function (a) {
+            a.texture =
+                createLightmapTexture(
+                    gd,
+                    a,
+                    !!state.owner.app.scene.lightmapHDR,
+                    preset(state.owner).maxRadiance
+                );
+
+            if (a.uranusPayload) {
+                uranusAtlases.push(a);
+                return;
+            }
+
+            if (a.instanced) {
+                genericAtlases.push(a);
+                return;
+            }
+
+            a.items.forEach(function (r) {
+                if (
+                    r.skip ||
+                    r.instanced
+                ) {
+                    return;
+                }
+
+                var arr =
+                    byMi.get(r.mi);
+
+                if (!arr) {
+                    arr = [];
+
+                    byMi.set(
+                        r.mi,
+                        arr
+                    );
+                }
+
+                arr.push(r);
+            });
+        });
+
+        byMi.forEach(function (items, mi) {
+            var r = items[0];
+            var mat = mi.material;
+
+            if (
+                !mat ||
+                !r ||
+                !r.atlas
+            ) {
+                return;
+            }
+
+            if (
+                !ensureMaterialPt6(
+                    mat,
+                    state,
+                    false
+                )
+            ) {
+                return;
+            }
+
+            enableMeshInstancePt6Lightmap(
+                mi,
+                state
+            );
+
+            var rect = [
+                r.rect.x /
+                r.atlas.size,
+
+                r.rect.y /
+                r.atlas.size,
+
+                r.rect.w /
+                r.atlas.size,
+
+                r.rect.h /
+                r.atlas.size
+            ];
+
+            mi.setParameter(
+                'texture_lightMap',
+                r.atlas.texture
+            );
+
+            mi.setParameter(
+                'uPT6LmRect',
+                new Float32Array(
+                    rect
+                )
+            );
+        });
+
+        genericAtlases.forEach(function (a) {
+            var mi = a.mi;
+
+            var mat =
+                mi &&
+                mi.material;
+
+            if (
+                !mi ||
+                !mat ||
+                !defaultInstanceLayout(mi)
+            ) {
+                runtimeStats.genericSkipped++;
+                return;
+            }
+
+            if (
+                !ensureMaterialPt6(
+                    mat,
+                    state,
+                    true
+                )
+            ) {
+                runtimeStats.genericSkipped++;
+                return;
+            }
+
+            enableMeshInstancePt6Lightmap(
+                mi,
+                state
+            );
+
+            mi.setParameter(
+                'texture_lightMap',
+                a.texture
+            );
+
+            mi.setParameter(
+                'uPT6LmRect',
+                new Float32Array([
+                    0,
+                    0,
+                    1,
+                    1
+                ])
+            );
+
+            var written =
+                writeGenericInstanceRects(
+                    mi,
+                    a.items,
+                    state
+                );
+
+            if (
+                written !==
+                a.items.length
+            ) {
+                warn(
+                    'Instancing generico no pudo recibir rect para todas sus instancias (' +
+                    written +
+                    '/' +
+                    a.items.length +
+                    '). Se desactiva lightmap PT en ese draw call.'
+                );
+
+                restoreMeshInstanceSingle(
+                    mi,
+                    state
+                );
+
+                runtimeStats.genericSkipped++;
+
+                return;
+            }
+
+            runtimeStats.genericPayloads++;
+            runtimeStats.genericInstances +=
+                written;
+
+            log(
+                'Instancing generico lightmapped: instances=' +
+                written +
+                ' atlas=#' +
+                a.index +
+                ' ' +
+                a.size +
+                'x' +
+                a.size +
+                ' | VertexBuffer preservado, mismo draw call.'
+            );
+        });
+
+        uranusAtlases.forEach(function (a) {
+            var payload =
+                a.uranusPayload;
+
+            var pmi =
+                payload &&
+                payload.meshInstance;
+
+            var mat =
+                pmi &&
+                pmi.material;
+
+            if (
+                !payload ||
+                !pmi ||
+                !mat
+            ) {
+                runtimeStats.uranusSkipped++;
+                return;
+            }
+
+            if (
+                !uranusGroupComplete(
+                    a.items,
+                    payload
+                )
+            ) {
+                runtimeStats.uranusSkipped++;
+                return;
+            }
+
+            if (
+                !defaultInstanceLayout(
+                    pmi
+                )
+            ) {
+                warn(
+                    'Uranus payload no usa el layout Mat4 default de PlayCanvas; ' +
+                    'PT6.0.7 lo preserva sin modificar.'
+                );
+
+                runtimeStats.uranusSkipped++;
+
+                return;
+            }
+
+            if (
+                !ensureMaterialPt6(
+                    mat,
+                    state,
+                    true
+                )
+            ) {
+                runtimeStats.uranusSkipped++;
+                return;
+            }
+
+            enableMeshInstancePt6Lightmap(
+                pmi,
+                state
+            );
+
+            pmi.setParameter(
+                'texture_lightMap',
+                a.texture
+            );
+
+            pmi.setParameter(
+                'uPT6LmRect',
+                new Float32Array([
+                    0,
+                    0,
+                    1,
+                    1
+                ])
+            );
+
+            var okCount = 0;
+
+            for (
+                var i = 0;
+                i < a.items.length;
+                i++
+            ) {
+                var r =
+                    a.items[i];
+
+                var rect = [
+                    r.rect.x /
+                    a.size,
+
+                    r.rect.y /
+                    a.size,
+
+                    r.rect.w /
+                    a.size,
+
+                    r.rect.h /
+                    a.size
+                ];
+
+                var binds =
+                    r.uranusBindings ||
+                    [];
+
+                var didVisible =
+                    false;
+
+                for (
+                    var j = 0;
+                    j < binds.length;
+                    j++
+                ) {
+                    var b =
+                        binds[j];
+
+                    if (
+                        setUranusInstanceRect(
+                            b,
+                            r,
+                            rect,
+                            state
+                        )
+                    ) {
+                        if (
+                            !b.payload.shadowCaster &&
+                            b.payload === payload
+                        ) {
+                            didVisible =
+                                true;
+                        }
+                    }
+                }
+
+                if (didVisible) {
+                    okCount++;
+                }
+            }
+
+            if (
+                okCount !==
+                a.items.length
+            ) {
+                warn(
+                    'Uranus payload no pudo recibir rect para todas sus instancias (' +
+                    okCount +
+                    '/' +
+                    a.items.length +
+                    '). Se desactiva lightmap PT en ese payload para evitar indices UV incorrectos.'
+                );
+
+                restoreMeshInstanceSingle(
+                    pmi,
+                    state
+                );
+
+                runtimeStats.uranusSkipped++;
+
+                return;
+            }
+
+            state
+                .uranusPayloadsTouched
+                .add(payload);
+
+            runtimeStats.uranusPayloads++;
+            runtimeStats.uranusInstances +=
+                okCount;
+
+            log(
+                'Uranus payload lightmapped: instances=' +
+                okCount +
+                ' atlas=#' +
+                a.index +
+                ' ' +
+                a.size +
+                'x' +
+                a.size +
+                ' | mismo draw call; atributos vinculados a semanticas PlayCanvas.'
+            );
+        });
+
+        refreshUranusPayloads(
+            state
+        );
+
+        return runtimeStats;
+    }
+
+    function restoreMeshInstanceSingle(
+        mi,
+        state
+    ) {
+        if (
+            !mi ||
+            !state.meshBackups ||
+            !state.meshBackups.has(mi)
+        ) {
+            return;
+        }
+
+        var b =
+            state.meshBackups.get(
+                mi
+            );
+
+        try {
+            if (
+                b.hadLightmapParameter
+            ) {
+                mi.setParameter(
+                    'texture_lightMap',
+                    b.lightmapParameter &&
+                        b.lightmapParameter.data !== undefined ?
+                        b.lightmapParameter.data :
+                        b.lightmapParameter
+                );
+            } else if (
+                typeof mi.deleteParameter ===
+                'function'
+            ) {
+                mi.deleteParameter(
+                    'texture_lightMap'
+                );
+            }
+
+            if (
+                b.hadRectParameter
+            ) {
+                mi.setParameter(
+                    'uPT6LmRect',
+                    b.rectParameter &&
+                        b.rectParameter.data !== undefined ?
+                        b.rectParameter.data :
+                        b.rectParameter
+                );
+            } else if (
+                typeof mi.deleteParameter ===
+                'function'
+            ) {
+                mi.deleteParameter(
+                    'uPT6LmRect'
+                );
+            }
+
+            if (
+                b.shaderDefs !== null
+            ) {
+                if (
+                    typeof mi._updateShaderDefs ===
+                    'function'
+                ) {
+                    mi._updateShaderDefs(
+                        b.shaderDefs
+                    );
+                } else {
+                    mi._shaderDefs =
+                        b.shaderDefs;
+
+                    if (
+                        typeof mi.clearShaders ===
+                        'function'
+                    ) {
+                        mi.clearShaders();
+                    }
+                }
+            }
+        } catch (_) {
+        }
+
+        state.meshBackups.delete(
+            mi
+        );
+    }
+
+    function restoreRuntime(state) {
+        restoreMeshInstances(
+            state
+        );
+
+        restoreUranusInstances(
+            state
+        );
+
+        restoreGenericInstanceBuffers(
+            state
+        );
+
+        if (
+            state.instancingBackups
+        ) {
+            state
+                .instancingBackups
+                .forEach(
+                    function (b, mi) {
+                        try {
+                            mi.setInstancing(
+                                b.vertexBuffer,
+                                b.cull
+                            );
+
+                            mi.instancingCount =
+                                b.count;
+                        } catch (_) {
+                        }
+                    }
+                );
+
+            state
+                .instancingBackups
+                .clear();
+        }
+
+        if (
+            state.materialBackups
+        ) {
+            restoreMaterials(
+                state
+            );
+        }
+
+        if (
+            state.createdInstanceBuffers
+        ) {
+            state
+                .createdInstanceBuffers
+                .forEach(function (v) {
+                    try {
+                        v.destroy();
+                    } catch (_) {
+                    }
+                });
+
+            state
+                .createdInstanceBuffers
+                .length = 0;
+        }
+
+        if (
+            state.createdTextures
+        ) {
+            state
+                .createdTextures
+                .forEach(function (t) {
+                    try {
+                        t.destroy();
+                    } catch (_) {
+                    }
+                });
+
+            state
+                .createdTextures
+                .length = 0;
+        }
+
+        state.uranusApi =
+            null;
+    }
+
+    async function runStandalone(owner, epoch) {
+        var app =
+            owner.app;
+
+        var gd =
+            app.graphicsDevice;
+
+        var sceneObj =
+            app.scene;
+
+        var ctx = {
+            root: app.root,
+            scene: sceneObj
+        };
+
+        var p =
+            preset(owner);
+
+        var t0 =
+            now();
+
+        var aoStrength =
+            clamp(
+                (owner.aoStrength || 0) /
+                100,
+                0,
+                1
+            );
+
+        if (!webgpuOK(gd)) {
+            throw new Error(
+                'PT6.0.7 Standalone requiere WebGPU Compute.'
+            );
+        }
+
+        var uranusApi =
+            await waitForUranus(
+                app,
+                owner,
+                epoch
+            );
+
+        if (
+            !active(
+                owner,
+                epoch
+            )
+        ) {
+            return;
+        }
+
+        var env =
+            await buildEnvironment(
+                sceneObj,
+                p
+            );
+
+        if (
+            !active(
+                owner,
+                epoch
+            )
+        ) {
+            return;
+        }
+
+        var texDB =
+            await prepareMaterialTextures(
+                ctx,
+                p,
+                env.pixels.length / 4
+            );
+
+        if (
+            !active(
+                owner,
+                epoch
+            )
+        ) {
+            return;
+        }
+
+        var scene =
+            collectStandalone(
+                ctx,
+                p,
+                texDB
+            );
+
+        var uranusInfo =
+            annotateUranusReceivers(
+                scene.receivers,
+                uranusApi
+            );
+
+        var lights =
+            collectLights(ctx);
+
+        scene.uranus =
+            uranusInfo;
+
+        if (
+            !scene.receivers.length
+        ) {
+            warn(
+                'No hay receivers lightmapped con UV1 valido.'
+            );
+
+            return;
+        }
+
+        if (
+            !scene.triCount
+        ) {
+            warn(
+                'No hay geometria de transporte estatica.'
+            );
+
+            return;
+        }
+
+        var pool =
+            new Float32Array(
+                env.pixels.length +
+                texDB.pixels.length
+            );
+
+        pool.set(
+            env.pixels
+        );
+
+        pool.set(
+            texDB.pixels,
+            env.pixels.length
+        );
+
+        var atlases =
+            packAtlases(
+                scene.receivers,
+                sceneObj,
+                gd
+            );
+
+        var rayBias =
+            Math.max(
+                0.00005,
+                scene.extent *
+                0.000025
+            );
+
+        var gpu =
+            nativeGPUDevice(gd);
+
+        var ds =
+            await deviceState(gd);
+
+        var sb = {
+            tris:
+                storage(
+                    gpu,
+                    scene.tris,
+                    'BakePT607-Tris'
+                ),
+
+            bvh:
+                storage(
+                    gpu,
+                    scene.bvh,
+                    'BakePT607-BVH'
+                ),
+
+            lights:
+                storage(
+                    gpu,
+                    lights.data,
+                    'BakePT607-Lights'
+                )
+        };
+
+        var eb = {
+            pixels:
+                storage(
+                    gpu,
+                    pool,
+                    'BakePT607-PixelPool'
+                ),
+
+            alias:
+                storage(
+                    gpu,
+                    env.alias,
+                    'BakePT607-EnvAlias'
+                ),
+
+            pixelBytes:
+                pool.byteLength,
+
+            aliasBytes:
+                env.alias.byteLength
+        };
+
+        var si = {
+            triCount:
+                scene.triCount,
+
+            bvhCount:
+                scene.bvhCount,
+
+            lightCount:
+                lights.count,
+
+            ambient:
+                [0, 0, 0],
+
+            rayBias:
+                rayBias,
+
+            env:
+                env,
+
+            customEnvDirect:
+                env.mode !== 0,
+
+            bentStrength:
+                aoStrength
+        };
+
+        var report = {
+            version:
+                VERSION,
+
+            standalone:
+                true,
+
+            quality:
+                p.label,
+
+            receivers:
+                scene.receivers.length,
+
+            atlases:
+                atlases.length,
+
+            geometry:
+                scene.stats,
+
+            triangles:
+                scene.triCount,
+
+            bvhNodes:
+                scene.bvhCount,
+
+            lights:
+                lights.stats,
+
+            uranus:
+                uranusInfo,
+
+            nodes:
+                []
+        };
+
+        G.__bakePathTracingLastReport =
+            report;
+
+        var state =
+            getState();
+
+        state.uranusApi =
+            uranusApi;
+
+        log(
+            'Version ' +
+            VERSION +
+            ' | STANDALONE | ' +
+            p.label +
+            ' | receivers=' +
+            scene.receivers.length +
+            ' atlas=' +
+            atlases.length +
+            ' | tris=' +
+            scene.triCount +
+            ' BVH=' +
+            scene.bvhCount +
+            ' | normalMappedReceivers=' +
+            scene.stats.normalMappedReceivers +
+            '.'
+        );
+
+        log(
+            'Uranus bridge: api=' +
+            !!uranusApi +
+            ' payloads=' +
+            uranusInfo.payloads +
+            ' visible=' +
+            uranusInfo.visiblePayloads +
+            ' shadow=' +
+            uranusInfo.shadowPayloads +
+            ' mappedReceivers=' +
+            uranusInfo.mappedReceivers +
+            ' groups=' +
+            uranusInfo.mappedGroups +
+            ' instances=' +
+            uranusInfo.payloadInstances +
+            ' frustumCulling=' +
+            uranusInfo.frustumCulling +
+            ' cloneMaterials=' +
+            uranusInfo.cloneMaterials +
+            ' cells=' +
+            (
+                uranusApi &&
+                    uranusApi.cells ?
+                    uranusApi.cells.length :
+                    0
+            ) +
+            '.'
+        );
+
+        log(
+            'Draw-call policy: PT6.0.7 NO agrega streams al VertexBuffer ni reemplaza buffers de Uranus; ' +
+            'mapea instance_line1..4 a ATTR11/12/14/15, usa Mat4.w solo cuando esta libre y conserva el mismo draw call.'
+        );
+
+        log(
+            'Environment: ' +
+            env.source +
+            ' face=' +
+            env.faceSize +
+            ' intensity=' +
+            env.intensity.toFixed(3) +
+            ' | luces baked=' +
+            lights.count +
+            ' | HDR=' +
+            !!sceneObj.lightmapHDR
+        );
+
+        log(
+            'PBR texture pool: color=' +
+            texDB.colorTextureCount +
+            ' data=' +
+            texDB.dataTextureCount +
+            ' entradas, ' +
+            texDB.texelCount +
+            ' texels, maxMap=' +
+            p.materialResolution +
+            ', fallos=' +
+            texDB.failedCount +
+            ' | normal/metalness se leen como datos lineales.'
+        );
+
+        if (
+            lights.stats.runtimeAffectLightmapped >
+            0
+        ) {
+            warn(
+                lights.stats.runtimeAffectLightmapped +
+                ' luz/luces NO baked siguen con Affect Lightmapped=true.'
+            );
+        }
+
+        logMaterialDiagnostics(
+            scene
+        );
+
+        atlases.forEach(function (a) {
+            log(
+                'Atlas #' +
+                a.index +
+                ' ' +
+                a.size +
+                'x' +
+                a.size +
+                ' tiles=' +
+                a.items.length +
+                (
+                    a.uranusPayload ?
+                        ' URANUS-PAYLOAD' :
+                        (
+                            a.instanced ?
+                                ' GPU-INSTANCED' :
+                                ''
+                        )
+                )
+            );
+
+            a.items.forEach(function (rr) {
+                log(
+                    '  plan tile "' +
+                    rr.owner.entityName +
+                    '"' +
+                    (
+                        rr.uranusInstanceIndex >= 0 ?
+                            '#U' +
+                            rr.uranusInstanceIndex :
+                            ''
+                    ) +
+                    ' ' +
+                    rr.res +
+                    'x' +
+                    rr.res
+                );
+            });
+        });
+
+        if (
+            scene.stats.heightMappedReceivers
+        ) {
+            log(
+                'Height/parallax maps detectados=' +
+                scene.stats.heightMappedReceivers +
+                ': se preservan en runtime; PT6.0.7 no convierte height map en microgeometria para BVH.'
+            );
+        }
+
+        try {
+            for (
+                var ai = 0;
+                ai < atlases.length;
+                ai++
+            ) {
+                var at =
+                    atlases[ai];
+
+                for (
+                    var ri = 0;
+                    ri < at.items.length;
+                    ri++
+                ) {
+                    if (
+                        !active(
+                            owner,
+                            epoch
+                        )
+                    ) {
+                        throw new Error(
+                            'cancelado'
+                        );
+                    }
+
+                    var r =
+                        at.items[ri];
+
+                    if (r.skip) continue;
+
+                    var tileLabel =
+                        '"' +
+                        r.owner.entityName +
+                        '"' +
+                        (
+                            r.uranusInstanceIndex >= 0 ?
+                                '#U' +
+                                r.uranusInstanceIndex :
+                                (
+                                    r.instanceIndex >= 0 ?
+                                        '#' +
+                                        r.instanceIndex :
+                                        ''
+                                )
+                        );
+
+                    log(
+                        '  INICIO Tile ' +
+                        tileLabel +
+                        ' ' +
+                        r.res +
+                        'x' +
+                        r.res +
+                        ' (' +
+                        (ri + 1) +
+                        '/' +
+                        at.items.length +
+                        ' atlas ' +
+                        (ai + 1) +
+                        '/' +
+                        atlases.length +
+                        ')'
+                    );
+
+                    var gb =
+                        buildGBufferStandalone(
+                            r.geom,
+                            r.res,
+                            r.res
+                        );
+
+                    dilateGB(
+                        gb,
+                        p.dilation
+                    );
+
+                    applyBentNormalsToGBuffer(
+                        gb,
+                        null
+                    );
+
+                    if (!gb.valid) {
+                        warn(
+                            'Receiver sin cobertura UV1 ' +
+                            tileLabel
+                        );
+
+                        continue;
+                    }
+
+                    log(
+                        '    GBuffer coverage=' +
+                        (
+                            100 *
+                            gb.valid /
+                            (
+                                r.res *
+                                r.res
+                            )
+                        ).toFixed(1) +
+                        '%'
+                    );
+
+                    var ao =
+                        null;
+
+                    if (
+                        aoStrength >
+                        0
+                    ) {
+                        log(
+                            '    AO inicio ' +
+                            p.aoSamples +
+                            ' spp'
+                        );
+
+                        var ta =
+                            now();
+
+                        var aor =
+                            await traceAO(
+                                gd,
+                                sb,
+                                gb,
+                                scene,
+                                si,
+                                p,
+                                9187 +
+                                ai * 101 +
+                                ri * 3571,
+                                owner,
+                                epoch
+                            );
+
+                        ao =
+                            aor;
+
+                        applyBentNormalsToGBuffer(
+                            gb,
+                            aor.bent
+                        );
+
+                        var aoMs =
+                            Math.round(
+                                now() -
+                                ta
+                            );
+
+                        log(
+                            '    AO fin ' +
+                            aoMs +
+                            'ms dispatches=' +
+                            aor.dispatches +
+                            ' frames=' +
+                            aor.interleavedFrames +
+                            ' budget=' +
+                            aor.budgetInitial +
+                            '->' +
+                            aor.budgetFinal +
+                            ' calibration=[' +
+                            aor.calibrationColdMs.toFixed(1) +
+                            '/' +
+                            aor.calibrationWarmMs.toFixed(1) +
+                            ']ms sliceAvg=' +
+                            aor.gpuSliceAverage.toFixed(1) +
+                            'ms max=' +
+                            aor.gpuSliceMax.toFixed(1) +
+                            'ms'
+                        );
+
+                        report.nodes.push({
+                            name:
+                                r.owner.entityName,
+
+                            instance:
+                                r.uranusInstanceIndex >= 0 ?
+                                    r.uranusInstanceIndex :
+                                    r.instanceIndex,
+
+                            res:
+                                r.res,
+
+                            coverage:
+                                gb.valid /
+                                (
+                                    r.res *
+                                    r.res
+                                ),
+
+                            aoMs:
+                                aoMs
+                        });
+                    }
+
+                    log(
+                        '    GI inicio ' +
+                        p.minSamples +
+                        '..' +
+                        p.maxSamples +
+                        ' spp, ' +
+                        p.bounces +
+                        ' bounces'
+                    );
+
+                    var tg =
+                        now();
+
+                    var tr =
+                        await traceGPU(
+                            ds,
+                            sb,
+                            eb,
+                            gb,
+                            si,
+                            p,
+                            1234 +
+                            ai * 7919 +
+                            ri * 97,
+                            owner,
+                            epoch
+                        );
+
+                    var den =
+                        denoiseIndirect(
+                            tr.pixels,
+                            gb,
+                            scene.extent,
+                            p
+                        );
+
+                    if (ao) {
+                        ao.sceneExtent =
+                            scene.extent;
+
+                        den =
+                            applyStandaloneAO(
+                                den,
+                                ao,
+                                gb,
+                                p,
+                                aoStrength
+                            );
+                    }
+
+                    for (
+                        var pi = 0;
+                        pi < den.length / 4;
+                        pi++
+                    ) {
+                        den[pi * 4 + 3] = 1;
+                    }
+
+                    blitTile(
+                        at,
+                        r,
+                        den
+                    );
+
+                    var rec = {
+                        name:
+                            r.owner.entityName,
+
+                        instance:
+                            r.uranusInstanceIndex >= 0 ?
+                                r.uranusInstanceIndex :
+                                r.instanceIndex,
+
+                        res:
+                            r.res,
+
+                        coverage:
+                            gb.valid /
+                            (
+                                r.res *
+                                r.res
+                            ),
+
+                        traceMs:
+                            Math.round(
+                                now() -
+                                tg
+                            ),
+
+                        avgSpp:
+                            tr.averageSamples,
+
+                        early:
+                            tr.earlyConvergedPct,
+
+                        frames:
+                            tr.interleavedFrames
+                    };
+
+                    report.nodes.push(rec);
+
+                    log(
+                        '  Tile ' +
+                        tileLabel +
+                        ' ' +
+                        r.res +
+                        'x' +
+                        r.res +
+                        ' coverage=' +
+                        (
+                            rec.coverage *
+                            100
+                        ).toFixed(1) +
+                        '% GI=' +
+                        rec.traceMs +
+                        'ms avg=' +
+                        rec.avgSpp.toFixed(0) +
+                        'spp early=' +
+                        rec.early.toFixed(1) +
+                        '% frames=' +
+                        rec.frames +
+                        ' sliceAvg=' +
+                        tr.gpuSliceAverage.toFixed(1) +
+                        'ms max=' +
+                        tr.gpuSliceMax.toFixed(1) +
+                        'ms' +
+                        (
+                            r.material &&
+                                r.material.normalMap ?
+                                ' normalMap=BAKED' :
+                                ''
+                        )
+                    );
+
+                    await nextPlayCanvasFrame(
+                        owner
+                    );
+                }
+            }
+
+            var runtimeStats =
+                assignRuntime(
+                    atlases,
+                    state,
+                    gd
+                );
+
+            report.runtime =
+                runtimeStats;
+
+            atlases.forEach(function (a) {
+                if (a.texture) {
+                    state
+                        .createdTextures
+                        .push(
+                            a.texture
+                        );
+                }
+            });
+
+            log(
+                'PT6.0.7 Standalone terminado en ' +
+                Math.round(
+                    now() -
+                    t0
+                ) +
+                'ms. Atlases=' +
+                atlases.length +
+                '; materiales compartidos=' +
+                scene.stats.sharedMaterials +
+                '; instancing generico groups=' +
+                runtimeStats.genericPayloads +
+                ' instances=' +
+                runtimeStats.genericInstances +
+                ' skipped=' +
+                runtimeStats.genericSkipped +
+                '; Uranus payloads=' +
+                runtimeStats.uranusPayloads +
+                ' instances=' +
+                runtimeStats.uranusInstances +
+                ' skipped=' +
+                runtimeStats.uranusSkipped +
+                '; native Lightmapper=NO usado para iluminacion.'
+            );
+        } finally {
+            [
+                sb.tris,
+                sb.bvh,
+                sb.lights,
+                eb.pixels,
+                eb.alias
+            ].forEach(function (b) {
+                try {
+                    b.destroy();
+                } catch (_) {
+                }
+            });
+        }
+    }
+
+    function restoreLegacy(LP) {
+        var names = [
+            '__bakePathTracingPT606',
+            '__bakePathTracingPT605',
+            '__bakePathTracingPT604',
+            '__bakePathTracingPT603',
+            '__bakePathTracingPT602',
+            '__bakePathTracingPT601',
+            '__bakePathTracingPT600',
+            '__bakePathTracingPT545',
+            '__bakePathTracingPT544',
+            '__bakePathTracingPT543',
+            '__bakePathTracingPT542',
+            '__bakePathTracingPT541',
+            '__bakePathTracingPT540',
+            '__bakePathTracingPT532',
+            '__bakePathTracingPT531',
+            '__bakePathTracingPT530'
+        ];
+
+        for (
+            var i = 0;
+            i < names.length;
+            i++
+        ) {
+            var old =
+                G[names[i]] &&
+                G[names[i]].state;
+
+            if (
+                old &&
+                old.installed
+            ) {
+                try {
+                    if (
+                        old.materialBackups &&
+                        old.instancingBackups &&
+                        old.createdInstanceBuffers &&
+                        old.createdTextures
+                    ) {
+                        restoreRuntime(
+                            old
+                        );
+                    }
+                } catch (_) {
+                }
+
+                try {
+                    restoreLegacyInstancingFormatShim(
+                        old
+                    );
+                } catch (_) {
+                }
+
+                if (
+                    typeof old.nativeBake ===
+                    'function'
+                ) {
+                    LP.bake =
+                        old.nativeBake;
+                }
+
+                if (
+                    typeof old.nativePost ===
+                    'function'
+                ) {
+                    LP.postprocessTextures =
+                        old.nativePost;
+                }
+
+                old.installed = false;
+                old.owner = null;
+                old.epoch =
+                    (old.epoch || 0) +
+                    1;
+            }
+        }
+    }
+
+    function scheduleBake(owner) {
+        var s =
+            getState();
+
+        s.epoch++;
+
+        var epoch =
+            s.epoch;
+
+        if (
+            s.runningEpoch ===
+            epoch
+        ) {
+            return;
+        }
+
+        s.runningEpoch =
+            epoch;
+
+        Promise.resolve()
+            .then(function () {
+                return nextPlayCanvasFrame(
+                    owner
+                );
+            })
+            .then(function () {
+                return runStandalone(
+                    owner,
+                    epoch
+                );
+            })
+            .catch(function (e) {
+                var txt =
+                    String(
+                        e &&
+                        e.message ||
+                        e
+                    );
+
+                if (
+                    txt.indexOf(
+                        'cancelado'
+                    ) >= 0
+                ) {
+                    log(
+                        'Bake standalone cancelado.'
+                    );
+                } else {
+                    fail(
+                        'PT6 Standalone fallo:',
+                        e
+                    );
+                }
+            });
+    }
+
+    function install(owner) {
+        if (
+            !pc.Lightmapper ||
+            !pc.Lightmapper.prototype
+        ) {
+            fail(
+                'pc.Lightmapper no disponible para interceptar el auto-bake del Editor.'
+            );
+
+            return;
+        }
+
+        var LP =
+            pc.Lightmapper.prototype;
+
+        var s =
+            getState();
+
+        if (!s.materialBackups) {
+            s.materialBackups =
+                new Map();
+        }
+
+        if (!s.meshBackups) {
+            s.meshBackups =
+                new Map();
+        }
+
+        if (!s.instancingBackups) {
+            s.instancingBackups =
+                new Map();
+        }
+
+        if (!s.uranusInstanceBackups) {
+            s.uranusInstanceBackups =
+                new Map();
+        }
+
+        if (!s.genericInstanceBackups) {
+            s.genericInstanceBackups =
+                new Map();
+        }
+
+        if (!s.uranusPayloadsTouched) {
+            s.uranusPayloadsTouched =
+                new Set();
+        }
+
+        if (!s.createdInstanceBuffers) {
+            s.createdInstanceBuffers =
+                [];
+        }
+
+        if (!s.createdTextures) {
+            s.createdTextures =
+                [];
+        }
+
+        s.owner =
+            owner;
+
+        installLegacyInstancingFormatShim(
+            owner,
+            s
+        );
+
+        if (s.installed) {
+            scheduleBake(
+                owner
+            );
+
+            return;
+        }
+
+        restoreLegacy(
+            LP
+        );
+
+        installLegacyInstancingFormatShim(
+            owner,
+            s
+        );
+
+        s.nativeBake =
+            LP.bake;
+
+        s.nativePost =
+            LP.postprocessTextures;
+
+        s.patchedBake =
+            function () {
+                var ownerNow =
+                    s.owner;
+
+                if (
+                    !s.installed ||
+                    !ownerNow ||
+                    !ownerNow.enabled
+                ) {
+                    return s.nativeBake.apply(
+                        this,
+                        arguments
+                    );
+                }
+
+                log(
+                    'pc.Lightmapper.bake() interceptado: PT6.0.7 NO llama al bake nativo; inicia standalone WebGPU.'
+                );
+
+                scheduleBake(
+                    ownerNow
+                );
+
+                return undefined;
+            };
+
+        LP.bake =
+            s.patchedBake;
+
+        s.installed =
+            true;
+
+        s.epoch++;
+
+        G.__bakePathTracingPT607 = {
+            version:
+                VERSION,
+
+            state:
+                s,
+
+            shader:
+                WGSL,
+
+            aoShader:
+                AO_WGSL,
+
+            quality:
+                QUALITY,
+
+            bake:
+                function () {
+                    if (s.owner) {
+                        scheduleBake(
+                            s.owner
+                        );
+                    }
+                },
+
+            lastReport:
+                function () {
+                    return G.__bakePathTracingLastReport;
+                }
+        };
+
+        log(
+            'Hook ' +
+            VERSION +
+            ' ACTIVADO. Standalone direct+shadows+Environment+GI+AO por WebGPU; ' +
+            'shared atlases; materiales compartidos; instancing por capacidades: ' +
+            'Mat4 default PlayCanvas detectado genericamente, Uranus adaptado sin modificar su script, ' +
+            'VertexBuffer preservado y atributos vinculados a semanticas oficiales; ' +
+            'normalMap aplicado al receiver; native Lightmapper suprimido.'
+        );
+    }
+
+    function uninstall(owner) {
+        var s =
+            getState();
+
+        if (!s.installed) return;
+
+        if (
+            owner &&
+            s.owner &&
+            s.owner !== owner
+        ) {
+            return;
+        }
+
+        s.epoch++;
+
+        try {
+            restoreRuntime(
+                s
+            );
+        } catch (e) {
+            warn(
+                'Restore runtime:',
+                e
+            );
+        }
+
+        restoreLegacyInstancingFormatShim(
+            s
+        );
+
+        if (
+            pc.Lightmapper &&
+            pc.Lightmapper.prototype &&
+            s.nativeBake
+        ) {
+            pc.Lightmapper.prototype.bake =
+                s.nativeBake;
+        }
+
+        s.installed =
+            false;
+
+        s.owner =
+            null;
+
+        console.log(
+            '[BakePT6.0.7] Hook DESACTIVADO. PlayCanvas Lightmapper vuelve a su bake nativo.'
+        );
+    }
+
+    BakePathTracing.prototype.initialize = function () {
+        var self =
+            this;
+
+        this.on(
+            'enable',
+            function () {
+                install(
+                    self
+                );
+            }
+        );
+
+        this.on(
+            'disable',
+            function () {
+                uninstall(
+                    self
+                );
+            }
+        );
+
+        this.on(
+            'destroy',
+            function () {
+                uninstall(
+                    self
+                );
+            }
+        );
+
+        this.on(
+            'attr:quality',
+            function () {
+                log(
+                    'Calidad=' +
+                    preset(self).label +
+                    '; se rebakea standalone.'
+                );
+
+                if (self.enabled) {
+                    scheduleBake(
+                        self
+                    );
+                }
+            }
+        );
+
+        this.on(
+            'attr:aoStrength',
+            function () {
+                log(
+                    'AO=' +
+                    Math.round(
+                        clamp(
+                            self.aoStrength || 0,
+                            0,
+                            100
+                        )
+                    ) +
+                    '%; se rebakea standalone.'
+                );
+
+                if (self.enabled) {
+                    scheduleBake(
+                        self
+                    );
+                }
+            }
+        );
+
+        if (this.enabled) {
+            install(this);
+        }
+    };
+
+    BakePathTracing.prototype.bake = function () {
+        scheduleBake(
+            this
+        );
+    };
+
+    BakePathTracing.prototype.swap = function () {
+        if (this.enabled) {
+            install(this);
+        }
+    };
 })();
