@@ -1,21 +1,19 @@
-
 /*
- * ADVANCED GPU INSTANCER GI2.3
+ * ADVANCED GPU INSTANCER GI2.5
  * PlayCanvas 2.23.1 - Classic Script
  * Compatible con BakePathTracing PT6.6.0
  *
- * GI2.3 corrige:
- * - Vertex stream TEXCOORD0 con cantidades incorrectas.
- * - Offsets independientes para posiciones, normales y UV.
- * - Buffers dinamicos pre-reservados para Shadow Catcher.
- * - Validacion de geometria antes de subirla a GPU.
- * - Entity.getGuid obsoleto, reemplazado por Entity.guid.
- * - Actualizacion de camaras activas.
+ * GI2.5:
+ * - Conserva Shadow Catcher multipanel y lightmaps PT.
+ * - Conserva optimizacion reversible de luces.
+ * - Conserva AutoLOD y Worker.
+ * - Mejora streaming fisico con indice espacial.
+ * - Reutiliza materiales por material original.
+ * - Reutiliza listas de componentes por frame.
+ * - Agrega profiler CPU y reportes porcentuales.
  *
- * Mantiene instancing, AutoLOD, streaming fisico,
- * sombras sobre lightmaps y optimizacion reversible de luces.
- *
- * Reemplazar GI2.2. No utilizar dos versiones simultaneamente.
+ * Destino: juegos para moviles de gama baja.
+ * Las mediciones hechas en RTX 5060 no predicen FPS moviles.
  */
 
 var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
@@ -54,7 +52,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
 (function () {
     'use strict';
 
-    var TAG = '[GI2.3]';
+    var TAG = '[GI2.5]';
     var MIN = 2;
     var RECT = [0, 0, 1, 1];
 
@@ -125,8 +123,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 getp(mi, n[0] || 'instance_lightMap') ||
                 getp(mi, 'instance_lightMap'),
             dirName: n[1] || 'texture_dirLightMap',
-            direction:
-                getp(mi, n[1] || 'texture_dirLightMap')
+            direction: getp(mi, n[1] || 'texture_dirLightMap')
         };
     }
 
@@ -172,9 +169,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
     }
 
     function union(a, b) {
-        if (!a) {
-            return b.slice();
-        }
+        if (!a) return b.slice();
 
         for (var i = 0; i < 3; i++) {
             a[i] = Math.min(a[i], b[i]);
@@ -200,9 +195,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
     }
 
     function oid(self, x) {
-        if (!x) {
-            return 0;
-        }
+        if (!x) return 0;
 
         var n = self._ids.get(x);
 
@@ -358,10 +351,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
             }
         );
 
-        return {
-            items: items,
-            waiting: waiting
-        };
+        return { items: items, waiting: waiting };
     }
 
     function stateKey(self, x) {
@@ -372,10 +362,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
         (c.layers || []).forEach(function (id) {
             var l = self.app.scene.layers.getLayerById(id);
 
-            if (
-                l &&
-                l.opaqueSortMode === pc.SORTMODE_MANUAL
-            ) {
+            if (l && l.opaqueSortMode === pc.SORTMODE_MANUAL) {
                 manual = true;
             }
         });
@@ -401,11 +388,15 @@ AdvancedGpuInstancer.attributes.add('debug', {
         ].join('|');
     }
 
-    function instanceMaterial(g) {
+    function instanceMaterial(self, g) {
         var src = g.items[0].mi.material;
+        var cached = self._materialCache.get(src);
+
+        if (cached) return cached;
+
         var m = src.clone();
 
-        m.name = (src.name || 'Material') + '_GI23';
+        m.name = (src.name || 'Material') + '_GI25';
         m.shaderChunksVersion = '2.23';
 
         [
@@ -429,6 +420,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
         );
 
         m.update();
+        self._materialCache.set(src, m);
 
         return m;
     }
@@ -476,10 +468,10 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 { data: data }
             );
 
-            mat = instanceMaterial(g);
+            mat = instanceMaterial(self, g);
 
             proxy = new pc.Entity(
-                'GI23_' +
+                'GI25_' +
                 (self._groups.length + 1) +
                 '_' +
                 g.items[0].c.entity.name
@@ -488,16 +480,11 @@ AdvancedGpuInstancer.attributes.add('debug', {
             proxy.__giProxy = true;
             self.app.root.addChild(proxy);
 
-            var mi = new pc.MeshInstance(
-                src.mesh,
-                mat,
-                proxy
-            );
+            var mi = new pc.MeshInstance(src.mesh, mat, proxy);
 
             mi.castShadow = src.castShadow;
             mi.receiveShadow = src.receiveShadow;
             mi.shadowCascadeMask = src.shadowCascadeMask;
-
             mi.mask = src.mask;
             mi.shaderPassMask = src.shaderPassMask;
             mi.renderStyle = src.renderStyle;
@@ -511,21 +498,14 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 layers: g.items[0].c.layers.slice()
             });
 
-            proxy.render.castShadows =
-                g.items[0].c.castShadows;
-
-            proxy.render.receiveShadows =
-                g.items[0].c.receiveShadows;
-
+            proxy.render.castShadows = g.items[0].c.castShadows;
+            proxy.render.receiveShadows = g.items[0].c.receiveShadows;
             mi.mask = src.mask;
 
             if (g.items[0].c.lightmapped) {
                 var l = g.items[0].lm;
 
-                mi.setRealtimeLightmap(
-                    l.name,
-                    l.texture
-                );
+                mi.setRealtimeLightmap(l.name, l.texture);
 
                 if (l.direction) {
                     mi.setRealtimeLightmap(
@@ -556,7 +536,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
             g.mi = mi;
             g.vb = vb;
             g.mat = mat;
-
             g.center = a.center.clone();
             g.radius = a.halfExtents.length();
             g.current = 0;
@@ -575,8 +554,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
             self.stats.groups++;
             self.stats.instanced += g.items.length;
-            self.stats.savedDrawsEstimate +=
-                g.items.length - 1;
+            self.stats.savedDrawsEstimate += g.items.length - 1;
 
             self._registerLod(g);
 
@@ -591,9 +569,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
                         return q.mi === x.mi;
                     });
 
-                    if (h) {
-                        x.mi.visible = h.visible;
-                    }
+                    if (h) x.mi.visible = h.visible;
                 });
 
                 self._hidden = self._hidden.filter(
@@ -613,10 +589,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 try { vb.destroy(); } catch (_) { }
             }
 
-            if (mat) {
-                try { mat.destroy(); } catch (_) { }
-            }
-
+            // El material se libera en restore().
             self.stats.excluded['fallo grupo'] =
                 (self.stats.excluded['fallo grupo'] || 0) +
                 g.items.length;
@@ -644,10 +617,32 @@ AdvancedGpuInstancer.attributes.add('debug', {
         ) ? mode : 'auto';
     }
 
+    var frameOwner = null;
+
     function shadowComponents(app) {
+        if (
+            frameOwner &&
+            frameOwner.app === app &&
+            frameOwner._frameComponents
+        ) {
+            return frameOwner._frameComponents;
+        }
+
         return app.root.findComponents('render').concat(
             app.root.findComponents('model')
         );
+    }
+
+    function shadowLights(app) {
+        if (
+            frameOwner &&
+            frameOwner.app === app &&
+            frameOwner._frameLights
+        ) {
+            return frameOwner._frameLights;
+        }
+
+        return app.root.findComponents('light');
     }
 
     function validCasterComponent(c, originals) {
@@ -661,12 +656,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
             return false;
         }
 
-        if (
-            !(
-                c.isStatic === true ||
-                c.entity.__giProxy === true
-            )
-        ) {
+        if (!(c.isStatic === true || c.entity.__giProxy === true)) {
             return false;
         }
 
@@ -674,18 +664,12 @@ AdvancedGpuInstancer.attributes.add('debug', {
         var any = false;
         var seen = false;
 
-        if (!arr.length) {
-            return false;
-        }
+        if (!arr.length) return false;
 
         for (var i = 0; i < arr.length; i++) {
             var mi = arr[i];
 
-            if (
-                !mi ||
-                !mi.mesh ||
-                mi.visible === false
-            ) {
+            if (!mi || !mi.mesh || mi.visible === false) {
                 continue;
             }
 
@@ -719,26 +703,16 @@ AdvancedGpuInstancer.attributes.add('debug', {
             h.z * h.z
         );
 
-        if (
-            ![c.x, c.y, c.z, r].every(Number.isFinite)
-        ) {
+        if (![c.x, c.y, c.z, r].every(Number.isFinite)) {
             return null;
         }
 
-        return {
-            x: c.x,
-            y: c.y,
-            z: c.z,
-            r: r
-        };
+        return { x: c.x, y: c.y, z: c.z, r: r };
     }
 
     function lightHitsSphere(l, s) {
         if (!s) return true;
-
-        if (l.type === 'directional') {
-            return true;
-        }
+        if (l.type === 'directional') return true;
 
         var p = l.entity.getPosition();
 
@@ -753,9 +727,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
             return true;
         }
 
-        if (d > s.r + range) {
-            return false;
-        }
+        if (d > s.r + range) return false;
 
         if (l.type !== 'spot' || d <= s.r) {
             return true;
@@ -763,9 +735,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
         var half = Number(l.outerConeAngle);
 
-        if (!Number.isFinite(half)) {
-            return true;
-        }
+        if (!Number.isFinite(half)) return true;
 
         var allowed = Math.min(
             Math.PI,
@@ -774,7 +744,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
         );
 
         var up = l.entity.up;
-
         if (!up) return true;
 
         var coneCos = -(
@@ -791,7 +760,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
             if (l.bake || l.affectLightmapped !== true) {
                 return false;
             }
-
         } else if (l.affectDynamic === false) {
             return false;
         }
@@ -808,9 +776,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
     }
 
     function canShadow(caster, receiver, l) {
-        if (!caster || !receiver) {
-            return true;
-        }
+        if (!caster || !receiver) return true;
 
         var vx;
         var vy;
@@ -819,13 +785,11 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
         if (l.type === 'directional') {
             var up = l.entity.up;
-
             if (!up) return true;
 
             vx = up.x;
             vy = up.y;
             vz = up.z;
-
         } else {
             var p = l.entity.getPosition();
 
@@ -835,9 +799,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
             maxDist = Math.hypot(vx, vy, vz);
 
-            if (maxDist < 1e-6) {
-                return true;
-            }
+            if (maxDist < 1e-6) return true;
 
             vx /= maxDist;
             vy /= maxDist;
@@ -851,18 +813,11 @@ AdvancedGpuInstancer.attributes.add('debug', {
         var t = rx * vx + ry * vy + rz * vz;
         var radius = caster.r + receiver.r + 1.0;
 
-        if (
-            t < -radius ||
-            t > maxDist + radius
-        ) {
+        if (t < -radius || t > maxDist + radius) {
             return false;
         }
 
-        var clamped = Math.max(
-            0,
-            Math.min(t, maxDist)
-        );
-
+        var clamped = Math.max(0, Math.min(t, maxDist));
         var ox = rx - vx * clamped;
         var oy = ry - vy * clamped;
         var oz = rz - vz * clamped;
@@ -881,10 +836,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
                 if (g.proxy === c.entity) {
                     return g.items.map(function (x) {
-                        return {
-                            mi: x.mi,
-                            c: x.c
-                        };
+                        return { mi: x.mi, c: x.c };
                     });
                 }
             }
@@ -899,17 +851,12 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 );
             })
             .map(function (mi) {
-                return {
-                    mi: mi,
-                    c: c
-                };
+                return { mi: mi, c: c };
             });
     }
 
     function trivialSelfShadow(src, r) {
-        if (src.mi !== r.mi) {
-            return false;
-        }
+        if (src.mi !== r.mi) return false;
 
         var type = src.c.type;
 
@@ -1025,29 +972,24 @@ AdvancedGpuInstancer.attributes.add('debug', {
             });
         });
 
-        self.app.root.findComponents('light').forEach(
-            function (l) {
-                if (!l.enabled || !alive(l.entity)) {
-                    return;
-                }
-
-                var saved = self._lightOriginals.get(l);
-
-                if (
-                    !l.castShadows &&
-                    (!saved || !saved.cast)
-                ) {
-                    return;
-                }
-
-                lights.push(l);
+        shadowLights(self.app).forEach(function (l) {
+            if (!l.enabled || !alive(l.entity)) {
+                return;
             }
-        );
 
-        return {
-            receivers: receivers,
-            lights: lights
-        };
+            var saved = self._lightOriginals.get(l);
+
+            if (
+                !l.castShadows &&
+                (!saved || !saved.cast)
+            ) {
+                return;
+            }
+
+            lights.push(l);
+        });
+
+        return { receivers: receivers, lights: lights };
     }
 
     // ========================================================
@@ -1056,28 +998,20 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
     AdvancedGpuInstancer.prototype._restoreOneCaster =
         function (c, rec) {
-            if (
-                !c ||
-                !c.entity ||
-                c.entity._destroyed
-            ) {
+            if (!c || !c.entity || c.entity._destroyed) {
                 return;
             }
 
             c.castShadows = rec.cast;
 
             rec.instances.forEach(function (m) {
-                if (m.mi) {
-                    m.mi.castShadow = m.cast;
-                }
+                if (m.mi) m.mi.castShadow = m.cast;
             });
         };
 
     AdvancedGpuInstancer.prototype._restoreCasters =
         function (clear) {
-            if (!this._casterOriginals) {
-                return;
-            }
+            if (!this._casterOriginals) return;
 
             this._casterOriginals.forEach(
                 function (rec, c) {
@@ -1099,11 +1033,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
     AdvancedGpuInstancer.prototype._applyCasterMode =
         function (override) {
-            if (
-                !this._alive ||
-                !this._built ||
-                this._baking
-            ) {
+            if (!this._alive || !this._built || this._baking) {
                 return;
             }
 
@@ -1176,7 +1106,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
                         if (c.castShadows) {
                             c.castShadows = false;
                         }
-
                     } else if (rec) {
                         this._restoreOneCaster(c, rec);
                         this._casterOriginals.delete(c);
@@ -1199,9 +1128,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
             this._casterOriginals.forEach(
                 function (rec, c) {
-                    if (seen.has(c)) {
-                        return;
-                    }
+                    if (seen.has(c)) return;
 
                     try {
                         this._restoreOneCaster(c, rec);
@@ -1212,9 +1139,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 this
             );
 
-            this._casterDisabled =
-                this._casterOriginals.size;
-
+            this._casterDisabled = this._casterOriginals.size;
             this._casterReport = report;
 
             var status =
@@ -1231,18 +1156,14 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 mode: mode,
                 receptoresSinBake: names.length,
                 nombres: names,
-                componentesSinSombras:
-                    this._casterDisabled,
+                componentesSinSombras: this._casterDisabled,
                 analizados: report.length,
                 motivo: mode === 'auto'
                     ? 'Evaluacion geometrica automatica'
                     : 'Modo manual'
             };
 
-            if (
-                this.debug &&
-                status !== this._lastCasterStatus
-            ) {
+            if (this.debug && status !== this._lastCasterStatus) {
                 console.log(
                     TAG,
                     'Baked Static Shadow Casting:',
@@ -1250,7 +1171,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 );
 
                 console.table(report);
-
                 this._lastCasterStatus = status;
             }
         };
@@ -1318,17 +1238,11 @@ AdvancedGpuInstancer.attributes.add('debug', {
     }
 
     function nearLight(l, mi) {
-        if (l.type === 'directional') {
-            return true;
-        }
+        if (l.type === 'directional') return true;
 
         var b = mi.aabb;
 
-        if (
-            !b ||
-            !b.center ||
-            !b.halfExtents
-        ) {
+        if (!b || !b.center || !b.halfExtents) {
             return true;
         }
 
@@ -1359,13 +1273,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
         var staticSignature = [];
 
         shadowComponents(self.app).forEach(function (c) {
-            if (
-                !c ||
-                !alive(c.entity) ||
-                !c.enabled
-            ) {
-                return;
-            }
+            if (!c || !alive(c.entity) || !c.enabled) return;
 
             (c.meshInstances || []).forEach(function (mi) {
                 if (
@@ -1462,11 +1370,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
         function (s) {
             var l = s.l;
 
-            if (
-                l &&
-                l.entity &&
-                !l.entity._destroyed
-            ) {
+            if (l && l.entity && !l.entity._destroyed) {
                 l.castShadows = s.cast;
 
                 l.shadowUpdateOverrides = s.overrides
@@ -1482,9 +1386,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
     AdvancedGpuInstancer.prototype._restoreLights =
         function (clear) {
-            if (!this._lightOriginals) {
-                return;
-            }
+            if (!this._lightOriginals) return;
 
             this._lightOriginals.forEach(
                 function (s) {
@@ -1530,29 +1432,18 @@ AdvancedGpuInstancer.attributes.add('debug', {
         }
 
         shadowComponents(self.app).forEach(function (c) {
-            if (
-                !c ||
-                !c.enabled ||
-                !alive(c.entity)
-            ) {
+            if (!c || !c.enabled || !alive(c.entity)) {
                 return;
             }
 
             var saved = self._casterOriginals.get(c);
 
-            if (
-                !c.castShadows &&
-                (!saved || !saved.cast)
-            ) {
+            if (!c.castShadows && (!saved || !saved.cast)) {
                 return;
             }
 
             shadowSources(self, c).forEach(function (x) {
-                if (
-                    x.mi &&
-                    x.mi.mesh &&
-                    x.mi.castShadow
-                ) {
+                if (x.mi && x.mi.mesh && x.mi.castShadow) {
                     casters.push(x);
                 }
             });
@@ -1686,9 +1577,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
     function receiverVisible(self, mi, light) {
         var b = mi && mi.aabb;
 
-        if (!b) {
-            return true;
-        }
+        if (!b) return true;
 
         var cams = (self._cameras || []).filter(
             function (c) {
@@ -1696,28 +1585,17 @@ AdvancedGpuInstancer.attributes.add('debug', {
             }
         );
 
-        if (!cams.length) {
-            return true;
-        }
+        if (!cams.length) return true;
 
         return cams.some(function (c) {
-            if (
-                c.frustum &&
-                !c.frustum.containsAabb(b)
-            ) {
+            if (c.frustum && !c.frustum.containsAabb(b)) {
                 return false;
             }
 
-            if (
-                light &&
-                light.type === 'directional'
-            ) {
+            if (light && light.type === 'directional') {
                 var dist = Number(light.shadowDistance);
 
-                if (
-                    Number.isFinite(dist) &&
-                    dist > 0
-                ) {
+                if (Number.isFinite(dist) && dist > 0) {
                     var p = c.entity.getPosition();
                     var ce = b.center;
                     var h = b.halfExtents;
@@ -1798,14 +1676,9 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
             this._spotLodReport = [];
 
-            this.app.root.findComponents('light').forEach(
+            shadowLights(this.app).forEach(
                 function (l) {
-                    if (
-                        !l.enabled ||
-                        !alive(l.entity)
-                    ) {
-                        return;
-                    }
+                    if (!l.enabled || !alive(l.entity)) return;
 
                     active.add(l);
 
@@ -1898,10 +1771,8 @@ AdvancedGpuInstancer.attributes.add('debug', {
                             }
 
                             s.policy = 'congelada';
-
                             s.reason =
                                 'Shadow map estatico; actualizar cuando cambie la escena';
-
                         } else {
                             if (s.policy === 'congelada') {
                                 l.shadowUpdateMode = s.mode;
@@ -1920,23 +1791,15 @@ AdvancedGpuInstancer.attributes.add('debug', {
                     if (local) {
                         this._spotLodReport.push({
                             luz: l.entity.name,
-                            distanciaCamara:
-                                localState.distance,
-                            rangeProyecto:
-                                localState.range,
-                            dentroFrustum:
-                                localState.visible,
-                            castShadows:
-                                l.castShadows,
-                            intensidadConfigurada:
-                                l.shadowIntensity
+                            distanciaCamara: localState.distance,
+                            rangeProyecto: localState.range,
+                            dentroFrustum: localState.visible,
+                            castShadows: l.castShadows,
+                            intensidadConfigurada: l.shadowIntensity
                         });
                     }
 
-                    if (
-                        this.debug &&
-                        s.policy !== before
-                    ) {
+                    if (this.debug && s.policy !== before) {
                         console.log(
                             TAG,
                             'Luz',
@@ -2037,7 +1900,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
     AdvancedGpuInstancer.prototype._endProbe =
         function (reapply) {
             this._shadowCacheKey = null;
-
             var p = this._probe;
 
             if (!p) return;
@@ -2056,7 +1918,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 ) {
                     this._applyCasterMode();
                 }
-
             } else {
                 this._restoreLights(false);
 
@@ -2079,28 +1940,19 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
     AdvancedGpuInstancer.prototype._startProbe =
         function (kind) {
-            if (
-                this._probe ||
-                !this._built ||
-                this._baking
-            ) {
+            if (this._probe || !this._built || this._baking) {
                 console.warn(
                     TAG,
                     'GI ocupado o bake incompleto'
                 );
-
                 return;
             }
 
-            if (
-                kind === 'lights' &&
-                !this.shadowOptimizer
-            ) {
+            if (kind === 'lights' && !this.shadowOptimizer) {
                 console.warn(
                     TAG,
                     'Activar optimizador de luces'
                 );
-
                 return;
             }
 
@@ -2125,9 +1977,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
             }
 
             p.handler = function () {
-                if (self._probe !== p) {
-                    return;
-                }
+                if (self._probe !== p) return;
 
                 p.frame++;
 
@@ -2137,9 +1987,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
                     );
                 }
 
-                if (p.frame < 54) {
-                    return;
-                }
+                if (p.frame < 54) return;
 
                 p.values.sort(function (a, b) {
                     return a - b;
@@ -2167,7 +2015,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
                     } else {
                         self._reconcileLights(1, true);
                     }
-
                 } else {
                     self._endProbe(true);
 
@@ -2178,8 +2025,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
                             return {
                                 modo: r.modo,
                                 drawCalls: r.drawCalls,
-                                ahorro:
-                                    baseline - r.drawCalls
+                                ahorro: baseline - r.drawCalls
                             };
                         })
                     );
@@ -2192,12 +2038,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
             };
 
             this.app.on('frameend', p.handler);
-
-            console.log(
-                TAG,
-                'Prueba A/B iniciada:',
-                kind
-            );
+            console.log(TAG, 'Prueba A/B iniciada:', kind);
         };
 
     AdvancedGpuInstancer.prototype.probeBakedCasterShadows =
@@ -2249,7 +2090,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
             this._ground = [];
             this._groundTiles = [];
             this._catcherSelection = '';
-
             this._catcherSelectedPanels = 0;
             this._catcherSelectedTriangles = 0;
             this._catcherCapacityVertices = 0;
@@ -2262,11 +2102,9 @@ AdvancedGpuInstancer.attributes.add('debug', {
         function () {
             var m = new pc.StandardMaterial();
 
-            m.name = 'GI23_ShadowOnly_Multiply';
-
+            m.name = 'GI25_ShadowOnly_Multiply';
             m.shadowCatcher = true;
             m.blendType = pc.BLEND_MULTIPLICATIVE;
-
             m.cull = pc.CULLFACE_NONE;
             m.depthWrite = false;
             m.depthTest = true;
@@ -2274,14 +2112,13 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
             m.diffuse.set(0, 0, 0);
             m.specular.set(0, 0, 0);
-
             m.update();
 
             return m;
         };
 
     // ========================================================
-    // GI2.3: SCAN DE PANELES CON OFFSETS CORRECTOS
+    // SCAN DE PANELES CON OFFSETS INDEPENDIENTES
     // ========================================================
 
     AdvancedGpuInstancer.prototype._scanGround =
@@ -2347,250 +2184,213 @@ AdvancedGpuInstancer.attributes.add('debug', {
                     ]);
                 });
 
-                indices.push(
-                    base,
-                    base + 1,
-                    base + 2
-                );
-
+                indices.push(base, base + 1, base + 2);
                 return true;
             }
 
-            components.forEach(
-                function (c) {
-                    if (
-                        !c.enabled ||
-                        !alive(c.entity) ||
-                        !c.isStatic ||
-                        !c.lightmapped ||
-                        c.entity.__giProxy ||
-                        c.entity.__giShadowCatcher
-                    ) {
-                        return;
-                    }
+            components.forEach(function (c) {
+                if (
+                    !c.enabled ||
+                    !alive(c.entity) ||
+                    !c.isStatic ||
+                    !c.lightmapped ||
+                    c.entity.__giProxy ||
+                    c.entity.__giShadowCatcher
+                ) {
+                    return;
+                }
 
-                    var floorType =
-                        c.type === 'plane' ||
-                        /floor|ground|piso|suelo|terreno/i
-                            .test(c.entity.name);
+                var floorType =
+                    c.type === 'plane' ||
+                    /floor|ground|piso|suelo|terreno/i
+                        .test(c.entity.name);
 
-                    if (!floorType) {
-                        return;
-                    }
+                if (!floorType) return;
 
-                    (c.meshInstances || []).forEach(
-                        function (mi) {
-                            if (
-                                indices.length / 3 >=
-                                MAX_TRIANGLES ||
-                                !mi ||
-                                !mi.mesh ||
-                                !lm(mi).texture
+                (c.meshInstances || []).forEach(
+                    function (mi) {
+                        if (
+                            indices.length / 3 >= MAX_TRIANGLES ||
+                            !mi ||
+                            !mi.mesh ||
+                            !lm(mi).texture
+                        ) {
+                            return;
+                        }
+
+                        var wb = worldBounds(mi);
+
+                        if (!wb) return;
+                        if (wb[4] - wb[1] > 0.55) return;
+
+                        var matrix =
+                            mi.node.getWorldTransform();
+
+                        var sourcePos = [];
+                        var sourceIndices = [];
+                        var emitted = 0;
+
+                        var initialPos = vertices.length;
+                        var initialNorm = normals.length;
+                        var initialUv = uvs.length;
+
+                        try {
+                            mi.mesh.getPositions(sourcePos);
+                            mi.mesh.getIndices(sourceIndices);
+
+                            var count = sourcePos.length / 3;
+
+                            if (!sourceIndices.length) {
+                                for (var n = 0; n < count; n++) {
+                                    sourceIndices.push(n);
+                                }
+                            }
+
+                            for (
+                                var j = 0;
+                                j + 2 < sourceIndices.length &&
+                                indices.length / 3 < MAX_TRIANGLES;
+                                j += 3
                             ) {
-                                return;
-                            }
-
-                            var wb = worldBounds(mi);
-
-                            if (!wb) {
-                                return;
-                            }
-
-                            if (wb[4] - wb[1] > 0.55) {
-                                return;
-                            }
-
-                            var matrix =
-                                mi.node.getWorldTransform();
-
-                            var sourcePos = [];
-                            var sourceIndices = [];
-                            var emitted = 0;
-
-                            // CRITICO GI2.3:
-                            // XYZ tiene 3 valores por vertice.
-                            // UV tiene 2 valores por vertice.
-                            // Cada stream requiere offset propio.
-
-                            var initialPos = vertices.length;
-                            var initialNorm = normals.length;
-                            var initialUv = uvs.length;
-
-                            try {
-                                mi.mesh.getPositions(sourcePos);
-                                mi.mesh.getIndices(sourceIndices);
-
-                                var count = sourcePos.length / 3;
-
-                                if (!sourceIndices.length) {
-                                    for (
-                                        var n = 0;
-                                        n < count;
-                                        n++
-                                    ) {
-                                        sourceIndices.push(n);
-                                    }
-                                }
-
-                                for (
-                                    var j = 0;
-                                    j + 2 < sourceIndices.length &&
-                                    indices.length / 3 <
-                                    MAX_TRIANGLES;
-                                    j += 3
-                                ) {
-                                    var a = sourceIndices[j];
-                                    var b = sourceIndices[j + 1];
-                                    var d = sourceIndices[j + 2];
-
-                                    if (
-                                        a >= count ||
-                                        b >= count ||
-                                        d >= count
-                                    ) {
-                                        continue;
-                                    }
-
-                                    matrix.transformPoint(
-                                        tmpA.set(
-                                            sourcePos[a * 3],
-                                            sourcePos[a * 3 + 1],
-                                            sourcePos[a * 3 + 2]
-                                        ),
-                                        tmpA
-                                    );
-
-                                    matrix.transformPoint(
-                                        tmpB.set(
-                                            sourcePos[b * 3],
-                                            sourcePos[b * 3 + 1],
-                                            sourcePos[b * 3 + 2]
-                                        ),
-                                        tmpB
-                                    );
-
-                                    matrix.transformPoint(
-                                        tmpC.set(
-                                            sourcePos[d * 3],
-                                            sourcePos[d * 3 + 1],
-                                            sourcePos[d * 3 + 2]
-                                        ),
-                                        tmpC
-                                    );
-
-                                    if (emit(tmpA, tmpB, tmpC)) {
-                                        emitted++;
-                                    }
-                                }
-
-                            } catch (err) {
-                                if (this.debug) {
-                                    console.warn(
-                                        TAG,
-                                        'Panel sin lectura de vertices:',
-                                        c.entity.name,
-                                        err
-                                    );
-                                }
-                            }
-
-                            if (
-                                !emitted &&
-                                c.type === 'plane' &&
-                                indices.length / 3 + 2 <=
-                                MAX_TRIANGLES
-                            ) {
-                                var wd = matrix.data;
-
-                                var ny = wd[5] / Math.max(
-                                    1e-8,
-                                    Math.hypot(
-                                        wd[4],
-                                        wd[5],
-                                        wd[6]
-                                    )
-                                );
-
-                                if (Math.abs(ny) > 0.94) {
-                                    var y =
-                                        (wb[1] + wb[4]) * 0.5;
-
-                                    var v0 = new pc.Vec3(
-                                        wb[0], y, wb[2]
-                                    );
-
-                                    var v1 = new pc.Vec3(
-                                        wb[3], y, wb[2]
-                                    );
-
-                                    var v2 = new pc.Vec3(
-                                        wb[3], y, wb[5]
-                                    );
-
-                                    var v3 = new pc.Vec3(
-                                        wb[0], y, wb[5]
-                                    );
-
-                                    emit(v0, v1, v2);
-                                    emit(v0, v2, v3);
-
-                                    emitted = 2;
-                                }
-                            }
-
-                            if (emitted) {
-                                var tile = {
-                                    b: wb,
-                                    y: (wb[1] + wb[4]) * 0.5,
-                                    entity: c.entity,
-
-                                    positions:
-                                        vertices.slice(initialPos),
-
-                                    normals:
-                                        normals.slice(initialNorm),
-
-                                    uvs:
-                                        uvs.slice(initialUv)
-                                };
-
-                                var nv =
-                                    tile.positions.length / 3;
+                                var a = sourceIndices[j];
+                                var b = sourceIndices[j + 1];
+                                var d = sourceIndices[j + 2];
 
                                 if (
-                                    !Number.isInteger(nv) ||
-                                    nv < 3 ||
-                                    tile.normals.length !==
-                                    nv * 3 ||
-                                    tile.uvs.length !==
-                                    nv * 2
+                                    a >= count ||
+                                    b >= count ||
+                                    d >= count
                                 ) {
-                                    console.warn(
-                                        TAG,
-                                        'Panel descartado: streams inconsistentes:',
-                                        c.entity.name
-                                    );
-
-                                    vertices.length = initialPos;
-                                    normals.length = initialNorm;
-                                    uvs.length = initialUv;
-
-                                    indices.length -=
-                                        emitted * 3;
-
-                                    return;
+                                    continue;
                                 }
 
-                                tile._giTileId =
-                                    this._groundTiles.length;
+                                matrix.transformPoint(
+                                    tmpA.set(
+                                        sourcePos[a * 3],
+                                        sourcePos[a * 3 + 1],
+                                        sourcePos[a * 3 + 2]
+                                    ),
+                                    tmpA
+                                );
 
-                                this._ground.push(tile);
-                                this._groundTiles.push(tile);
+                                matrix.transformPoint(
+                                    tmpB.set(
+                                        sourcePos[b * 3],
+                                        sourcePos[b * 3 + 1],
+                                        sourcePos[b * 3 + 2]
+                                    ),
+                                    tmpB
+                                );
+
+                                matrix.transformPoint(
+                                    tmpC.set(
+                                        sourcePos[d * 3],
+                                        sourcePos[d * 3 + 1],
+                                        sourcePos[d * 3 + 2]
+                                    ),
+                                    tmpC
+                                );
+
+                                if (emit(tmpA, tmpB, tmpC)) {
+                                    emitted++;
+                                }
                             }
-                        },
-                        this
-                    );
-                },
+
+                        } catch (err) {
+                            if (this.debug) {
+                                console.warn(
+                                    TAG,
+                                    'Panel sin lectura de vertices:',
+                                    c.entity.name,
+                                    err
+                                );
+                            }
+                        }
+
+                        if (
+                            !emitted &&
+                            c.type === 'plane' &&
+                            indices.length / 3 + 2 <=
+                            MAX_TRIANGLES
+                        ) {
+                            var wd = matrix.data;
+
+                            var ny = wd[5] / Math.max(
+                                1e-8,
+                                Math.hypot(
+                                    wd[4],
+                                    wd[5],
+                                    wd[6]
+                                )
+                            );
+
+                            if (Math.abs(ny) > 0.94) {
+                                var y =
+                                    (wb[1] + wb[4]) * 0.5;
+
+                                var v0 = new pc.Vec3(
+                                    wb[0], y, wb[2]
+                                );
+
+                                var v1 = new pc.Vec3(
+                                    wb[3], y, wb[2]
+                                );
+
+                                var v2 = new pc.Vec3(
+                                    wb[3], y, wb[5]
+                                );
+
+                                var v3 = new pc.Vec3(
+                                    wb[0], y, wb[5]
+                                );
+
+                                emit(v0, v1, v2);
+                                emit(v0, v2, v3);
+                                emitted = 2;
+                            }
+                        }
+
+                        if (emitted) {
+                            var tile = {
+                                b: wb,
+                                y: (wb[1] + wb[4]) * 0.5,
+                                entity: c.entity,
+                                positions: vertices.slice(initialPos),
+                                normals: normals.slice(initialNorm),
+                                uvs: uvs.slice(initialUv)
+                            };
+
+                            var nv = tile.positions.length / 3;
+
+                            if (
+                                !Number.isInteger(nv) ||
+                                nv < 3 ||
+                                tile.normals.length !== nv * 3 ||
+                                tile.uvs.length !== nv * 2
+                            ) {
+                                console.warn(
+                                    TAG,
+                                    'Panel descartado: streams inconsistentes:',
+                                    c.entity.name
+                                );
+
+                                vertices.length = initialPos;
+                                normals.length = initialNorm;
+                                uvs.length = initialUv;
+                                indices.length -= emitted * 3;
+                                return;
+                            }
+
+                            tile._giTileId =
+                                this._groundTiles.length;
+
+                            this._ground.push(tile);
+                            this._groundTiles.push(tile);
+                        }
+                    },
+                    this
+                );
+            },
                 this
             );
 
@@ -2631,17 +2431,12 @@ AdvancedGpuInstancer.attributes.add('debug', {
                     ) {
                         var b = worldBounds(mi);
 
-                        if (b) {
-                            bb = union(bb, b);
-                        }
+                        if (b) bb = union(bb, b);
                     }
                 });
 
                 if (bb) {
-                    arr.push({
-                        c: c,
-                        b: bb
-                    });
+                    arr.push({ c: c, b: bb });
                 }
             });
 
@@ -2656,14 +2451,10 @@ AdvancedGpuInstancer.attributes.add('debug', {
         function () {
             this._destroyCatchers();
 
-            if (!this.dynamicShadowCatcher) {
-                return;
-            }
+            if (!this.dynamicShadowCatcher) return;
 
             var probe = new pc.StandardMaterial();
-
             var supported = 'shadowCatcher' in probe;
-
             probe.destroy();
 
             if (!supported) {
@@ -2671,24 +2462,21 @@ AdvancedGpuInstancer.attributes.add('debug', {
                     TAG,
                     'shadowCatcher no disponible'
                 );
-
                 return;
             }
 
-            var suns = this.app.root
-                .findComponents('light')
-                .filter(function (l) {
+            var suns = shadowLights(this.app).filter(
+                function (l) {
                     return (
                         l.enabled &&
                         alive(l.entity) &&
                         l.type === 'directional' &&
                         l.castShadows
                     );
-                });
+                }
+            );
 
-            if (!suns.length) {
-                return;
-            }
+            if (!suns.length) return;
 
             var ground = this._scanGround();
 
@@ -2697,28 +2485,23 @@ AdvancedGpuInstancer.attributes.add('debug', {
                     TAG,
                     'No se encontraron triangulos de suelo baked horizontales'
                 );
-
                 return;
             }
 
             this._catcherCandidates =
                 this._findDynamicCasters();
 
-            var vertexCount =
-                ground.positions.length / 3;
+            var vertexCount = ground.positions.length / 3;
 
             if (
                 !Number.isInteger(vertexCount) ||
-                ground.normals.length !==
-                vertexCount * 3 ||
-                ground.uvs.length !==
-                vertexCount * 2
+                ground.normals.length !== vertexCount * 3 ||
+                ground.uvs.length !== vertexCount * 2
             ) {
                 console.error(
                     TAG,
                     'Shadow Catcher cancelado: streams inconsistentes'
                 );
-
                 return;
             }
 
@@ -2727,19 +2510,11 @@ AdvancedGpuInstancer.attributes.add('debug', {
             var entity = null;
 
             try {
-                mesh = new pc.Mesh(
-                    this.app.graphicsDevice
-                );
+                mesh = new pc.Mesh(this.app.graphicsDevice);
 
-                this._catcherCapacityVertices =
-                    vertexCount;
-
+                this._catcherCapacityVertices = vertexCount;
                 this._catcherCapacityIndices =
                     ground.indices.length;
-
-                // Reservar la capacidad de TODO el piso.
-                // Los siguientes cambios de paneles usan
-                // estos buffers dinamicos.
 
                 if (typeof mesh.clear === 'function') {
                     mesh.clear(
@@ -2759,11 +2534,10 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 mat = this._makeCatcherMaterial();
 
                 entity = new pc.Entity(
-                    'GI23_ShadowReceiver_MultiPanel'
+                    'GI25_ShadowReceiver_MultiPanel'
                 );
 
                 entity.__giShadowCatcher = true;
-
                 this.app.root.addChild(entity);
 
                 var mi = new pc.MeshInstance(
@@ -2808,7 +2582,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
                         'triangulos, 1 MeshInstance'
                     );
                 }
-
             } catch (e) {
                 console.warn(
                     TAG,
@@ -2839,13 +2612,8 @@ AdvancedGpuInstancer.attributes.add('debug', {
     // ========================================================
 
     function projectedRect(bounds, up, groundY) {
-        if (!up || up.y <= 0) {
-            return null;
-        }
-
-        if (groundY > bounds[1]) {
-            return null;
-        }
+        if (!up || up.y <= 0) return null;
+        if (groundY > bounds[1]) return null;
 
         var ax = [bounds[0], bounds[3]];
         var ay = [bounds[1], bounds[4]];
@@ -2861,34 +2629,15 @@ AdvancedGpuInstancer.attributes.add('debug', {
         for (var i = 0; i < 2; i++) {
             for (var j = 0; j < 2; j++) {
                 for (var k = 0; k < 2; k++) {
-                    var h =
-                        (ay[j] - groundY) / up.y;
+                    var h = (ay[j] - groundY) / up.y;
 
-                    var x =
-                        ax[i] - up.x * h;
+                    var x = ax[i] - up.x * h;
+                    var z = az[k] - up.z * h;
 
-                    var z =
-                        az[k] - up.z * h;
-
-                    result[0] = Math.min(
-                        result[0],
-                        x
-                    );
-
-                    result[1] = Math.min(
-                        result[1],
-                        z
-                    );
-
-                    result[2] = Math.max(
-                        result[2],
-                        x
-                    );
-
-                    result[3] = Math.max(
-                        result[3],
-                        z
-                    );
+                    result[0] = Math.min(result[0], x);
+                    result[1] = Math.min(result[1], z);
+                    result[2] = Math.max(result[2], x);
+                    result[3] = Math.max(result[3], z);
                 }
             }
         }
@@ -2912,44 +2661,27 @@ AdvancedGpuInstancer.attributes.add('debug', {
             }
         );
 
-        if (!cams.length) {
-            return true;
-        }
+        if (!cams.length) return true;
 
         var aabb = makeAabb(b);
         var dist = Number(light.shadowDistance);
 
         return cams.some(function (cam) {
-            if (
-                cam.frustum &&
-                !cam.frustum.containsAabb(aabb)
-            ) {
+            if (cam.frustum && !cam.frustum.containsAabb(aabb)) {
                 return false;
             }
 
-            if (
-                Number.isFinite(dist) &&
-                dist > 0
-            ) {
-                var pos =
-                    cam.entity.getPosition();
+            if (Number.isFinite(dist) && dist > 0) {
+                var pos = cam.entity.getPosition();
 
                 var dx = Math.max(
-                    0,
-                    b[0] - pos.x,
-                    pos.x - b[3]
+                    0, b[0] - pos.x, pos.x - b[3]
                 );
-
                 var dy = Math.max(
-                    0,
-                    b[1] - pos.y,
-                    pos.y - b[4]
+                    0, b[1] - pos.y, pos.y - b[4]
                 );
-
                 var dz = Math.max(
-                    0,
-                    b[2] - pos.z,
-                    pos.z - b[5]
+                    0, b[2] - pos.z, pos.z - b[5]
                 );
 
                 return (
@@ -2964,7 +2696,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
     }
 
     // ========================================================
-    // GI2.3: ACTUALIZACION SEGURA DE VERTEX STREAMS
+    // ACTUALIZACION SEGURA DE VERTEX STREAMS
     // ========================================================
 
     AdvancedGpuInstancer.prototype._setCatcherTiles =
@@ -2981,9 +2713,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 return true;
             }
 
-            if (!selected.length) {
-                return false;
-            }
+            if (!selected.length) return false;
 
             var p = [];
             var n = [];
@@ -2997,7 +2727,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 var tp = tile.positions;
                 var tn = tile.normals;
                 var tu = tile.uvs;
-
                 var count = tp.length / 3;
 
                 if (
@@ -3023,10 +2752,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
                 var base = p.length / 3;
 
-                // No usar push.apply: puede superar
-                // el limite de argumentos con muchos
-                // paneles.
-
                 for (var q = 0; q < tp.length; q++) {
                     p.push(tp[q]);
                 }
@@ -3047,9 +2772,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
             }
 
             var nv = p.length / 3;
-
-            // PlayCanvas exige igual numero de vertices
-            // por stream, no igual numero de floats.
 
             if (
                 !Number.isInteger(nv) ||
@@ -3077,24 +2799,15 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 this._catcherMesh.setNormals(n);
                 this._catcherMesh.setUvs(0, u);
                 this._catcherMesh.setIndices(ix);
-
-                this._catcherMesh.update(
-                    pc.PRIMITIVE_TRIANGLES
-                );
+                this._catcherMesh.update(pc.PRIMITIVE_TRIANGLES);
 
                 this._catcher.bounds = aabb;
                 this._catcherSelectedTriangles =
                     ix.length / 3;
-
                 this._catcherTileUpdates++;
-
-                // Confirmar la seleccion solo despues
-                // de una subida satisfactoria a GPU.
-
                 this._catcherSelection = key;
 
                 return true;
-
             } catch (e) {
                 console.error(
                     TAG,
@@ -3103,7 +2816,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 );
 
                 this._catcherSelection = '';
-
                 return false;
             }
         };
@@ -3112,16 +2824,11 @@ AdvancedGpuInstancer.attributes.add('debug', {
         function () {
             var catcher = this._catcher;
 
-            if (
-                !catcher ||
-                !this._alive ||
-                this._baking
-            ) {
+            if (!catcher || !this._alive || this._baking) {
                 return;
             }
 
-            var sun = this.app.root
-                .findComponents('light')
+            var sun = shadowLights(this.app)
                 .find(function (l) {
                     return (
                         l.enabled &&
@@ -3138,7 +2845,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 }, this);
 
             var tiles = this._groundTiles || [];
-
             var selected = [];
             var casters = [];
             var active = false;
@@ -3150,9 +2856,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 sun.entity.up.y > 0
             ) {
                 var up = sun.entity.up;
-
-                var sources =
-                    this._findDynamicCasters();
+                var sources = this._findDynamicCasters();
 
                 tiles.forEach(
                     function (tile) {
@@ -3175,10 +2879,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
                                 tile.y
                             );
 
-                            if (
-                                r &&
-                                intersectsRect(r, tile.b)
-                            ) {
+                            if (r && intersectsRect(r, tile.b)) {
                                 hit = true;
 
                                 if (
@@ -3193,9 +2894,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
                             }
                         });
 
-                        if (hit) {
-                            selected.push(tile);
-                        }
+                        if (hit) selected.push(tile);
                     },
                     this
                 );
@@ -3203,18 +2902,13 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 active = selected.length > 0;
             }
 
-            if (
-                active &&
-                !this._setCatcherTiles(selected)
-            ) {
+            if (active && !this._setCatcherTiles(selected)) {
                 active = false;
                 selected = [];
                 casters = [];
             }
 
-            if (!active) {
-                this._catcherSelection = '';
-            }
+            if (!active) this._catcherSelection = '';
 
             if (active) {
                 this._catcherOffVotes = 0;
@@ -3223,27 +2917,21 @@ AdvancedGpuInstancer.attributes.add('debug', {
                     (this._catcherOffVotes || 0) + 1;
             }
 
-            if (
-                active ||
-                this._catcherOffVotes >= 2
-            ) {
+            if (active || this._catcherOffVotes >= 2) {
                 catcher.entity.enabled = active;
                 this._catcherActive = active;
-
             } else {
                 this._pendingOff = true;
             }
 
             this._nearDynamicCasters = casters;
-            this._catcherSelectedPanels =
-                selected.length;
+            this._catcherSelectedPanels = selected.length;
         };
 
     AdvancedGpuInstancer.prototype.auditDynamicShadows =
         function () {
             var rows = [{
-                receptor:
-                    'GI23_ShadowReceiver_MultiPanel',
+                receptor: 'GI25_ShadowReceiver_MultiPanel',
                 paneles: this._ground.length,
                 triangulos:
                     this._catcherSelectedTriangles || 0,
@@ -3255,9 +2943,8 @@ AdvancedGpuInstancer.attributes.add('debug', {
                     this._catcherActive ? 1 : 0,
                 activo: !!this._catcherActive,
                 dinamicosEnRango:
-                    (
-                        this._nearDynamicCasters || []
-                    ).join(', ') || '-'
+                    (this._nearDynamicCasters || [])
+                        .join(', ') || '-'
             }];
 
             console.table(rows);
@@ -3272,9 +2959,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
     AdvancedGpuInstancer.prototype._restoreDirectionalMasks =
         function () {
-            if (!this._directionalOriginals) {
-                return;
-            }
+            if (!this._directionalOriginals) return;
 
             this._directionalOriginals.forEach(
                 function (rec, c) {
@@ -3294,11 +2979,9 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
                         rec.meshes.forEach(function (x) {
                             if (x.mi) {
-                                x.mi.shadowCascadeMask =
-                                    x.mask;
+                                x.mi.shadowCascadeMask = x.mask;
                             }
                         });
-
                     } catch (_) { }
                 }
             );
@@ -3309,16 +2992,11 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
     AdvancedGpuInstancer.prototype._optimizeDirectionalMasks =
         function () {
-            if (
-                !this._alive ||
-                !this._built ||
-                this._baking
-            ) {
+            if (!this._alive || !this._built || this._baking) {
                 return;
             }
 
-            var sun = this.app.root
-                .findComponents('light')
+            var sun = shadowLights(this.app)
                 .find(function (l) {
                     return (
                         l.enabled &&
@@ -3368,9 +3046,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
                             return mi && mi.mesh;
                         });
 
-                    if (!miList.length) {
-                        return;
-                    }
+                    if (!miList.length) return;
 
                     if (
                         !miList.some(function (mi) {
@@ -3381,9 +3057,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
                     }
 
                     var needs = false;
-
-                    var sources =
-                        shadowSources(this, c);
+                    var sources = shadowSources(this, c);
 
                     for (
                         var ri = 0;
@@ -3399,16 +3073,8 @@ AdvancedGpuInstancer.attributes.add('debug', {
                         }
 
                         if (
-                            !receiverVisible(
-                                this,
-                                r.mi,
-                                sun
-                            ) ||
-                            !receiverForLight(
-                                sun,
-                                false,
-                                r.mi
-                            )
+                            !receiverVisible(this, r.mi, sun) ||
+                            !receiverForLight(sun, false, r.mi)
                         ) {
                             continue;
                         }
@@ -3418,13 +3084,9 @@ AdvancedGpuInstancer.attributes.add('debug', {
                             si < sources.length && !needs;
                             si++
                         ) {
-                            var sb =
-                                sphereOf(sources[si].mi);
+                            var sb = sphereOf(sources[si].mi);
 
-                            if (
-                                !sb ||
-                                canShadow(sb, rb, sun)
-                            ) {
+                            if (!sb || canShadow(sb, rb, sun)) {
                                 needs = true;
                             }
                         }
@@ -3438,9 +3100,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
                     if (!needs) {
                         if (!rec) {
                             rec = {
-                                component:
-                                    c.shadowCascadeMask,
-
+                                component: c.shadowCascadeMask,
                                 meshes: miList.map(function (mi) {
                                     return {
                                         mi: mi,
@@ -3460,7 +3120,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
                         miList.forEach(function (mi) {
                             mi.shadowCascadeMask = 0;
                         });
-
                     } else if (rec) {
                         if (rec.component !== undefined) {
                             c.shadowCascadeMask =
@@ -3469,8 +3128,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
                         rec.meshes.forEach(function (x) {
                             if (x.mi) {
-                                x.mi.shadowCascadeMask =
-                                    x.mask;
+                                x.mi.shadowCascadeMask = x.mask;
                             }
                         });
 
@@ -3482,9 +3140,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
             this._directionalOriginals.forEach(
                 function (rec, c) {
-                    if (touched.has(c)) {
-                        return;
-                    }
+                    if (touched.has(c)) return;
 
                     try {
                         if (rec.component !== undefined) {
@@ -3494,11 +3150,9 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
                         rec.meshes.forEach(function (x) {
                             if (x.mi) {
-                                x.mi.shadowCascadeMask =
-                                    x.mask;
+                                x.mi.shadowCascadeMask = x.mask;
                             }
                         });
-
                     } catch (_) { }
 
                     this._directionalOriginals.delete(c);
@@ -3533,7 +3187,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
             this._ground = [];
             this._catcherMat = null;
             this._catcherMesh = null;
-
             this._catcherActive = false;
             this._nearDynamicCasters = [];
             this._groundTriangleCount = 0;
@@ -3558,6 +3211,11 @@ AdvancedGpuInstancer.attributes.add('debug', {
             this._groups = [];
             this._hidden = [];
             this._physics = [];
+            this._physicsGrid = null;
+            this._physicsLarge = [];
+            this._physicsActive = new Set();
+            this._physicsCellSize = 0;
+            this._materialCache = new Map();
             this._lods = new Map();
 
             this._lodQueue = [];
@@ -3588,21 +3246,25 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
             this._player = null;
             this._cameras = [];
+            this._frameComponents = null;
+            this._frameLights = null;
+            this._workerEpoch = 0;
 
+            this._perf = {
+                enabled: false,
+                samples: 0,
+                signature: 0,
+                shadows: 0,
+                systems: 0,
+                total: 0
+            };
+
+            this._mobileBaseline = null;
             this.stats = {};
             this._groupReport = [];
 
-            this.on(
-                'disable',
-                this.restore,
-                this
-            );
-
-            this.on(
-                'destroy',
-                this.restore,
-                this
-            );
+            this.on('disable', this.restore, this);
+            this.on('destroy', this.restore, this);
 
             this.on(
                 'enable',
@@ -3632,10 +3294,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
             var cams = this.app.root
                 .findComponents('camera')
                 .filter(function (c) {
-                    return (
-                        c.enabled &&
-                        alive(c.entity)
-                    );
+                    return c.enabled && alive(c.entity);
                 });
 
             this._cameras = cams.filter(function (c) {
@@ -3690,11 +3349,33 @@ AdvancedGpuInstancer.attributes.add('debug', {
             var visual = new Map();
             var groups = new Map();
 
+            // Evitar grupos con AABB excesivamente extensos.
+            var sceneBounds = null;
+
+            if (items.length <= 64) {
+                items.forEach(function (x) {
+                    sceneBounds = union(
+                        sceneBounds,
+                        x.bounds
+                    );
+                });
+            }
+
+            var singleZone =
+                items.length <= 64 &&
+                (
+                    !sceneBounds ||
+                    (
+                        sceneBounds[3] - sceneBounds[0] <= size &&
+                        sceneBounds[5] - sceneBounds[2] <= size
+                    )
+                );
+
             items.forEach(
                 function (x) {
                     var b = x.bounds;
 
-                    var chunk = items.length <= 64
+                    var chunk = singleZone
                         ? 'zona-unica'
                         : (
                             Math.floor(
@@ -3784,13 +3465,8 @@ AdvancedGpuInstancer.attributes.add('debug', {
                     },
                     this
                 );
-
             } catch (e) {
-                console.error(
-                    TAG,
-                    'Instancing:',
-                    e
-                );
+                console.error(TAG, 'Instancing:', e);
             }
 
             this._scanPhysics();
@@ -3847,9 +3523,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
     function ancestor(a, e) {
         for (var p = e; p; p = p.parent) {
-            if (p === a) {
-                return true;
-            }
+            if (p === a) return true;
         }
 
         return false;
@@ -3864,14 +3538,12 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 c.halfExtents.y,
                 c.halfExtents.z
             ];
-
         } else if (c.type === 'sphere') {
             h = [
                 c.radius,
                 c.radius,
                 c.radius
             ];
-
         } else {
             return null;
         }
@@ -3889,8 +3561,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
             return null;
         }
 
-        var m =
-            c.entity.getWorldTransform().data;
+        var m = c.entity.getWorldTransform().data;
 
         var o = c.linearOffset || {
             x: 0,
@@ -3946,18 +3617,13 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
         for (var i = 0; i < 3; i++) {
             var d = b[i] - a[i];
-
             var mn = box[i] - r;
             var mx = box[i + 3] + r;
 
             if (Math.abs(d) < 1e-8) {
-                if (
-                    a[i] < mn ||
-                    a[i] > mx
-                ) {
+                if (a[i] < mn || a[i] > mx) {
                     return false;
                 }
-
             } else {
                 var t0 = (mn - a[i]) / d;
                 var t1 = (mx - a[i]) / d;
@@ -3971,94 +3637,214 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 lo = Math.max(lo, t0);
                 hi = Math.min(hi, t1);
 
-                if (lo > hi) {
-                    return false;
-                }
+                if (lo > hi) return false;
             }
         }
 
         return true;
     }
 
+    // ========================================================
+    // INDICE ESPACIAL DE COLISIONES
+    // ========================================================
+
+    function cellKey(x, z) {
+        return x + ':' + z;
+    }
+
+    function indexPhysics(self) {
+        var grid = new Map();
+        var large = [];
+
+        var cell = Math.max(
+            16,
+            self.collisionRadius + self.collisionMargin
+        );
+
+        self._physics.forEach(function (item) {
+            var b = item.b;
+
+            var x0 = Math.floor(b[0] / cell);
+            var x1 = Math.floor(b[3] / cell);
+            var z0 = Math.floor(b[2] / cell);
+            var z1 = Math.floor(b[5] / cell);
+
+            if ((x1 - x0 + 1) * (z1 - z0 + 1) > 64) {
+                large.push(item);
+                return;
+            }
+
+            for (var x = x0; x <= x1; x++) {
+                for (var z = z0; z <= z1; z++) {
+                    var key = cellKey(x, z);
+                    var bucket = grid.get(key);
+
+                    if (!bucket) {
+                        bucket = [];
+                        grid.set(key, bucket);
+                    }
+
+                    bucket.push(item);
+                }
+            }
+        });
+
+        self._physicsGrid = grid;
+        self._physicsLarge = large;
+        self._physicsCellSize = cell;
+
+        self._physicsActive = new Set(
+            self._physics.filter(function (x) {
+                return x.on;
+            })
+        );
+    }
+
+    function nearbyPhysics(self, a, b, r) {
+        if (!self._physicsGrid) {
+            return self._physics;
+        }
+
+        var cell = self._physicsCellSize;
+
+        var x0 = Math.floor(
+            (Math.min(a[0], b[0]) - r) / cell
+        );
+
+        var x1 = Math.floor(
+            (Math.max(a[0], b[0]) + r) / cell
+        );
+
+        var z0 = Math.floor(
+            (Math.min(a[2], b[2]) - r) / cell
+        );
+
+        var z1 = Math.floor(
+            (Math.max(a[2], b[2]) + r) / cell
+        );
+
+        if ((x1 - x0 + 1) * (z1 - z0 + 1) > 4096) {
+            return self._physics;
+        }
+
+        var out = new Set(self._physicsLarge);
+
+        for (var x = x0; x <= x1; x++) {
+            for (var z = z0; z <= z1; z++) {
+                var list = self._physicsGrid.get(
+                    cellKey(x, z)
+                );
+
+                if (!list) continue;
+
+                for (var j = 0; j < list.length; j++) {
+                    out.add(list[j]);
+                }
+            }
+        }
+
+        return out;
+    }
+
     AdvancedGpuInstancer.prototype._scanPhysics =
         function () {
-            this._physics = [];
+            (this._physics || []).forEach(function (x) {
+                try {
+                    x.c.enabled = x.origC;
+                    x.rb.enabled = x.origR;
+                } catch (_) { }
+            });
 
-            if (
-                !this.physicsStreaming ||
-                !this._player
-            ) {
+            this._physics = [];
+            this._physicsGrid = null;
+            this._physicsLarge = [];
+            this._physicsActive = new Set();
+
+            this.stats.colliders = 0;
+
+            if (!this.physicsStreaming || !this._player) {
                 return;
             }
 
             this.app.root.findComponents('collision')
-                .forEach(
-                    function (c) {
-                        var e = c.entity;
-                        var rb = e.rigidbody;
+                .forEach(function (c) {
+                    var e = c.entity;
+                    var rb = e.rigidbody;
 
-                        if (
-                            !c.enabled ||
-                            !alive(e) ||
-                            !rb ||
-                            !rb.enabled ||
-                            rb.type !== pc.BODYTYPE_STATIC ||
-                            c.isTrigger ||
-                            !hasStaticAncestor(e) ||
-                            ancestor(e, this._player) ||
-                            (
-                                e.tags &&
-                                e.tags.has('no-gi-physics')
-                            )
-                        ) {
-                            return;
-                        }
+                    if (
+                        !c.enabled ||
+                        !alive(e) ||
+                        !rb ||
+                        !rb.enabled ||
+                        rb.type !== pc.BODYTYPE_STATIC ||
+                        c.isTrigger ||
+                        !hasStaticAncestor(e) ||
+                        ancestor(e, this._player) ||
+                        (
+                            e.tags &&
+                            e.tags.has('no-gi-physics')
+                        )
+                    ) {
+                        return;
+                    }
 
-                        var b = collisionBounds(c);
+                    var b = collisionBounds(c);
 
-                        if (
-                            !b ||
-                            Math.max(
-                                b[3] - b[0],
-                                b[4] - b[1],
-                                b[5] - b[2]
-                            ) > 1024
-                        ) {
-                            return;
-                        }
+                    if (
+                        !b ||
+                        Math.max(
+                            b[3] - b[0],
+                            b[4] - b[1],
+                            b[5] - b[2]
+                        ) > 1024
+                    ) {
+                        return;
+                    }
 
-                        this._physics.push({
-                            c: c,
-                            rb: rb,
-                            b: b,
-                            on: true,
-                            origC: c.enabled,
-                            origR: rb.enabled
-                        });
-                    },
+                    this._physics.push({
+                        c: c,
+                        rb: rb,
+                        b: b,
+                        on: true,
+                        origC: c.enabled,
+                        origR: rb.enabled
+                    });
+                },
                     this
                 );
 
-            this.stats.colliders =
-                this._physics.length;
+            this.stats.colliders = this._physics.length;
+            indexPhysics(this);
+        };
+
+    AdvancedGpuInstancer.prototype.rebuildPhysics =
+        function () {
+            this._discover();
+            this._scanPhysics();
+            return this.auditPhysicsStreaming();
         };
 
     AdvancedGpuInstancer.prototype._switchPhysics =
         function (x, on) {
-            if (x.on === on) {
-                return;
-            }
+            if (x.on === on) return;
 
             if (on) {
                 x.c.enabled = x.origC;
                 x.rb.enabled = x.origR;
-
             } else {
                 x.rb.enabled = false;
                 x.c.enabled = false;
             }
 
             x.on = on;
+
+            if (this._physicsActive) {
+                if (on) {
+                    this._physicsActive.add(x);
+                } else {
+                    this._physicsActive.delete(x);
+                }
+            }
         };
 
     AdvancedGpuInstancer.prototype._updatePhysics =
@@ -4077,11 +3863,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 this._player.rigidbody &&
                 this._player.rigidbody.linearVelocity;
 
-            var t = Math.max(
-                0,
-                this.predictionSeconds
-            );
-
+            var t = Math.max(0, this.predictionSeconds);
             var a = [p.x, p.y, p.z];
 
             var b = v
@@ -4092,10 +3874,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 ]
                 : a;
 
-            var r = Math.max(
-                10,
-                this.collisionRadius
-            );
+            var r = Math.max(10, this.collisionRadius);
 
             var far =
                 r +
@@ -4106,28 +3885,25 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 this.physicsBudget | 0
             );
 
-            for (
-                var i = 0;
-                i < this._physics.length && budget > 0;
-                i++
-            ) {
-                var x = this._physics[i];
+            // Seguridad primero: las colisiones proximas
+            // se activan sin esperar al presupuesto de apagado.
+            var nearby = nearbyPhysics(this, a, b, r);
 
-                if (
-                    !x.on &&
-                    segmentBox(a, b, x.b, r)
-                ) {
-                    this._switchPhysics(x, true);
-                    budget--;
-                }
-            }
+            nearby.forEach(
+                function (x) {
+                    if (
+                        !x.on &&
+                        segmentBox(a, b, x.b, r)
+                    ) {
+                        this._switchPhysics(x, true);
+                    }
+                },
+                this
+            );
 
-            for (
-                i = 0;
-                i < this._physics.length && budget > 0;
-                i++
-            ) {
-                x = this._physics[i];
+            // Desactivacion gradual de colliders lejanos.
+            for (var x of this._physicsActive) {
+                if (budget <= 0) break;
 
                 if (
                     x.on &&
@@ -4137,6 +3913,35 @@ AdvancedGpuInstancer.attributes.add('debug', {
                     budget--;
                 }
             }
+        };
+
+    AdvancedGpuInstancer.prototype.auditPhysicsStreaming =
+        function () {
+            var total = this._physics
+                ? this._physics.length
+                : 0;
+
+            var on = this._physicsActive
+                ? this._physicsActive.size
+                : total;
+
+            var row = {
+                colliders: total,
+                activos: on,
+                desactivados: total - on,
+                desactivadosPct: total
+                    ? +((total - on) * 100 / total).toFixed(2)
+                    : 0,
+                celdas: this._physicsGrid
+                    ? this._physicsGrid.size
+                    : 0,
+                jugador: this._player
+                    ? this._player.name
+                    : 'no detectado'
+            };
+
+            console.table([row]);
+            return row;
         };
 
     // ========================================================
@@ -4220,7 +4025,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 mesh.getUvs(0, u);
                 mesh.getUvs(1, v);
                 mesh.getIndices(ix);
-
             } catch (_) {
                 return;
             }
@@ -4251,9 +4055,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
     AdvancedGpuInstancer.prototype._startWorker =
         function () {
-            if (!this._lodJobs.length) {
-                return;
-            }
+            if (!this._lodJobs.length) return;
 
             if (!this._worker) {
                 var url;
@@ -4266,17 +4068,20 @@ AdvancedGpuInstancer.attributes.add('debug', {
                                 lodWorker.toString() +
                                 ')();'
                             ],
-                            {
-                                type: 'text/javascript'
-                            }
+                            { type: 'text/javascript' }
                         )
                     );
 
                     this._worker = new Worker(url);
 
                     var self = this;
+                    var epoch = this._workerEpoch;
 
                     this._worker.onmessage = function (ev) {
+                        if (self._workerEpoch !== epoch) {
+                            return;
+                        }
+
                         var job = self._lodWorking;
                         self._lodWorking = null;
 
@@ -4314,7 +4119,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
                                     job.lod.meshes[i + 1] = mesh;
                                     self.stats.lods++;
-
                                 } catch (e) {
                                     if (mesh) {
                                         try {
@@ -4343,20 +4147,15 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
                         self._stopWorker();
                     };
-
                 } catch (e) {
                     console.warn(
                         TAG,
                         'No se pudo crear Worker:',
                         e
                     );
-
                     return;
-
                 } finally {
-                    if (url) {
-                        URL.revokeObjectURL(url);
-                    }
+                    if (url) URL.revokeObjectURL(url);
                 }
             }
 
@@ -4379,7 +4178,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 this._worker.postMessage(
                     this._lodWorking.data
                 );
-
             } catch (e) {
                 this._lodWorking = null;
                 console.warn(TAG, e);
@@ -4400,10 +4198,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
     AdvancedGpuInstancer.prototype._updateLods =
         function () {
-            if (
-                !this.autoLod ||
-                !this._cameras.length
-            ) {
+            if (!this.autoLod || !this._cameras.length) {
                 return;
             }
 
@@ -4415,10 +4210,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
                     if (
                         !lod ||
-                        (
-                            !lod.meshes[1] &&
-                            !lod.meshes[2]
-                        )
+                        (!lod.meshes[1] && !lod.meshes[2])
                     ) {
                         return;
                     }
@@ -4496,6 +4288,10 @@ AdvancedGpuInstancer.attributes.add('debug', {
             );
         };
 
+    // ========================================================
+    // WORKER PARA AUTOLOD
+    // ========================================================
+
     function lodWorker() {
         self.onmessage = function (ev) {
             try {
@@ -4505,7 +4301,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
                         reduce(ev.data, 0.24)
                     ]
                 });
-
             } catch (e) {
                 self.postMessage({
                     error: String(e)
@@ -4726,10 +4521,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
         function (on) {
             on = !!on;
 
-            if (
-                !this._alive ||
-                this._baking === on
-            ) {
+            if (!this._alive || this._baking === on) {
                 return;
             }
 
@@ -4778,7 +4570,7 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 );
             });
 
-            this.app.root.findComponents('light').forEach(
+            shadowLights(this.app).forEach(
                 function (l) {
                     sig.push(
                         'L',
@@ -4807,7 +4599,6 @@ AdvancedGpuInstancer.attributes.add('debug', {
                         return;
                     }
 
-                    // GI2.3: guid, no getGuid().
                     sig.push(
                         'R',
                         c.entity.guid || c.entity.name,
@@ -4827,14 +4618,33 @@ AdvancedGpuInstancer.attributes.add('debug', {
 
                     (c.meshInstances || []).forEach(
                         function (mi) {
-                            var b = worldBounds(mi);
+                            var bb = mi && mi.aabb;
 
                             sig.push(
                                 mi.castShadow,
                                 mi.receiveShadow,
-                                mi.visible,
-                                b && b.join(',')
+                                mi.visible
                             );
+
+                            if (
+                                bb &&
+                                bb.center &&
+                                bb.halfExtents
+                            ) {
+                                var ce = bb.center;
+                                var he = bb.halfExtents;
+
+                                sig.push(
+                                    ce.x - he.x,
+                                    ce.y - he.y,
+                                    ce.z - he.z,
+                                    ce.x + he.x,
+                                    ce.y + he.y,
+                                    ce.z + he.z
+                                );
+                            } else {
+                                sig.push('?');
+                            }
                         }
                     );
                 },
@@ -4850,15 +4660,220 @@ AdvancedGpuInstancer.attributes.add('debug', {
         };
 
     // ========================================================
-    // UPDATE
+    // METRICAS PORCENTUALES PARA PRUEBAS MOVILES
+    // ========================================================
+
+    function percentLess(a, b) {
+        return (
+            Number.isFinite(a) &&
+            a > 0 &&
+            Number.isFinite(b)
+        )
+            ? +((a - b) * 100 / a).toFixed(2)
+            : null;
+    }
+
+    AdvancedGpuInstancer.prototype.auditPerformance =
+        function (enabled) {
+            var p = this._perf;
+
+            if (enabled === true) {
+                p.samples = 0;
+                p.signature = 0;
+                p.shadows = 0;
+                p.systems = 0;
+                p.total = 0;
+                p.enabled = true;
+            } else if (enabled === false) {
+                p.enabled = false;
+            }
+
+            var n = Math.max(1, p.samples);
+
+            var report = {
+                activo: p.enabled,
+                muestras: p.samples,
+                firmaMs: +(p.signature / n).toFixed(4),
+                sombrasMs: +(p.shadows / n).toFixed(4),
+                sistemasMs: +(p.systems / n).toFixed(4),
+                totalMs: +(p.total / n).toFixed(4),
+                drawCallsUltimoFrame:
+                    this.app.stats.drawCallCount,
+                grupos: this.stats.groups,
+                colliders: this.stats.colliders
+            };
+
+            console.table([report]);
+            return report;
+        };
+
+    AdvancedGpuInstancer.prototype.mobileReport =
+        function () {
+            var s = this.stats;
+            var st = this.app.stats;
+
+            var before = s.instanced || 0;
+            var after = s.groups || 0;
+
+            var totalP = this._physics
+                ? this._physics.length
+                : 0;
+
+            var activeP = this._physicsActive
+                ? this._physicsActive.size
+                : totalP;
+
+            var analyses = this._shadowAnalyses || 0;
+            var hits = this._shadowCacheHits || 0;
+
+            var p = this._perf;
+            var n = Math.max(1, p.samples);
+            var cpu = p.samples ? p.total / n : null;
+
+            var report = {
+                version: 'GI2.5',
+                instanciadas: before,
+                grupos: after,
+
+                ahorroDrawsTeoricoPct: before
+                    ? +((before - after) * 100 / before)
+                        .toFixed(2)
+                    : 0,
+
+                drawCallsMedidas: st.drawCallCount,
+
+                cacheSombrasPct: analyses + hits
+                    ? +(hits * 100 / (analyses + hits))
+                        .toFixed(2)
+                    : 0,
+
+                colliders: totalP,
+
+                collidersDesactivadosPct: totalP
+                    ? +((totalP - activeP) * 100 / totalP)
+                        .toFixed(2)
+                    : 0,
+
+                tiempoScriptMs: cpu === null
+                    ? null
+                    : +cpu.toFixed(4),
+
+                // Porcentaje relativo a 33,33 ms (30 FPS)
+                // medido en ESTE equipo, no en un celular.
+                presupuesto30FPSConsumidoEnEstaPCPct:
+                    cpu === null
+                        ? null
+                        : +(cpu / 33.333333 * 100)
+                            .toFixed(3),
+
+                vramEstimadaBytes:
+                    Number.isFinite(st.vramTotalBytes)
+                        ? st.vramTotalBytes
+                        : null,
+
+                dispositivo:
+                    'Medicion local; NO predice FPS en moviles'
+            };
+
+            console.table([report]);
+            return report;
+        };
+
+    AdvancedGpuInstancer.prototype.captureMobileBaseline =
+        function () {
+            var st = this.app.stats;
+            var p = this._perf;
+
+            var snap = {
+                drawCalls: st.drawCallCount,
+                cpuUpdateMs: st.cpuUpdateTime,
+                cpuRenderMs: st.cpuRenderTime,
+                gpuMs: st.gpuFrameTime,
+                vramBytes: st.vramTotalBytes,
+                giCpuMs: p.samples
+                    ? p.total / p.samples
+                    : null
+            };
+
+            this._mobileBaseline = snap;
+            console.table([snap]);
+            return snap;
+        };
+
+    AdvancedGpuInstancer.prototype.compareMobileBaseline =
+        function (baseline) {
+            var a = baseline || this._mobileBaseline;
+
+            if (!a) {
+                console.warn(
+                    TAG,
+                    'Falta baseline; use captureMobileBaseline()'
+                );
+                return null;
+            }
+
+            var st = this.app.stats;
+            var p = this._perf;
+
+            var cpu = p.samples
+                ? p.total / p.samples
+                : null;
+
+            var row = {
+                ahorroDrawCallsPct:
+                    percentLess(
+                        a.drawCalls,
+                        st.drawCallCount
+                    ),
+
+                ahorroCpuUpdatePct:
+                    percentLess(
+                        a.cpuUpdateMs,
+                        st.cpuUpdateTime
+                    ),
+
+                ahorroCpuRenderPct:
+                    percentLess(
+                        a.cpuRenderMs,
+                        st.cpuRenderTime
+                    ),
+
+                ahorroGpuPct:
+                    percentLess(
+                        a.gpuMs,
+                        st.gpuFrameTime
+                    ),
+
+                ahorroVramEstimadaPct:
+                    percentLess(
+                        a.vramBytes,
+                        st.vramTotalBytes
+                    ),
+
+                ahorroCpuGiPct:
+                    percentLess(
+                        a.giCpuMs,
+                        cpu
+                    )
+            };
+
+            console.table([row]);
+
+            console.log(
+                TAG,
+                'Porcentajes medidos en ESTE dispositivo; no son FPS movil.'
+            );
+
+            return row;
+        };
+
+    // ========================================================
+    // CICLO DE ACTUALIZACION
     // ========================================================
 
     AdvancedGpuInstancer.prototype.update =
         function (dt) {
-            if (
-                !this._alive ||
-                this._baking
-            ) {
+            if (!this._alive || this._baking) {
                 return;
             }
 
@@ -4871,68 +4886,108 @@ AdvancedGpuInstancer.attributes.add('debug', {
                     this._retry = 0;
                     this.rebuild();
                 }
-
                 return;
             }
 
-            var key = this._shadowSignature();
+            var p = this._perf;
 
-            if (
-                key !== this._shadowCacheKey ||
-                this._pendingOff
-            ) {
-                this._shadowCacheKey = key;
-                this._pendingOff = false;
+            var measure =
+                p.enabled &&
+                typeof performance !== 'undefined';
 
-                this._updateCatchers();
+            var t0 = measure ? performance.now() : 0;
+            var t = t0;
 
-                if (!this._probe) {
-                    this._applyCasterMode();
-                    this._optimizeDirectionalMasks();
-                    this._reconcileLights(dt, false);
-                }
+            this._frameComponents =
+                shadowComponents(this.app);
 
-                this._shadowAnalyses++;
+            this._frameLights =
+                shadowLights(this.app);
 
-                this._shadowCacheKey =
-                    this._shadowSignature();
+            frameOwner = this;
 
-            } else {
-                this._shadowCacheHits++;
-            }
+            try {
+                var key = this._shadowSignature();
 
-            if (this._discovery >= 3) {
-                this._discovery = 0;
-
-                var had = !!this._player;
-                var oldCameras = this._cameras.slice();
-
-                // GI2.3: descubrir camaras nuevamente.
-                this._discover();
-
-                if (!had && this._player) {
-                    this._scanPhysics();
+                if (measure) {
+                    p.signature += performance.now() - t;
+                    t = performance.now();
                 }
 
                 if (
-                    oldCameras.length !== this._cameras.length ||
-                    oldCameras.some(
-                        function (c, i) {
-                            return c !== this._cameras[i];
-                        },
-                        this
-                    )
+                    key !== this._shadowCacheKey ||
+                    this._pendingOff
                 ) {
-                    this.invalidateShadows();
+                    this._shadowCacheKey = key;
+                    this._pendingOff = false;
+
+                    this._updateCatchers();
+
+                    if (!this._probe) {
+                        this._applyCasterMode();
+                        this._optimizeDirectionalMasks();
+                        this._reconcileLights(dt, false);
+                    }
+
+                    this._shadowAnalyses++;
+
+                    this._shadowCacheKey =
+                        this._shadowSignature();
+                } else {
+                    this._shadowCacheHits++;
                 }
-            }
 
-            if (this._clock >= 0.25) {
-                this._clock = 0;
+                if (measure) {
+                    p.shadows += performance.now() - t;
+                    t = performance.now();
+                }
 
-                this._prepareLod();
-                this._updateLods();
-                this._updatePhysics();
+                if (this._discovery >= 3) {
+                    this._discovery = 0;
+
+                    var oldPlayer = this._player;
+                    var oldCameras = this._cameras.slice();
+
+                    this._discover();
+
+                    if (oldPlayer !== this._player) {
+                        this._scanPhysics();
+                    }
+
+                    if (
+                        oldCameras.length !==
+                        this._cameras.length ||
+                        oldCameras.some(
+                            function (c, i) {
+                                return c !== this._cameras[i];
+                            },
+                            this
+                        )
+                    ) {
+                        this.invalidateShadows();
+                    }
+                }
+
+                if (this._clock >= 0.25) {
+                    this._clock = 0;
+
+                    this._prepareLod();
+                    this._updateLods();
+                    this._updatePhysics();
+                }
+
+                if (measure) {
+                    p.systems += performance.now() - t;
+                }
+            } finally {
+                frameOwner = null;
+                this._frameComponents = null;
+                this._frameLights = null;
+
+                if (measure) {
+                    p.total += performance.now() - t0;
+                    p.samples++;
+                }
             }
         };
 
@@ -4974,11 +5029,18 @@ AdvancedGpuInstancer.attributes.add('debug', {
                 try {
                     g.vb.destroy();
                 } catch (_) { }
-
-                try {
-                    g.mat.destroy();
-                } catch (_) { }
             });
+
+            // Evita destruir varias veces materiales compartidos.
+            if (this._materialCache) {
+                this._materialCache.forEach(function (mat) {
+                    try {
+                        mat.destroy();
+                    } catch (_) { }
+                });
+
+                this._materialCache.clear();
+            }
 
             (this._physics || []).forEach(function (x) {
                 try {
@@ -5006,6 +5068,18 @@ AdvancedGpuInstancer.attributes.add('debug', {
             this._groups = [];
             this._hidden = [];
             this._physics = [];
+            this._physicsGrid = null;
+            this._physicsLarge = [];
+            this._physicsActive = new Set();
+
+            this._frameComponents = null;
+            this._frameLights = null;
+            this._workerEpoch =
+                (this._workerEpoch || 0) + 1;
+
+            if (frameOwner === this) {
+                frameOwner = null;
+            }
 
             this._lods = new Map();
             this._ids = new WeakMap();
