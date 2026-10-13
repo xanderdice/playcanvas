@@ -1,117 +1,173 @@
-var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
+/*
+ * AGI3.9 - Advanced GPU Instancer
+ * PlayCanvas Engine 2.23.1
+ * Compatible con BakePT6.6.0, WebGPU/WebGL2.
+ *
+ * MEJORAS:
+ * - Cache de AABB dinamicos.
+ * - Cache independiente de proyeccion de sombras.
+ * - Cache de visibilidad de camaras.
+ * - Spot shadowDistance controlado por el juego.
+ * - Conservacion de sombras baked y realtime.
+ * - Sin nuevas distancias de sombras hardcodeadas.
+ * - GPU Instancing, AutoLOD y streaming.
+ *
+ * Classic Script: reemplazar AGI3.8 completo.
+ */
+
+var AdvancedGpuInstancer =
+    pc.createScript('advancedGpuInstancer');
+
 AdvancedGpuInstancer.attributes.add('chunkSize', {
     type: 'number',
-    default: 256,
+    default: 96,
     min: 16,
-    title: 'Tamano de chunks'
+    title: 'Tamano de celda'
 });
+
 AdvancedGpuInstancer.attributes.add('autoLod', {
     type: 'boolean',
     default: true,
     title: 'AutoLOD'
 });
+
 AdvancedGpuInstancer.attributes.add('physicsStreaming', {
     type: 'boolean',
     default: true,
-    title: 'Colisiones por proximidad'
+    title: 'Fisica predictiva'
 });
+
 AdvancedGpuInstancer.attributes.add('dynamicShadowCatcher', {
     type: 'boolean',
     default: true,
-    title: 'Sombras dinamicas sobre bake'
+    title: 'Sombras dinamicas sobre PT'
 });
+
 AdvancedGpuInstancer.attributes.add('debug', {
     type: 'boolean',
     default: true,
-    title: 'Diagnostico'
+    title: 'Diagnosticos'
 });
+
 (function () {
     'use strict';
-    var TAG = '[GI2.5]';
-    var MIN = 2;
-    var RECT = [0, 0, 1, 1];
+
+    var TAG = '[AGI3.9]';
+
     var SEM = [
         pc.SEMANTIC_ATTR11,
         pc.SEMANTIC_ATTR12,
         pc.SEMANTIC_ATTR13,
         pc.SEMANTIC_ATTR14
     ];
-    var GLSL_X = [
-        'attribute vec4 aGi0;',
-        'attribute vec4 aGi1;',
-        'attribute vec4 aGi2;',
-        'attribute vec4 aGiRect;',
-        'mat4 getModelMatrix() { return mat4(',
-        ' vec4(aGi0.xyz,0.0), vec4(aGi1.xyz,0.0),',
-        ' vec4(aGi2.xyz,0.0),',
-        ' vec4(aGi0.w,aGi1.w,aGi2.w,1.0)); }'
-    ].join('\n');
-    var WGSL_X = [
-        'attribute aGi0: vec4f;',
-        'attribute aGi1: vec4f;',
-        'attribute aGi2: vec4f;',
-        'attribute aGiRect: vec4f;',
-        'fn getModelMatrix() -> mat4x4f { return mat4x4f(',
-        ' vec4f(aGi0.xyz,0.0), vec4f(aGi1.xyz,0.0),',
-        ' vec4f(aGi2.xyz,0.0),',
-        ' vec4f(aGi0.w,aGi1.w,aGi2.w,1.0)); }'
-    ].join('\n');
-    var GLSL_U =
+
+    var GLSL =
+        'attribute vec4 aAgi0;\n' +
+        'attribute vec4 aAgi1;\n' +
+        'attribute vec4 aAgi2;\n' +
+        'attribute vec4 aAgiRect;\n' +
+        'mat4 getModelMatrix(){return mat4(' +
+        'vec4(aAgi0.xyz,0.),' +
+        'vec4(aAgi1.xyz,0.),' +
+        'vec4(aAgi2.xyz,0.),' +
+        'vec4(aAgi0.w,aAgi1.w,aAgi2.w,1.));}';
+
+    var WGSL =
+        'attribute aAgi0: vec4f;\n' +
+        'attribute aAgi1: vec4f;\n' +
+        'attribute aAgi2: vec4f;\n' +
+        'attribute aAgiRect: vec4f;\n' +
+        'fn getModelMatrix() -> mat4x4f {' +
+        'return mat4x4f(' +
+        'vec4f(aAgi0.xyz,0.),' +
+        'vec4f(aAgi1.xyz,0.),' +
+        'vec4f(aAgi2.xyz,0.),' +
+        'vec4f(aAgi0.w,aAgi1.w,aAgi2.w,1.));}';
+
+    var UVG =
         '\n#if defined(INSTANCING) && defined(UV1_UNMODIFIED)\n' +
-        'vUv1 = vUv1 * aGiRect.zw + aGiRect.xy;\n' +
+        'vUv1=vUv1*aAgiRect.zw+aAgiRect.xy;\n' +
         '#endif\n';
-    var WGSL_U =
+
+    var UVW =
         '\n#if defined(INSTANCING) && defined(UV1_UNMODIFIED)\n' +
-        'output.vUv1 = output.vUv1 * aGiRect.zw + aGiRect.xy;\n' +
+        'output.vUv1=output.vUv1*aAgiRect.zw+aAgiRect.xy;\n' +
         '#endif\n';
-    function alive(e) {
+
+    function live(e) {
         return !!(e && e.enabled && !e._destroyed);
     }
-    function getp(mi, name) {
-        var p = mi && mi.getParameter
-            ? mi.getParameter(name)
-            : null;
-        return p && p.data !== undefined ? p.data : p;
+
+    function tag(e, n) {
+        return !!(e && e.tags && e.tags.has(n));
     }
-    function lm(mi) {
-        var n = pc.MeshInstance.lightmapParamNames || [
-            'instance_lightMap',
-            'texture_dirLightMap'
-        ];
+
+    function clamp(x, a, b) {
+        return Math.min(b, Math.max(a, x));
+    }
+
+    function pct(x, n) {
+        return n ? +(100 * x / n).toFixed(2) : 0;
+    }
+
+    function median(a, p) {
+        if (!a.length) return null;
+
+        var b = a.slice().sort(function (x, y) {
+            return x - y;
+        });
+
+        return +b[
+            Math.floor((b.length - 1) * p)
+        ].toFixed(4);
+    }
+
+    function objId(s, o) {
+        if (!o) return 0;
+
+        var n = s._ids.get(o);
+
+        if (!n) {
+            n = ++s._id;
+            s._ids.set(o, n);
+        }
+
+        return n;
+    }
+
+    function param(mi, n) {
+        var p = mi.getParameter
+            ? mi.getParameter(n)
+            : null;
+
+        return p && p.data !== undefined
+            ? p.data
+            : p;
+    }
+
+    function lmOf(mi) {
+        var names =
+            pc.MeshInstance.lightmapParamNames ||
+            ['instance_lightMap', 'texture_dirLightMap'];
+
         return {
-            name: n[0] || 'instance_lightMap',
-            texture:
-                getp(mi, n[0] || 'instance_lightMap') ||
-                getp(mi, 'instance_lightMap'),
-            dirName: n[1] || 'texture_dirLightMap',
-            direction:
-                getp(mi, n[1] || 'texture_dirLightMap')
+            name: names[0],
+            dn: names[1],
+            tex: param(mi, names[0]) ||
+                param(mi, 'instance_lightMap'),
+            dir: param(mi, names[1]),
+            rect: param(mi, 'uPT6LmRect')
         };
     }
-    function rect(mi) {
-        var a = getp(mi, 'uPT6LmRect');
-        return a &&
-            a.length === 4 &&
-            Array.from(a).every(Number.isFinite) &&
-            a[2] > 0 &&
-            a[3] > 0
-            ? a
-            : null;
-    }
-    function baked(c, mi) {
-        return !!(
-            (c.lightmapped === true || c.entity.__giProxy) &&
-            lm(mi).texture
-        );
-    }
-    function worldBounds(mi) {
+
+    function bounds(mi) {
         var b = mi && mi.aabb;
-        if (!b || !b.center || !b.halfExtents) {
-            return null;
-        }
+        if (!b) return null;
+
         var c = b.center;
         var h = b.halfExtents;
-        var a = [
+
+        return [
             c.x - h.x,
             c.y - h.y,
             c.z - h.z,
@@ -119,19 +175,21 @@ AdvancedGpuInstancer.attributes.add('debug', {
             c.y + h.y,
             c.z + h.z
         ];
-        return a.every(Number.isFinite) ? a : null;
     }
-    function union(a, b) {
-        if (!a) {
-            return b.slice();
-        }
+
+    function joinBox(a, b) {
+        if (!b) return a;
+        if (!a) return b.slice();
+
         for (var i = 0; i < 3; i++) {
             a[i] = Math.min(a[i], b[i]);
             a[i + 3] = Math.max(a[i + 3], b[i + 3]);
         }
+
         return a;
     }
-    function makeAabb(a) {
+
+    function box3(a) {
         return new pc.BoundingBox(
             new pc.Vec3(
                 (a[0] + a[3]) / 2,
@@ -145,4058 +203,4011 @@ AdvancedGpuInstancer.attributes.add('debug', {
             )
         );
     }
-    function oid(self, x) {
-        if (!x) {
-            return 0;
-        }
-        var n = self._ids.get(x);
-        if (!n) {
-            n = ++self._id;
-            self._ids.set(x, n);
-        }
-        return n;
+
+    function boxDist2(b, p) {
+        var x = Math.max(0, b[0] - p.x, p.x - b[3]);
+        var y = Math.max(0, b[1] - p.y, p.y - b[4]);
+        var z = Math.max(0, b[2] - p.z, p.z - b[5]);
+
+        return x * x + y * y + z * z;
     }
-    function extraParams(mi) {
-        if (
-            !mi.parameters ||
-            typeof mi.parameters.forEach !== 'function'
-        ) {
-            return false;
-        }
-        var extra = false;
-        mi.parameters.forEach(function (value, name) {
-            if (
-                name !== 'uPT6LmRect' &&
-                name !== 'instance_lightMap' &&
-                name !== 'texture_dirLightMap'
-            ) {
-                extra = true;
-            }
+
+    function cams(s) {
+        return (s._cameras || []).filter(function (c) {
+            return c.enabled && live(c.entity);
         });
-        return extra;
     }
-    function reason(c, mi) {
+
+    function floorSource(c) {
+        return !!(
+            c &&
+            c.isStatic &&
+            c.lightmapped &&
+            (
+                c.type === 'plane' ||
+                /floor|ground|suelo|piso|terreno|^plane|quad/i
+                    .test(c.entity.name)
+            )
+        );
+    }
+
+    // =====================================================
+    // AGI3.9 - CACHE DE MATRICES SIN ASIGNACIONES POR FRAME
+    // =====================================================
+
+    var AGI39_MAT = [
+        0, 1, 2,
+        4, 5, 6,
+        8, 9, 10,
+        12, 13, 14
+    ];
+
+    function matrixChanged(rec, node) {
+        if (!node || node._destroyed) return true;
+
+        var m = node.getWorldTransform().data;
+        var last = rec.mat;
+        var dirty = !last;
+
+        if (!last) {
+            last = rec.mat = new Float64Array(12);
+        }
+
+        for (var i = 0; i < 12; i++) {
+            var v = m[AGI39_MAT[i]];
+
+            if (last[i] !== v) {
+                dirty = true;
+                last[i] = v;
+            }
+        }
+
+        return dirty;
+    }
+
+    function sameRefs(a, b) {
+        if (!a || a.length !== b.length) return false;
+
+        for (var i = 0; i < b.length; i++) {
+            if (a[i] !== b[i]) return false;
+        }
+
+        return true;
+    }
+
+    // =====================================================
+    // GPU INSTANCING
+    // =====================================================
+
+    function chooseMi(c, mi) {
+        if (
+            !c ||
+            !c.enabled ||
+            !live(c.entity) ||
+            !c.isStatic ||
+            tag(c.entity, 'agi-no-instance') ||
+            c.entity.__agiProxy ||
+            c.entity.__agiCatcher ||
+            c.batchGroupId >= 0
+        ) {
+            return 'no estatico';
+        }
+
         if (
             !mi ||
             !mi.mesh ||
             !mi.mesh.vertexBuffer ||
             !mi.material ||
             !mi.node ||
-            mi.visible === false ||
+            !mi.visible ||
             mi.skinInstance ||
             mi.morphInstance ||
             mi.instancingData ||
-            extraParams(mi)
+            mi.calculateSortDistance
         ) {
             return 'malla especial';
         }
-        if (!(mi.material instanceof pc.StandardMaterial)) {
-            return 'material no PBR';
-        }
-        if (mi.material.blendType !== pc.BLEND_NONE) {
-            return 'transparencia';
-        }
-        if (mi.flipFacesFactor !== 1) {
-            return 'escala reflejada';
-        }
-        var p = mi.mesh.primitive;
+
         if (
-            !p ||
-            p.length !== 1 ||
-            p[0].type !== pc.PRIMITIVE_TRIANGLES
+            !(mi.material instanceof pc.StandardMaterial) ||
+            mi.material.blendType !== pc.BLEND_NONE ||
+            mi.flipFacesFactor !== 1
+        ) {
+            return 'material especial';
+        }
+
+        var pr = mi.mesh.primitive;
+
+        if (
+            !pr ||
+            pr.length !== 1 ||
+            pr[0].type !== pc.PRIMITIVE_TRIANGLES
         ) {
             return 'topologia';
         }
+
         if (
-            mi.mesh.vertexBuffer.getFormat().elements.some(
-                function (e) {
+            mi.mesh.vertexBuffer.getFormat()
+                .elements.some(function (e) {
                     return SEM.indexOf(e.name) >= 0;
-                }
+                })
+        ) {
+            return 'atributos ocupados';
+        }
+
+        var lm = lmOf(mi);
+
+        if (
+            c.lightmapped &&
+            (
+                !lm.tex ||
+                !lm.rect ||
+                lm.rect.length !== 4 ||
+                lm.rect[2] <= 0 ||
+                lm.rect[3] <= 0
             )
         ) {
-            return 'atributos reservados';
-        }
-        var l = lm(mi);
-        if (c.lightmapped && (!l.texture || !rect(mi))) {
             return 'esperando PT';
         }
-        if (!c.lightmapped && l.texture) {
-            return 'lightmap sin bandera';
+
+        if (!c.lightmapped && lm.tex) {
+            return 'lightmap no marcado';
         }
-        if (mi.calculateSortDistance) {
-            return 'orden especial';
-        }
-        return '';
-    }
-    function collect(self) {
-        var items = [];
-        var waiting = 0;
-        self.app.root.findComponents('render').forEach(
-            function (c) {
+
+        var extra = false;
+
+        if (mi.parameters && mi.parameters.forEach) {
+            mi.parameters.forEach(function (v, n) {
                 if (
-                    !alive(c.entity) ||
-                    !c.enabled ||
-                    !c.isStatic ||
-                    c.entity.__giProxy ||
-                    c.entity.__giShadowCatcher ||
-                    c.batchGroupId >= 0
+                    n !== lm.name &&
+                    n !== lm.dn &&
+                    n !== 'uPT6LmRect'
                 ) {
-                    return;
+                    extra = true;
                 }
-                (c.meshInstances || []).forEach(function (mi) {
-                    self.stats.staticMeshes++;
-                    var why = reason(c, mi);
-                    if (why) {
-                        self.stats.excluded[why] =
-                            (self.stats.excluded[why] || 0) + 1;
-                        if (why === 'esperando PT') {
-                            waiting++;
-                        }
-                        return;
-                    }
-                    var b = worldBounds(mi);
-                    if (!b) {
-                        self.stats.excluded.bounds =
-                            (self.stats.excluded.bounds || 0) + 1;
-                        return;
-                    }
-                    items.push({
-                        mi: mi,
-                        c: c,
-                        lm: lm(mi),
-                        rect: rect(mi),
-                        bounds: b
-                    });
-                });
-            }
-        );
-        return {
-            items: items,
-            waiting: waiting
-        };
+            });
+        }
+
+        return extra ? 'parametros propios' : '';
     }
-    function stateKey(self, x) {
+
+    function signature(x) {
         var m = x.mi;
         var c = x.c;
-        var manual = false;
-        (c.layers || []).forEach(function (id) {
-            var l = self.app.scene.layers.getLayerById(id);
-            if (
-                l &&
-                l.opaqueSortMode === pc.SORTMODE_MANUAL
-            ) {
-                manual = true;
-            }
-        });
-        var casts = !!(m.castShadow && c.castShadows);
+
         return [
-            (c.layers || []).join(','),
+            c.layers.join(','),
             m.mask,
             m.renderStyle,
             m.shaderPassMask,
-            casts ? 1 : 0,
-            !!(m.receiveShadow && c.receiveShadows) ? 1 : 0,
-            casts ? m.shadowCascadeMask : 'no',
-            m.drawBucket,
-            manual ? m.drawOrder : 'auto',
-            typeof m._shaderDefs === 'number'
-                ? (
-                    m._shaderDefs &
-                    ~(pc.SHADERDEF_INSTANCING || 0)
-                )
-                : '?'
+            m.castShadow,
+            c.castShadows,
+            m.receiveShadow,
+            m.shadowCascadeMask,
+            m.drawOrder,
+            m.drawBucket
         ].join('|');
     }
-    function instanceMaterial(self, g) {
-        var src = g.items[0].mi.material;
-        var cached = self._materialCache.get(src);
-        if (cached) return cached;
+
+    function materialClone(s, src) {
+        if (s._materials.has(src)) {
+            return s._materials.get(src);
+        }
+
         var m = src.clone();
-        m.name = (src.name || 'Material') + '_GI25';
+
+        m.name = (src.name || 'Material') + '_AGI39';
         m.shaderChunksVersion = '2.23';
+
         [
-            [pc.SHADERLANGUAGE_GLSL, GLSL_X, GLSL_U],
-            [pc.SHADERLANGUAGE_WGSL, WGSL_X, WGSL_U]
-        ].forEach(function (x) {
-            var chunks = m.getShaderChunks(x[0]);
-            chunks.set('transformInstancingVS', x[1]);
-            chunks.set(
+            [pc.SHADERLANGUAGE_GLSL, GLSL, UVG],
+            [pc.SHADERLANGUAGE_WGSL, WGSL, UVW]
+        ].forEach(function (v) {
+            var ch = m.getShaderChunks(v[0]);
+
+            ch.set('transformInstancingVS', v[1]);
+
+            ch.set(
                 'litUserMainEndVS',
-                (chunks.get('litUserMainEndVS') || '') + x[2]
+                (ch.get('litUserMainEndVS') || '') + v[2]
             );
         });
-        ['aGi0', 'aGi1', 'aGi2', 'aGiRect'].forEach(
-            function (n, i) {
-                m.setAttribute(n, SEM[i]);
-            }
-        );
+
+        [
+            'aAgi0',
+            'aAgi1',
+            'aAgi2',
+            'aAgiRect'
+        ].forEach(function (n, i) {
+            m.setAttribute(n, SEM[i]);
+        });
+
         m.update();
-        self._materialCache.set(src, m);
+
+        s._materials.set(src, m);
+
         return m;
     }
-    function pack(dst, i, x) {
-        var m = x.mi.node.getWorldTransform().data;
-        var o = i * 16;
-        dst[o] = m[0];
-        dst[o + 1] = m[1];
-        dst[o + 2] = m[2];
-        dst[o + 3] = m[12];
-        dst[o + 4] = m[4];
-        dst[o + 5] = m[5];
-        dst[o + 6] = m[6];
-        dst[o + 7] = m[13];
-        dst[o + 8] = m[8];
-        dst[o + 9] = m[9];
-        dst[o + 10] = m[10];
-        dst[o + 11] = m[14];
-        dst.set(x.rect || RECT, o + 12);
+
+    function instanceData(g) {
+        var a = new Float32Array(g.items.length * 16);
+
+        g.items.forEach(function (x, i) {
+            var m = x.mi.node.getWorldTransform().data;
+            var j = i * 16;
+
+            a.set([
+                m[0], m[1], m[2], m[12],
+                m[4], m[5], m[6], m[13],
+                m[8], m[9], m[10], m[14]
+            ], j);
+
+            a.set(
+                x.lm.rect || [0, 0, 1, 1],
+                j + 12
+            );
+        });
+
+        return a;
     }
-    function build(self, g, format) {
-        var src = g.items[0].mi;
+
+    function addGroup(s, g) {
+        var src = g.items[0];
         var proxy = null;
         var vb = null;
-        var mat = null;
-        var committed = false;
+
         try {
-            var data = new Float32Array(g.items.length * 16);
-            g.items.forEach(function (x, i) {
-                pack(data, i, x);
-            });
-            vb = new pc.VertexBuffer(
-                self.app.graphicsDevice,
-                format,
-                g.items.length,
-                { data: data }
-            );
-            mat = instanceMaterial(self, g);
+            g.data = instanceData(g);
+            g.bytes = g.data.byteLength;
+
             proxy = new pc.Entity(
-                'GI25_' +
-                (self._groups.length + 1) +
-                '_' +
-                g.items[0].c.entity.name
+                'AGI_Cell_' + g.cell + '_' + s.groups.length
             );
-            proxy.__giProxy = true;
-            self.app.root.addChild(proxy);
+
+            proxy.__agiProxy = true;
+            s.app.root.addChild(proxy);
+
             var mi = new pc.MeshInstance(
-                src.mesh,
-                mat,
+                src.mi.mesh,
+                materialClone(s, src.mi.material),
                 proxy
             );
-            mi.castShadow = src.castShadow;
-            mi.receiveShadow = src.receiveShadow;
-            mi.shadowCascadeMask = src.shadowCascadeMask;
-            mi.mask = src.mask;
-            mi.shaderPassMask = src.shaderPassMask;
-            mi.renderStyle = src.renderStyle;
-            mi.drawOrder = src.drawOrder;
-            mi.drawBucket = src.drawBucket;
+
+            mi.castShadow = src.mi.castShadow;
+            mi.receiveShadow = src.mi.receiveShadow;
+            mi.shadowCascadeMask = src.mi.shadowCascadeMask;
+            mi.mask = src.mi.mask;
+            mi.shaderPassMask = src.mi.shaderPassMask;
+            mi.renderStyle = src.mi.renderStyle;
+            mi.drawOrder = src.mi.drawOrder;
+            mi.drawBucket = src.mi.drawBucket;
+
+            vb = new pc.VertexBuffer(
+                s.app.graphicsDevice,
+                s._format,
+                g.items.length,
+                { data: g.data }
+            );
+
             mi.setInstancing(vb, true);
+
             proxy.addComponent('render', {
                 meshInstances: [mi],
-                layers: g.items[0].c.layers.slice()
+                layers: src.c.layers.slice()
             });
-            proxy.render.castShadows =
-                g.items[0].c.castShadows;
-            proxy.render.receiveShadows =
-                g.items[0].c.receiveShadows;
-            mi.mask = src.mask;
-            if (g.items[0].c.lightmapped) {
-                var l = g.items[0].lm;
+
+            proxy.render.isStatic = true;
+            proxy.render.lightmapped = src.c.lightmapped;
+            proxy.render.castShadows = src.c.castShadows;
+            proxy.render.receiveShadows = src.c.receiveShadows;
+
+            if (src.c.lightmapped) {
                 mi.setRealtimeLightmap(
-                    l.name,
-                    l.texture
+                    src.lm.name,
+                    src.lm.tex
                 );
-                if (l.direction) {
+
+                if (src.lm.dir) {
                     mi.setRealtimeLightmap(
-                        l.dirName,
-                        l.direction
+                        src.lm.dn,
+                        src.lm.dir
                     );
                 }
-                mi.setParameter('uPT6LmRect', RECT);
-            }
-            if (
-                typeof mi._updateShaderDefs === 'function' &&
-                typeof src._shaderDefs === 'number'
-            ) {
-                mi._updateShaderDefs(
-                    src._shaderDefs |
-                    (mi._shaderDefs & ~src._shaderDefs)
+
+                mi.setParameter(
+                    'uPT6LmRect',
+                    [0, 0, 1, 1]
                 );
             }
-            var a = makeAabb(g.bounds);
-            proxy.render.customAabb = a;
-            mi.aabb = a;
+
+            if (
+                typeof mi._updateShaderDefs === 'function' &&
+                typeof src.mi._shaderDefs === 'number'
+            ) {
+                mi._updateShaderDefs(
+                    src.mi._shaderDefs |
+                    (mi._shaderDefs & ~src.mi._shaderDefs)
+                );
+            }
+
+            g.box = box3(g.b);
+
+            proxy.render.customAabb = g.box;
+            mi.aabb = g.box;
+
             g.proxy = proxy;
             g.mi = mi;
             g.vb = vb;
-            g.mat = mat;
-            g.center = a.center.clone();
-            g.radius = a.halfExtents.length();
-            g.current = 0;
-            self._groups.push(g);
-            committed = true;
+            g.mesh = src.mi.mesh;
+            g.loaded = true;
+            g.idle = 0;
+            g.lod = 0;
+
+            g.castsShadow = !!(
+                mi.castShadow &&
+                proxy.render.castShadows
+            );
+
+            s.groups.push(g);
+
             g.items.forEach(function (x) {
-                self._hidden.push({
+                s._hidden.push({
                     mi: x.mi,
                     visible: x.mi.visible
                 });
+
                 x.mi.visible = false;
             });
-            self.stats.groups++;
-            self.stats.instanced += g.items.length;
-            self.stats.savedDrawsEstimate +=
-                g.items.length - 1;
-            self._registerLod(g);
+
+            s.stats.instances += g.items.length;
+            s.stats.groups++;
+            s.stats.instanceBytes += g.bytes;
+
+            return true;
+
         } catch (e) {
-            console.warn(TAG, 'Grupo preservado por error:', e);
-            if (committed) {
-                self._groups.pop();
-                g.items.forEach(function (x) {
-                    var h = self._hidden.find(function (q) {
-                        return q.mi === x.mi;
-                    });
-                    if (h) {
-                        x.mi.visible = h.visible;
-                    }
-                });
-                self._hidden = self._hidden.filter(
-                    function (h) {
-                        return !g.items.some(function (x) {
-                            return x.mi === h.mi;
-                        });
-                    }
-                );
-            }
+            console.warn(
+                TAG,
+                'Grupo omitido:',
+                g.cell,
+                e
+            );
+
             if (proxy) {
                 try { proxy.destroy(); } catch (_) { }
             }
+
             if (vb) {
                 try { vb.destroy(); } catch (_) { }
             }
-            self.stats.excluded['fallo grupo'] =
-                (self.stats.excluded['fallo grupo'] || 0) +
-                g.items.length;
+
+            return false;
         }
     }
-    function normalizedMode(mode) {
-        var aliases = {
-            'Optimizar horneados': 'optimized',
-            'Automatico seguro': 'auto',
-            'Original (GI1.7)': 'original',
-            'Original (sin optimizar)': 'original'
-        };
-        mode = aliases[mode] || mode;
-        return (
-            mode === 'optimized' ||
-            mode === 'original' ||
-            mode === 'auto'
-        ) ? mode : 'auto';
-    }
-    var frameOwner = null;
-    function shadowComponents(app) {
-        if (frameOwner && frameOwner.app === app && frameOwner._frameComponents) {
-            return frameOwner._frameComponents;
+
+    function unload(s, g) {
+        if (!g.loaded) return;
+
+        g.mi.visible = false;
+
+        try {
+            g.mi.setInstancing(null);
+        } catch (_) { }
+
+        if (g.vb) {
+            try { g.vb.destroy(); } catch (_) { }
         }
-        return app.root.findComponents('render').concat(
-            app.root.findComponents('model')
-        );
+
+        g.vb = null;
+        g.loaded = false;
+
+        s.stats.vbUnloads++;
     }
-    function shadowLights(app) {
-        if (frameOwner && frameOwner.app === app && frameOwner._frameLights) {
-            return frameOwner._frameLights;
-        }
-        return app.root.findComponents('light');
-    }
-    function shadowParticles(app) {
-        if (frameOwner && frameOwner.app === app) {
-            if (!frameOwner._frameParticles) {
-                frameOwner._frameParticles = app.root.findComponents('particlesystem');
+
+    function reload(s, g) {
+        if (g.loaded) return;
+
+        var vb;
+
+        try {
+            vb = new pc.VertexBuffer(
+                s.app.graphicsDevice,
+                s._format,
+                g.items.length,
+                { data: g.data }
+            );
+
+            g.mi.setInstancing(vb, true);
+            g.mi.visible = true;
+
+            g.vb = vb;
+            g.loaded = true;
+
+            s.stats.vbUploads++;
+
+        } catch (e) {
+            if (vb) {
+                try { vb.destroy(); } catch (_) { }
             }
-            return frameOwner._frameParticles;
+
+            console.warn(TAG, 'Recarga GPU', e);
         }
-        return app.root.findComponents('particlesystem');
     }
-    function validCasterComponent(c, originals) {
-        if (!c || !alive(c.entity) || !c.enabled) {
-            return false;
-        }
-        var saved = originals.get(c);
-        if (!c.castShadows && !saved) {
-            return false;
-        }
+
+    // =====================================================
+    // INFLUENCIA LOCAL DE LUCES
+    // =====================================================
+
+    function affects(l, b) {
+        if (!b || !l || !l.entity) return true;
+
+        var p = l.entity.getPosition();
+
+        var x = (b[0] + b[3]) / 2 - p.x;
+        var y = (b[1] + b[4]) / 2 - p.y;
+        var z = (b[2] + b[5]) / 2 - p.z;
+
+        var radius = Math.hypot(
+            b[3] - b[0],
+            b[4] - b[1],
+            b[5] - b[2]
+        ) / 2;
+
+        var d = Math.sqrt(x * x + y * y + z * z);
+        var range = +l.range;
+
         if (
-            !(
-                c.isStatic === true ||
-                c.entity.__giProxy === true
-            )
+            Number.isFinite(range) &&
+            range >= 0 &&
+            d > range + radius
         ) {
             return false;
         }
-        var arr = c.meshInstances || [];
-        var any = false;
-        var seen = false;
-        if (!arr.length) {
+
+        if (
+            l.type !== 'spot' ||
+            d <= radius ||
+            d <= 1e-5
+        ) {
+            return true;
+        }
+
+        var dir = l.entity.up;
+
+        if (!dir) return true;
+
+        var angle = (
+            Number.isFinite(+l.outerConeAngle)
+                ? +l.outerConeAngle
+                : 45
+        ) * Math.PI / 180 +
+            Math.asin(Math.min(1, radius / d));
+
+        return -(
+            x * dir.x +
+            y * dir.y +
+            z * dir.z
+        ) / d >=
+            Math.cos(Math.min(Math.PI, angle)) - 0.01;
+    }
+
+    function actualLocalCasterLight(s, l) {
+        var state = s._spotStates.get(l);
+
+        return state
+            ? state.original
+            : !!l.castShadows;
+    }
+
+    function keepBakedCaster(s, c, original) {
+        if (
+            tag(c.entity, 'agi-baked-only') ||
+            tag(c.entity, 'agi-no-realtime-shadow')
+        ) {
             return false;
         }
-        for (var i = 0; i < arr.length; i++) {
-            var mi = arr[i];
+
+        if (
+            tag(c.entity, 'agi-spot-caster') ||
+            tag(c.entity, 'agi-keep-realtime-shadows')
+        ) {
+            return true;
+        }
+
+        if (floorSource(c)) return false;
+
+        if (c.entity.__agiProxy) {
+            var g = s.groups.find(function (g) {
+                return g.proxy === c.entity;
+            });
+
             if (
-                !mi ||
-                !mi.mesh ||
-                mi.visible === false
+                g &&
+                g.items.length &&
+                g.items.every(function (x) {
+                    return floorSource(x.c);
+                })
             ) {
-                continue;
-            }
-            seen = true;
-            if (!baked(c, mi)) {
                 return false;
             }
-            if (mi.castShadow) {
-                any = true;
-            }
         }
-        return seen && (any || !!saved);
-    }
-    function sphereOf(mi) {
-        var a = mi && mi.aabb;
-        if (!a || !a.center || !a.halfExtents) {
-            return null;
-        }
-        var c = a.center;
-        var h = a.halfExtents;
-        var r = Math.sqrt(
-            h.x * h.x +
-            h.y * h.y +
-            h.z * h.z
-        );
-        if (
-            ![c.x, c.y, c.z, r].every(Number.isFinite)
-        ) {
-            return null;
-        }
-        return {
-            x: c.x,
-            y: c.y,
-            z: c.z,
-            r: r
-        };
-    }
-    function lightHitsSphere(l, s) {
-        if (!s) return true;
-        if (l.type === 'directional') {
-            return true;
-        }
-        var p = l.entity.getPosition();
-        var dx = s.x - p.x;
-        var dy = s.y - p.y;
-        var dz = s.z - p.z;
-        var d = Math.hypot(dx, dy, dz);
-        var range = Number(l.range);
-        if (!Number.isFinite(range) || range <= 0) {
-            return true;
-        }
-        if (d > s.r + range) {
-            return false;
-        }
-        if (l.type !== 'spot' || d <= s.r) {
-            return true;
-        }
-        var half = Number(l.outerConeAngle);
-        if (!Number.isFinite(half)) {
-            return true;
-        }
-        var allowed = Math.min(
-            Math.PI,
-            Math.max(0, half) * Math.PI / 180 +
-            Math.asin(Math.min(1, s.r / d))
-        );
-        var up = l.entity.up;
-        if (!up) return true;
-        var coneCos = -(
-            dx * up.x +
-            dy * up.y +
-            dz * up.z
-        ) / d;
-        return coneCos >= Math.cos(allowed) - 0.0001;
-    }
-    function receiverForLight(l, receiverBaked, mi) {
-        if (receiverBaked) {
-            if (l.bake || l.affectLightmapped !== true) {
-                return false;
-            }
-        } else if (l.affectDynamic === false) {
-            return false;
-        }
-        if (
-            typeof l.mask === 'number' &&
-            typeof mi.mask === 'number' &&
-            !(l.mask & mi.mask)
-        ) {
-            return false;
-        }
-        return lightHitsSphere(l, sphereOf(mi));
-    }
-    function canShadow(caster, receiver, l) {
-        if (!caster || !receiver) {
-            return true;
-        }
-        var vx;
-        var vy;
-        var vz;
-        var maxDist = Infinity;
-        if (l.type === 'directional') {
-            var up = l.entity.up;
-            if (!up) return true;
-            vx = up.x;
-            vy = up.y;
-            vz = up.z;
-        } else {
-            var p = l.entity.getPosition();
-            vx = p.x - receiver.x;
-            vy = p.y - receiver.y;
-            vz = p.z - receiver.z;
-            maxDist = Math.hypot(vx, vy, vz);
-            if (maxDist < 1e-6) {
-                return true;
-            }
-            vx /= maxDist;
-            vy /= maxDist;
-            vz /= maxDist;
-        }
-        var rx = caster.x - receiver.x;
-        var ry = caster.y - receiver.y;
-        var rz = caster.z - receiver.z;
-        var t = rx * vx + ry * vy + rz * vz;
-        var radius = caster.r + receiver.r + 1.0;
-        if (
-            t < -radius ||
-            t > maxDist + radius
-        ) {
-            return false;
-        }
-        var clamped = Math.max(
-            0,
-            Math.min(t, maxDist)
-        );
-        var ox = rx - vx * clamped;
-        var oy = ry - vy * clamped;
-        var oz = rz - vz * clamped;
-        return (
-            ox * ox +
-            oy * oy +
-            oz * oz
-        ) <= radius * radius;
-    }
-    function shadowSources(self, c) {
-        if (c.entity.__giProxy) {
-            for (var i = 0; i < self._groups.length; i++) {
-                var g = self._groups[i];
-                if (g.proxy === c.entity) {
-                    if (!g._shadowSources) {
-                        g._shadowSources = g.items.map(function (x) {
-                            return { mi: x.mi, c: x.c };
-                        });
-                    }
-                    return g._shadowSources;
-                }
-            }
-        }
-        return (c.meshInstances || [])
-            .filter(function (mi) {
-                return (
-                    mi &&
-                    mi.mesh &&
-                    mi.visible !== false
-                );
-            })
-            .map(function (mi) {
-                return {
-                    mi: mi,
-                    c: c
-                };
-            });
-    }
-    function trivialSelfShadow(src, r) {
-        if (src.mi !== r.mi) {
-            return false;
-        }
-        var type = src.c.type;
-        return (
-            type === 'box' ||
-            type === 'plane' ||
-            type === 'sphere' ||
-            type === 'cylinder' ||
-            type === 'capsule'
-        );
-    }
-    function potentialShadow(self, c, lights, receivers) {
-        var src = shadowSources(self, c);
-        var checked = 0;
-        var maxChecks = Math.max(
-            1000,
-            self.shadowPairBudget || 50000
-        );
-        if (src.some(function (x) {
-            return x.mi.skinInstance || x.mi.morphInstance;
-        })) {
-            return 'Animacion de caster';
-        }
-        for (var k = 0; k < lights.length; k++) {
-            var l = lights[k];
-            for (var j = 0; j < receivers.length; j++) {
-                var r = receivers[j];
-                if (r.c.entity.__giShadowCatcher) {
-                    continue;
-                }
-                if (!receiverForLight(l, r.baked, r.mi)) {
-                    continue;
-                }
-                var rb = sphereOf(r.mi);
-                for (var i = 0; i < src.length; i++) {
-                    if (++checked > maxChecks) {
-                        return 'Protegido por limite de analisis';
-                    }
-                    var x = src[i];
-                    var mi = x.mi;
-                    if (trivialSelfShadow(x, r)) {
-                        continue;
-                    }
-                    if (
-                        typeof l.mask === 'number' &&
-                        typeof mi.mask === 'number' &&
-                        !(l.mask & mi.mask)
-                    ) {
-                        continue;
-                    }
-                    if (!lightHitsSphere(l, sphereOf(mi))) {
-                        continue;
-                    }
-                    if (canShadow(sphereOf(mi), rb, l)) {
-                        return (
-                            'Puede sombrear ' +
-                            r.name +
-                            ' por ' +
-                            l.entity.name
-                        );
-                    }
-                }
-            }
-        }
-        return '';
-    }
-    function shadowScene(self) {
-        var receivers = frameOwner === self
-            ? self._frameReceivers : null;
-        var lights = [];
-        if (!receivers) {
-            receivers = [];
-            shadowComponents(self.app).forEach(function (c) {
-                if (
-                    !c ||
-                    !c.enabled ||
-                    !alive(c.entity) ||
-                    c.receiveShadows === false
-                ) {
-                    return;
-                }
-                shadowSources(self, c).forEach(function (x) {
-                    var mi = x.mi;
-                    if (
-                        !mi ||
-                        !mi.mesh ||
-                        mi.receiveShadow === false
-                    ) {
-                        return;
-                    }
-                    receivers.push({
-                        mi: mi,
-                        baked: baked(x.c, mi),
-                        name: x.c.entity.name,
-                        c: x.c
-                    });
-                });
-            });
-            if (frameOwner === self) self._frameReceivers = receivers;
-        }
-        shadowLights(self.app).forEach(
-            function (l) {
-                if (!l.enabled || !alive(l.entity)) {
-                    return;
-                }
-                var saved = self._lightOriginals.get(l);
-                if (
-                    !l.castShadows &&
-                    (!saved || !saved.cast)
-                ) {
-                    return;
-                }
-                lights.push(l);
-            }
-        );
-        return {
-            receivers: receivers,
-            lights: lights
-        };
-    }
-    AdvancedGpuInstancer.prototype._restoreOneCaster =
-        function (c, rec) {
-            if (
-                !c ||
-                !c.entity ||
-                c.entity._destroyed
-            ) {
-                return;
-            }
-            c.castShadows = rec.cast;
-            rec.instances.forEach(function (m) {
-                if (m.mi) {
-                    m.mi.castShadow = m.cast;
-                }
-            });
-        };
-    AdvancedGpuInstancer.prototype._restoreCasters =
-        function (clear) {
-            if (!this._casterOriginals) {
-                return;
-            }
-            this._casterOriginals.forEach(
-                function (rec, c) {
-                    try {
-                        this._restoreOneCaster(c, rec);
-                    } catch (e) {
-                        console.warn(TAG, e);
-                    }
-                },
-                this
-            );
-            if (clear !== false) {
-                this._casterOriginals.clear();
-            }
-            this._casterDisabled = 0;
-        };
-    AdvancedGpuInstancer.prototype._applyCasterMode =
-        function (override) {
-            if (
-                !this._alive ||
-                !this._built ||
-                this._baking
-            ) {
-                return;
-            }
-            var mode = normalizedMode(
-                override || this.smartShadowMode
-            );
-            var scene = shadowScene(this);
-            var seen = new Set();
-            var report = [];
-            var names = [];
-            scene.receivers.forEach(function (r) {
-                if (
-                    !r.baked &&
-                    names.indexOf(r.name) < 0
-                ) {
-                    names.push(r.name);
-                }
-            });
-            shadowComponents(this.app).forEach(
-                function (c) {
-                    if (
-                        !validCasterComponent(
-                            c,
-                            this._casterOriginals
-                        )
-                    ) {
-                        return;
-                    }
-                    seen.add(c);
-                    var why = mode === 'original'
-                        ? 'Modo original'
-                        : mode === 'optimized'
-                            ? 'Modo forzado'
-                            : potentialShadow(
-                                this,
-                                c,
-                                scene.lights,
-                                scene.receivers
-                            );
-                    var off = mode !== 'original' && !why;
-                    if (mode === 'optimized') {
-                        off = true;
-                    }
-                    var rec = this._casterOriginals.get(c);
-                    if (off) {
-                        if (!rec) {
-                            rec = {
-                                cast: c.castShadows,
-                                instances: (c.meshInstances || [])
-                                    .map(function (mi) {
-                                        return {
-                                            mi: mi,
-                                            cast: mi.castShadow
-                                        };
-                                    })
-                            };
-                            this._casterOriginals.set(c, rec);
-                        }
-                        if (c.castShadows) {
-                            c.castShadows = false;
-                        }
-                    } else if (rec) {
-                        this._restoreOneCaster(c, rec);
-                        this._casterOriginals.delete(c);
-                    }
-                    report.push({
-                        objeto: c.entity.name,
-                        proyecta: !off,
-                        motivo: off
-                            ? (
-                                mode === 'optimized'
-                                    ? 'Forzado'
-                                    : 'Sin sombras utiles detectadas'
-                            )
-                            : why
-                    });
-                },
-                this
-            );
-            this._casterOriginals.forEach(
-                function (rec, c) {
-                    if (seen.has(c)) {
-                        return;
-                    }
-                    try {
-                        this._restoreOneCaster(c, rec);
-                    } catch (_) { }
-                    this._casterOriginals.delete(c);
-                },
-                this
-            );
-            this._casterDisabled =
-                this._casterOriginals.size;
-            this._casterReport = report;
-            var status =
-                mode + '|' +
-                this._casterDisabled + '|' +
-                report.map(function (r) {
+
+        return s._watchLights.some(function (l) {
+            return (
+                l.enabled &&
+                live(l.entity) &&
+                (
+                    l.type === 'spot' ||
+                    l.type === 'omni'
+                ) &&
+                actualLocalCasterLight(s, l) &&
+                original.mesh.some(function (q) {
                     return (
-                        r.objeto + ':' +
-                        (r.proyecta ? 1 : 0)
-                    );
-                }).join('|');
-            this._casterStatus = {
-                mode: mode,
-                receptoresSinBake: names.length,
-                nombres: names,
-                componentesSinSombras:
-                    this._casterDisabled,
-                analizados: report.length,
-                motivo: mode === 'auto'
-                    ? 'Evaluacion geometrica automatica'
-                    : 'Modo manual'
-            };
-            if (
-                this.debug &&
-                status !== this._lastCasterStatus
-            ) {
-                console.log(
-                    TAG,
-                    'Baked Static Shadow Casting:',
-                    this._casterStatus
-                );
-                console.table(report);
-                this._lastCasterStatus = status;
-            }
-        };
-    AdvancedGpuInstancer.prototype.auditBakedCasters =
-        function () {
-            console.log(
-                TAG,
-                'BakedCasterMode:',
-                normalizedMode(this.smartShadowMode),
-                '|',
-                this._casterStatus
-            );
-            console.table(this._casterReport || []);
-            return this._casterStatus;
-        };
-    AdvancedGpuInstancer.prototype.setBakedCasterMode =
-        function (mode) {
-            mode = normalizedMode(mode);
-            if (this._probe) {
-                this.cancelShadowProbe();
-            }
-            this.smartShadowMode = mode;
-            this._casterStateKey = null;
-            this._applyCasterMode();
-            return this.auditBakedCasters();
-        };
-    function signature(e) {
-        if (!e || !e.getWorldTransform) {
-            return '';
-        }
-        var d = e.getWorldTransform().data;
-        var s = '';
-        for (var i = 0; i < 16; i++) {
-            s += Math.round(d[i] * 10000) + ',';
-        }
-        return s;
-    }
-    function lightSignature(l) {
-        return signature(l.entity) + '|' + [
-            l.type,
-            l.range,
-            l.innerConeAngle,
-            l.outerConeAngle,
-            l.shadowResolution,
-            l.shadowType,
-            l.shadowDistance,
-            l.numCascades,
-            l.mask
-        ].join('|');
-    }
-    function nearLight(l, mi) {
-        if (l.type === 'directional') {
-            return true;
-        }
-        var b = mi.aabb;
-        if (
-            !b ||
-            !b.center ||
-            !b.halfExtents
-        ) {
-            return true;
-        }
-        var p = l.entity.getPosition();
-        var dx = p.x - b.center.x;
-        var dy = p.y - b.center.y;
-        var dz = p.z - b.center.z;
-        var range = Number(l.range);
-        if (!Number.isFinite(range) || range <= 0) {
-            return true;
-        }
-        var t = range + b.halfExtents.length();
-        return (
-            dx * dx +
-            dy * dy +
-            dz * dz
-        ) <= t * t;
-    }
-    function lightParticipants(self, l) {
-        var receivers = 0;
-        var dynamic = 0;
-        var staticSignature = [];
-        shadowComponents(self.app).forEach(function (c) {
-            if (
-                !c ||
-                !alive(c.entity) ||
-                !c.enabled
-            ) {
-                return;
-            }
-            (c.meshInstances || []).forEach(function (mi) {
-                if (
-                    !mi ||
-                    !mi.mesh ||
-                    mi.visible === false ||
-                    !nearLight(l, mi)
-                ) {
-                    return;
-                }
-                if (
-                    !baked(c, mi) &&
-                    c.receiveShadows !== false &&
-                    mi.receiveShadow !== false
-                ) {
-                    receivers++;
-                }
-                if (
-                    c.castShadows === false ||
-                    mi.castShadow === false
-                ) {
-                    return;
-                }
-                if (
-                    !(c.isStatic || c.entity.__giProxy) ||
-                    mi.skinInstance ||
-                    mi.morphInstance
-                ) {
-                    dynamic++;
-                    return;
-                }
-                staticSignature.push(
-                    c.entity.name +
-                    ':' +
-                    signature(mi.node || c.entity) +
-                    ':' +
-                    mi.mask
-                );
-            });
-        });
-        shadowParticles(self.app)
-            .forEach(function (c) {
-                if (
-                    c.enabled &&
-                    alive(c.entity) &&
-                    c.castShadows
-                ) {
-                    dynamic++;
-                }
-            });
-        staticSignature.sort();
-        return {
-            receivers: receivers,
-            dynamic: dynamic,
-            sig: staticSignature.join(';')
-        };
-    }
-    AdvancedGpuInstancer.prototype._lightState =
-        function (l) {
-            var s = this._lightOriginals.get(l);
-            if (!s) {
-                s = {
-                    l: l,
-                    cast: !!l.castShadows,
-                    appliedCast: !!l.castShadows,
-                    intensity: l.shadowIntensity,
-                    mode: l.shadowUpdateMode,
-                    overrides: l.shadowUpdateOverrides
-                        ? l.shadowUpdateOverrides.slice()
-                        : null,
-                    policy: 'original',
-                    reason: '',
-                    stable: 0,
-                    key: lightSignature(l),
-                    casters: ''
-                };
-                this._lightOriginals.set(l, s);
-            }
-            return s;
-        };
-    AdvancedGpuInstancer.prototype._restoreLight =
-        function (s) {
-            var l = s.l;
-            if (
-                l &&
-                l.entity &&
-                !l.entity._destroyed
-            ) {
-                l.castShadows = s.cast;
-                l.shadowUpdateOverrides = s.overrides
-                    ? s.overrides.slice()
-                    : null;
-                l.shadowUpdateMode = s.mode;
-            }
-            s.policy = 'original';
-            s.stable = 0;
-        };
-    AdvancedGpuInstancer.prototype._restoreLights =
-        function (clear) {
-            if (!this._lightOriginals) {
-                return;
-            }
-            this._lightOriginals.forEach(
-                function (s) {
-                    try {
-                        this._restoreLight(s);
-                    } catch (e) {
-                        console.warn(TAG, e);
-                    }
-                },
-                this
-            );
-            if (clear !== false) {
-                this._lightOriginals.clear();
-            }
-        };
-    function lightNeedsShadow(self, l) {
-        var scene = shadowScene(self);
-        var casters = [];
-        var checked = 0;
-        var maxChecks = Math.max(
-            1000,
-            self.shadowPairBudget || 50000
-        );
-        if (
-            shadowParticles(self.app)
-                .some(function (p) {
-                    return (
-                        p.enabled &&
-                        alive(p.entity) &&
-                        p.castShadows
+                        q.cast &&
+                        affects(l, bounds(q.mi))
                     );
                 })
-        ) {
-            return true;
-        }
-        if (frameOwner === self && self._frameLightCasters) {
-            casters = self._frameLightCasters;
-        } else {
-            shadowComponents(self.app).forEach(function (c) {
-                if (!c || !c.enabled || !alive(c.entity)) return;
-                var saved = self._casterOriginals.get(c);
-                if (!c.castShadows && (!saved || !saved.cast)) return;
-                shadowSources(self, c).forEach(function (x) {
-                    if (x.mi && x.mi.mesh && x.mi.castShadow) {
-                        casters.push(x);
+            );
+        });
+    }
+
+    // =====================================================
+    // RESTAURACION DE CASTERS
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype._restoreCasters =
+        function () {
+            this._castersOriginal.forEach(function (orig, c) {
+                if (
+                    !c ||
+                    !c.entity ||
+                    c.entity._destroyed
+                ) {
+                    return;
+                }
+
+                try {
+                    c.castShadows = orig.cast;
+
+                    if (
+                        orig.compMask !== undefined &&
+                        'shadowCascadeMask' in c
+                    ) {
+                        c.shadowCascadeMask = orig.compMask;
+                    }
+
+                    orig.mesh.forEach(function (q) {
+                        q.mi.castShadow = q.cast;
+                        q.mi.shadowCascadeMask = q.mask;
+                    });
+
+                } catch (e) {
+                    console.warn(TAG, 'Restauracion caster', e);
+                }
+            });
+
+            this._castersOriginal.clear();
+        };
+
+    // =====================================================
+    // SEPARACION DE SOMBRAS BAKED / REALTIME
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype._updateCasters =
+        function () {
+            var s = this;
+            var seen = new Set();
+
+            var noLocal = 0;
+            var retained = 0;
+            var dirExcluded = 0;
+
+            this.app.root.findComponents('render')
+                .forEach(function (c) {
+                    if (
+                        !c.enabled ||
+                        !live(c.entity) ||
+                        c.entity.__agiCatcher ||
+                        !c.isStatic ||
+                        !c.lightmapped
+                    ) {
+                        return;
+                    }
+
+                    var meshes = c.meshInstances || [];
+
+                    if (!meshes.some(function (mi) {
+                        return mi && lmOf(mi).tex;
+                    })) {
+                        return;
+                    }
+
+                    seen.add(c);
+
+                    var orig = s._castersOriginal.get(c);
+
+                    if (!orig) {
+                        orig = {
+                            cast: !!c.castShadows,
+                            compMask: c.shadowCascadeMask,
+                            mesh: meshes.map(function (mi) {
+                                return {
+                                    mi: mi,
+                                    cast: !!mi.castShadow,
+                                    mask: mi.shadowCascadeMask
+                                };
+                            })
+                        };
+
+                        s._castersOriginal.set(c, orig);
+                    }
+
+                    if (!orig.cast) return;
+
+                    var keep = keepBakedCaster(s, c, orig);
+
+                    c.castShadows = keep;
+
+                    if ('shadowCascadeMask' in c) {
+                        c.shadowCascadeMask = 0;
+                    }
+
+                    orig.mesh.forEach(function (q) {
+                        q.mi.castShadow = !!(
+                            keep && q.cast
+                        );
+
+                        q.mi.shadowCascadeMask = 0;
+                    });
+
+                    dirExcluded++;
+
+                    if (keep) {
+                        retained++;
+                    } else {
+                        noLocal++;
                     }
                 });
+
+            this._castersOriginal.forEach(function (orig, c) {
+                if (seen.has(c)) return;
+
+                if (c.entity && !c.entity._destroyed) {
+                    try {
+                        c.castShadows = orig.cast;
+
+                        if (
+                            orig.compMask !== undefined &&
+                            'shadowCascadeMask' in c
+                        ) {
+                            c.shadowCascadeMask = orig.compMask;
+                        }
+
+                        orig.mesh.forEach(function (q) {
+                            q.mi.castShadow = q.cast;
+                            q.mi.shadowCascadeMask = q.mask;
+                        });
+
+                    } catch (_) { }
+                }
+
+                s._castersOriginal.delete(c);
             });
-            if (frameOwner === self) self._frameLightCasters = casters;
-        }
-        for (var i = 0; i < scene.receivers.length; i++) {
-            var r = scene.receivers[i];
-            if (r.c.entity.__giShadowCatcher) {
-                continue;
-            }
-            if (
-                !receiverVisible(self, r.mi, l) ||
-                !receiverForLight(l, r.baked, r.mi)
-            ) {
-                continue;
-            }
-            var rb = sphereOf(r.mi);
-            for (var j = 0; j < casters.length; j++) {
-                if (++checked > maxChecks) {
-                    return true;
-                }
-                var x = casters[j];
-                var mi = x.mi;
-                if (mi.skinInstance || mi.morphInstance) {
-                    return true;
-                }
-                if (trivialSelfShadow(x, r)) {
-                    continue;
-                }
+
+            this.stats.bakedCastersDisabled = noLocal;
+            this.stats.bakedSpotRetained = retained;
+            this.stats.bakedDirectionalExcluded = dirExcluded;
+
+            this.groups.forEach(function (g) {
+                g.castsShadow = !!(
+                    g.mi &&
+                    g.proxy &&
+                    g.proxy.render &&
+                    g.mi.castShadow &&
+                    g.proxy.render.castShadows
+                );
+            });
+        };
+
+    // =====================================================
+    // SPOT SHADOW DISTANCE DEL JUEGO
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype._restoreSpotShadows =
+        function () {
+            if (!this._spotStates) return;
+
+            this._spotStates.forEach(function (st, l) {
                 if (
-                    typeof l.mask === 'number' &&
-                    typeof mi.mask === 'number' &&
-                    !(l.mask & mi.mask)
+                    !l ||
+                    !l.entity ||
+                    l.entity._destroyed
+                ) {
+                    return;
+                }
+
+                if (st.suspended) {
+                    try {
+                        l.castShadows = st.original;
+                    } catch (e) {
+                        console.warn(TAG, 'Spot restore', e);
+                    }
+                }
+            });
+
+            this._spotStates.clear();
+            this.stats.spotSuspended = 0;
+        };
+
+    AdvancedGpuInstancer.prototype._updateSpotShadows =
+        function () {
+            if (
+                !this._spotStates ||
+                !this.optimizeBakedCasters
+            ) {
+                return;
+            }
+
+            var lights = this._spotLights || [];
+            var cameras = this._cameras || [];
+
+            var stopped = 0;
+            var routingChanged = false;
+
+            for (var i = 0; i < lights.length; i++) {
+                var l = lights[i];
+
+                if (
+                    !l ||
+                    !l.entity ||
+                    l.entity._destroyed
                 ) {
                     continue;
                 }
-                if (l.type === 'directional') {
-                    var current =
-                        self._directionalOriginals.get(x.c);
-                    var originalMask =
-                        current &&
-                        current.meshes.find(function (z) {
-                            return z.mi === mi;
-                        });
+
+                var st = this._spotStates.get(l);
+
+                if (!st) {
+                    st = {
+                        original: !!l.castShadows,
+                        suspended: false
+                    };
+
+                    this._spotStates.set(l, st);
+                }
+
+                if (
+                    !st.suspended &&
+                    !!l.castShadows !== st.original
+                ) {
+                    st.original = !!l.castShadows;
+                    routingChanged = true;
+                }
+
+                if (
+                    st.suspended &&
+                    l.castShadows === true
+                ) {
+                    st.original = true;
+                    st.suspended = false;
+                    routingChanged = true;
+                }
+
+                if (
+                    !l.enabled ||
+                    !live(l.entity) ||
+                    !st.original
+                ) {
+                    if (st.suspended) {
+                        l.castShadows = st.original;
+                        st.suspended = false;
+                    }
+
+                    continue;
+                }
+
+                var distance = +l.shadowDistance;
+
+                if (
+                    !Number.isFinite(distance) ||
+                    distance < 0 ||
+                    !cameras.length
+                ) {
+                    if (st.suspended) {
+                        l.castShadows = st.original;
+                        st.suspended = false;
+                        this.stats.spotDistanceTransitions++;
+                    }
+
+                    continue;
+                }
+
+                var m = l.entity.getWorldTransform().data;
+                var r2 = distance * distance;
+                var near = false;
+                var activeCameras = 0;
+
+                for (var j = 0; j < cameras.length; j++) {
+                    var c = cameras[j];
+
                     if (
-                        (
-                            originalMask
-                                ? originalMask.mask
-                                : mi.shadowCascadeMask
-                        ) === 0
+                        !c.enabled ||
+                        !live(c.entity)
                     ) {
                         continue;
                     }
+
+                    activeCameras++;
+
+                    var cm = c.entity.getWorldTransform().data;
+
+                    var dx = cm[12] - m[12];
+                    var dy = cm[13] - m[13];
+                    var dz = cm[14] - m[14];
+
+                    if (
+                        dx * dx + dy * dy + dz * dz <= r2
+                    ) {
+                        near = true;
+                        break;
+                    }
                 }
-                var sb = sphereOf(mi);
-                if (!lightHitsSphere(l, sb)) {
+
+                if (activeCameras === 0) {
+                    near = true;
+                }
+
+                if (!near) {
+                    if (!st.suspended) {
+                        l.castShadows = false;
+                        st.suspended = true;
+
+                        this.stats.spotDistanceTransitions++;
+                    }
+
+                    stopped++;
+
+                } else if (st.suspended) {
+                    l.castShadows = st.original;
+                    st.suspended = false;
+
+                    this.stats.spotDistanceTransitions++;
+                }
+            }
+
+            this.stats.spotSuspended = stopped;
+
+            if (routingChanged) {
+                this._castersDirty = true;
+            }
+        };
+
+    // =====================================================
+    // CACHE DE CONFIGURACION DE LUCES LOCALES
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype._localCasterConfigChanged =
+        function () {
+            var lights = this._localLights || [];
+            var changed = false;
+
+            for (var i = 0; i < lights.length; i++) {
+                var l = lights[i];
+
+                if (
+                    !l.entity ||
+                    l.entity._destroyed
+                ) {
                     continue;
                 }
-                if (canShadow(sb, rb, l)) {
-                    return true;
+
+                var rec = this._localCasterWatch.get(l);
+
+                if (!rec) {
+                    rec = {};
+                    this._localCasterWatch.set(l, rec);
+                    changed = true;
+                }
+
+                var caster = actualLocalCasterLight(this, l);
+
+                if (
+                    rec.type !== l.type ||
+                    rec.enabled !== l.enabled ||
+                    rec.entityEnabled !== l.entity.enabled ||
+                    rec.caster !== caster ||
+                    rec.range !== l.range ||
+                    rec.cone !== l.outerConeAngle ||
+                    rec.mask !== l.mask
+                ) {
+                    rec.type = l.type;
+                    rec.enabled = l.enabled;
+                    rec.entityEnabled = l.entity.enabled;
+                    rec.caster = caster;
+                    rec.range = l.range;
+                    rec.cone = l.outerConeAngle;
+                    rec.mask = l.mask;
+
+                    changed = true;
+                }
+
+                if (matrixChanged(rec, l.entity)) {
+                    changed = true;
                 }
             }
-        }
-        return false;
-    }
-    function localShadowStatus(self, l) {
-        var cameras = (self._cameras || []).filter(
-            function (c) {
-                return c.enabled && alive(c.entity);
-            }
-        );
-        if (!cameras.length) {
-            return {
-                visible: true,
-                distance: null,
-                range: l.range
-            };
-        }
-        var range = Number(l.range);
-        if (!(range > 0 && Number.isFinite(range))) {
-            return {
-                visible: true,
-                distance: null,
-                range: l.range
-            };
-        }
-        var pos = l.entity.getPosition();
-        var sphere = new pc.BoundingSphere(pos, range);
-        var visible = cameras.some(function (c) {
+
+            return changed;
+        };
+
+    // =====================================================
+    // STREAMING VISUAL
+    // =====================================================
+
+    function groupCastsToLocal(s, g) {
+        if (!g.castsShadow) return false;
+
+        return s._watchLights.some(function (l) {
             return (
-                !c.frustum ||
-                c.frustum.containsSphere(sphere) !== 0
+                l.enabled &&
+                live(l.entity) &&
+                (
+                    l.type === 'spot' ||
+                    l.type === 'omni'
+                ) &&
+                actualLocalCasterLight(s, l) &&
+                affects(l, g.b)
             );
         });
-        var distance = Math.min.apply(
-            null,
-            cameras.map(function (c) {
-                return c.entity.getPosition().distance(pos);
+    }
+
+    function groupDirectionalRelevant(s, g) {
+        return !!(
+            g.castsShadow &&
+            g.mi.shadowCascadeMask !== 0 &&
+            s._watchLights.some(function (l) {
+                return (
+                    l.enabled &&
+                    live(l.entity) &&
+                    l.type === 'directional' &&
+                    l.castShadows
+                );
             })
         );
-        return {
-            visible: visible,
-            distance: distance,
-            range: range
-        };
     }
-    function receiverVisible(self, mi, light) {
-        var b = mi && mi.aabb;
-        if (!b) {
-            return true;
-        }
-        var cams = (self._cameras || []).filter(
-            function (c) {
-                return c.enabled && alive(c.entity);
-            }
-        );
-        if (!cams.length) {
-            return true;
-        }
-        return cams.some(function (c) {
-            if (
-                c.frustum &&
-                !c.frustum.containsAabb(b)
-            ) {
-                return false;
-            }
-            if (
-                light &&
-                light.type === 'directional'
-            ) {
-                var dist = Number(light.shadowDistance);
-                if (
-                    Number.isFinite(dist) &&
-                    dist > 0
-                ) {
+
+    AdvancedGpuInstancer.prototype._streamGraphics =
+        function (dt) {
+            var cameraList = cams(this);
+            var loading = [];
+            var removing = [];
+
+            this.groups.forEach(function (g) {
+                var needed = !cameraList.length;
+                var best = Infinity;
+
+                cameraList.forEach(function (c) {
                     var p = c.entity.getPosition();
-                    var ce = b.center;
-                    var h = b.halfExtents;
-                    var dx = Math.max(
-                        0,
-                        Math.abs(ce.x - p.x) - h.x
-                    );
-                    var dy = Math.max(
-                        0,
-                        Math.abs(ce.y - p.y) - h.y
-                    );
-                    var dz = Math.max(
-                        0,
-                        Math.abs(ce.z - p.z) - h.z
-                    );
+                    var d2 = boxDist2(g.b, p);
+
+                    best = Math.min(best, d2);
+
+                    var far = +c.farClip;
+
+                    var inside =
+                        !c.frustumCulling ||
+                        !c.frustum ||
+                        c.frustum.containsAabb(g.box);
+
                     if (
-                        dx * dx +
-                        dy * dy +
-                        dz * dz >
-                        dist * dist
-                    ) {
-                        return false;
-                    }
-                }
-            }
-            return true;
-        });
-    }
-    function shadowDemand(self, l) {
-        if (
-            l.type === 'directional' &&
-            self._catcherActive &&
-            self._nearDynamicCasters &&
-            self._nearDynamicCasters.length
-        ) {
-            return true;
-        }
-        if (
-            l.type !== 'directional' &&
-            !localShadowStatus(self, l).visible
-        ) {
-            return false;
-        }
-        return lightNeedsShadow(self, l);
-    }
-    AdvancedGpuInstancer.prototype._reconcileLights =
-        function (dt, force) {
-            if (
-                !this._alive ||
-                !this._built ||
-                this._baking ||
-                (this._probe && !force)
-            ) {
-                return;
-            }
-            if (!this.shadowOptimizer) {
-                this._restoreLights(true);
-                this._shadowReport = [];
-                return;
-            }
-            var report = [];
-            var active = new Set();
-            this._spotLodReport = [];
-            shadowLights(this.app).forEach(
-                function (l) {
-                    if (
-                        !l.enabled ||
-                        !alive(l.entity)
-                    ) {
-                        return;
-                    }
-                    active.add(l);
-                    var s = this._lightState(l);
-                    var before = s.policy;
-                    if (l.castShadows !== s.appliedCast) {
-                        s.cast = !!l.castShadows;
-                        s._offVotes = 0;
-                    }
-                    s.appliedCast = !!l.castShadows;
-                    var info = lightParticipants(this, l);
-                    var key =
-                        lightSignature(l) +
-                        '|' +
-                        info.sig;
-                    var geometryChanged =
-                        s._geometryKey !== key;
-                    s._geometryKey = key;
-                    var local =
-                        l.type === 'spot' ||
-                        l.type === 'omni';
-                    var localState = local
-                        ? localShadowStatus(this, l)
-                        : null;
-                    var demand =
-                        s.cast &&
-                        shadowDemand(this, l);
-                    if (demand) {
-                        s._offVotes = 0;
-                    } else {
-                        s._offVotes =
-                            (s._offVotes || 0) + 1;
-                    }
-                    var off =
-                        s.cast &&
-                        !demand &&
-                        s._offVotes >= 2;
-                    if (!demand && !off) {
-                        this._pendingOff = true;
-                    }
-                    var freeze =
-                        this.freezeStaticShadows &&
-                        s.cast &&
-                        local &&
-                        !info.dynamic &&
-                        s.mode === pc.SHADOWUPDATE_REALTIME;
-                    if (off) {
-                        l.castShadows = false;
-                        s.policy =
-                            localState && !localState.visible
-                                ? 'fuera-frustum'
-                                : 'sin-sombra-visible';
-                        s.reason =
-                            localState && !localState.visible
-                                ? 'Luz fuera de camaras activas'
-                                : 'Ningun receptor visible necesita shadow map';
-                    } else {
-                        if (
-                            s.policy === 'fuera-frustum' ||
-                            s.policy === 'sin-sombra-visible'
-                        ) {
-                            l.castShadows = s.cast;
-                            l.shadowUpdateMode = s.mode;
-                        }
-                        if (freeze) {
-                            if (
-                                geometryChanged ||
-                                s.policy !== 'congelada'
-                            ) {
-                                l.shadowUpdateMode =
-                                    pc.SHADOWUPDATE_THISFRAME;
-                            }
-                            s.policy = 'congelada';
-                            s.reason =
-                                'Shadow map estatico; actualizar cuando cambie la escena';
-                        } else {
-                            if (s.policy === 'congelada') {
-                                l.shadowUpdateMode = s.mode;
-                            }
-                            s.policy = 'original';
-                            s.reason = demand
-                                ? 'Sombras necesarias para geometria visible'
-                                : 'Proteccion anti-parpadeo';
-                        }
-                    }
-                    s.appliedCast = !!l.castShadows;
-                    if (local) {
-                        this._spotLodReport.push({
-                            luz: l.entity.name,
-                            distanciaCamara:
-                                localState.distance,
-                            rangeProyecto:
-                                localState.range,
-                            dentroFrustum:
-                                localState.visible,
-                            castShadows:
-                                l.castShadows,
-                            intensidadConfigurada:
-                                l.shadowIntensity
-                        });
-                    }
-                    if (
-                        this.debug &&
-                        s.policy !== before
-                    ) {
-                        console.log(
-                            TAG,
-                            'Luz',
-                            l.entity.name,
-                            before,
-                            '->',
-                            s.policy,
-                            s.reason
-                        );
-                    }
-                    report.push({
-                        luz: l.entity.name,
-                        bake: !!l.bake,
-                        castShadows: !!l.castShadows,
-                        update: l.shadowUpdateMode,
-                        politica: s.policy,
-                        receptoresSinBake: info.receivers,
-                        emisoresDinamicos: info.dynamic,
-                        motivo: s.reason
-                    });
-                },
-                this
-            );
-            this._lightOriginals.forEach(
-                function (s, l) {
-                    if (!active.has(l)) {
-                        this._restoreLight(s);
-                        this._lightOriginals.delete(l);
-                    }
-                },
-                this
-            );
-            this._shadowReport = report;
-        };
-    AdvancedGpuInstancer.prototype.auditShadowOptimizer =
-        function () {
-            console.log(
-                TAG,
-                'Luces:',
-                this.shadowOptimizer,
-                '| Baked casters:',
-                normalizedMode(this.smartShadowMode),
-                '| AutoLOD:',
-                this.autoLod,
-                '| DrawCalls:',
-                this.app.stats.drawCallCount
-            );
-            console.table(this._shadowReport || []);
-            this.auditBakedCasters();
-            this.auditDynamicShadows();
-            console.log(
-                TAG,
-                'Cache CPU:',
-                {
-                    analisis: this._shadowAnalyses,
-                    reutilizaciones: this._shadowCacheHits,
-                    transferenciasReceptor:
-                        this._catcherTileUpdates
-                }
-            );
-            return this._shadowReport;
-        };
-    AdvancedGpuInstancer.prototype.auditLights =
-        function () {
-            return this.auditShadowOptimizer();
-        };
-    AdvancedGpuInstancer.prototype.setShadowOptimization =
-        function (on) {
-            if (this._probe) {
-                this.cancelShadowProbe();
-            }
-            this.shadowOptimizer = !!on;
-            if (!on) {
-                this._restoreLights(true);
-            } else {
-                this._reconcileLights(1, true);
-            }
-            return this.auditShadowOptimizer();
-        };
-    AdvancedGpuInstancer.prototype._endProbe =
-        function (reapply) {
-            this._shadowCacheKey = null;
-            this._casterStateKey = null;
-            var p = this._probe;
-            if (!p) return;
-            this.app.off('frameend', p.handler);
-            this._probe = null;
-            if (p.kind === 'casters') {
-                this._restoreCasters(true);
-                if (
-                    reapply &&
-                    this._alive &&
-                    this._built &&
-                    !this._baking
-                ) {
-                    this._applyCasterMode();
-                }
-            } else {
-                this._restoreLights(false);
-                if (
-                    reapply &&
-                    p.lightsEnabled &&
-                    this._alive &&
-                    this._built &&
-                    !this._baking
-                ) {
-                    this._reconcileLights(1, true);
-                }
-            }
-        };
-    AdvancedGpuInstancer.prototype.cancelShadowProbe =
-        function () {
-            this._endProbe(true);
-        };
-    AdvancedGpuInstancer.prototype._startProbe =
-        function (kind) {
-            if (
-                this._probe ||
-                !this._built ||
-                this._baking
-            ) {
-                console.warn(
-                    TAG,
-                    'GI ocupado o bake incompleto'
-                );
-                return;
-            }
-            if (
-                kind === 'lights' &&
-                !this.shadowOptimizer
-            ) {
-                console.warn(
-                    TAG,
-                    'Activar optimizador de luces'
-                );
-                return;
-            }
-            var self = this;
-            var p = {
-                kind: kind,
-                phase: 0,
-                frame: 0,
-                values: [],
-                results: [],
-                handler: null,
-                lightsEnabled: !!this.shadowOptimizer
-            };
-            this._probe = p;
-            if (kind === 'casters') {
-                this._applyCasterMode('original');
-            } else {
-                this._restoreLights(false);
-            }
-            p.handler = function () {
-                if (self._probe !== p) {
-                    return;
-                }
-                p.frame++;
-                if (p.frame > 12) {
-                    p.values.push(
-                        self.app.stats.drawCallCount
-                    );
-                }
-                if (p.frame < 54) {
-                    return;
-                }
-                p.values.sort(function (a, b) {
-                    return a - b;
-                });
-                p.results.push({
-                    modo: p.phase === 0
-                        ? 'Original'
-                        : kind === 'casters'
-                            ? 'Sin casters horneados'
-                            : 'Luces optimizadas',
-                    drawCalls:
-                        p.values[
-                        Math.floor(p.values.length / 2)
-                        ]
-                });
-                p.phase++;
-                p.frame = 0;
-                p.values = [];
-                if (p.phase === 1) {
-                    if (kind === 'casters') {
-                        self._applyCasterMode('optimized');
-                    } else {
-                        self._reconcileLights(1, true);
-                    }
-                } else {
-                    self._endProbe(true);
-                    var baseline = p.results[0].drawCalls;
-                    console.table(
-                        p.results.map(function (r) {
-                            return {
-                                modo: r.modo,
-                                drawCalls: r.drawCalls,
-                                ahorro:
-                                    baseline - r.drawCalls
-                            };
-                        })
-                    );
-                    console.log(
-                        TAG,
-                        'Fin prueba A/B ' + kind
-                    );
-                }
-            };
-            this.app.on('frameend', p.handler);
-            console.log(
-                TAG,
-                'Prueba A/B iniciada:',
-                kind
-            );
-        };
-    AdvancedGpuInstancer.prototype.probeBakedCasterShadows =
-        function () {
-            this._startProbe('casters');
-        };
-    AdvancedGpuInstancer.prototype.probeShadowOptimizer =
-        function () {
-            this._startProbe('lights');
-        };
-    AdvancedGpuInstancer.prototype.probeRealtimeShadows =
-        function () {
-            this.probeShadowOptimizer();
-        };
-    AdvancedGpuInstancer.prototype._destroyCatchers =
-        function () {
-            if (this._catcher) {
-                try {
-                    this._catcher.entity.destroy();
-                } catch (_) { }
-                this._catcher = null;
-            }
-            if (this._catcherMesh) {
-                try {
-                    this._catcherMesh.destroy();
-                } catch (_) { }
-                this._catcherMesh = null;
-            }
-            if (this._catcherMat) {
-                try {
-                    this._catcherMat.destroy();
-                } catch (_) { }
-                this._catcherMat = null;
-            }
-            this._catcherActive = false;
-            this._ground = [];
-            this._groundTiles = [];
-            this._catcherSelection = '';
-            this._catcherSelectedPanels = 0;
-            this._catcherSelectedTriangles = 0;
-            this._catcherCapacityVertices = 0;
-            this._catcherCapacityIndices = 0;
-            this._catcherCandidates = [];
-            this._groundTriangleCount = 0;
-        };
-    AdvancedGpuInstancer.prototype._makeCatcherMaterial =
-        function () {
-            var m = new pc.StandardMaterial();
-            m.name = 'GI25_ShadowOnly_Multiply';
-            m.shadowCatcher = true;
-            m.blendType = pc.BLEND_MULTIPLICATIVE;
-            m.cull = pc.CULLFACE_NONE;
-            m.depthWrite = false;
-            m.depthTest = true;
-            m.useSkybox = false;
-            m.diffuse.set(0, 0, 0);
-            m.specular.set(0, 0, 0);
-            m.update();
-            return m;
-        };
-    AdvancedGpuInstancer.prototype._scanGround =
-        function () {
-            this._ground = [];
-            this._groundTiles = [];
-            var vertices = [];
-            var normals = [];
-            var uvs = [];
-            var indices = [];
-            var bounds = null;
-            var components =
-                this.app.root.findComponents('render');
-            var MAX_TRIANGLES = 12000;
-            var tmpA = new pc.Vec3();
-            var tmpB = new pc.Vec3();
-            var tmpC = new pc.Vec3();
-            function emit(a, b, c) {
-                var ux = b.x - a.x;
-                var uy = b.y - a.y;
-                var uz = b.z - a.z;
-                var vx = c.x - a.x;
-                var vy = c.y - a.y;
-                var vz = c.z - a.z;
-                var nx = uy * vz - uz * vy;
-                var ny = uz * vx - ux * vz;
-                var nz = ux * vy - uy * vx;
-                var len = Math.hypot(nx, ny, nz);
-                if (
-                    len < 1e-8 ||
-                    Math.abs(ny) / len < 0.94
-                ) {
-                    return false;
-                }
-                if (ny < 0) {
-                    var swap = b;
-                    b = c;
-                    c = swap;
-                }
-                var base = vertices.length / 3;
-                [a, b, c].forEach(function (p) {
-                    var y = p.y + 0.008;
-                    vertices.push(p.x, y, p.z);
-                    normals.push(0, 1, 0);
-                    uvs.push(p.x * 0.01, p.z * 0.01);
-                    bounds = union(bounds, [
-                        p.x, y, p.z,
-                        p.x, y, p.z
-                    ]);
-                });
-                indices.push(
-                    base,
-                    base + 1,
-                    base + 2
-                );
-                return true;
-            }
-            components.forEach(
-                function (c) {
-                    if (
-                        !c.enabled ||
-                        !alive(c.entity) ||
-                        !c.isStatic ||
-                        !c.lightmapped ||
-                        c.entity.__giProxy ||
-                        c.entity.__giShadowCatcher
-                    ) {
-                        return;
-                    }
-                    var floorType =
-                        c.type === 'plane' ||
-                        /floor|ground|piso|suelo|terreno/i
-                            .test(c.entity.name);
-                    if (!floorType) {
-                        return;
-                    }
-                    (c.meshInstances || []).forEach(
-                        function (mi) {
-                            if (
-                                indices.length / 3 >=
-                                MAX_TRIANGLES ||
-                                !mi ||
-                                !mi.mesh ||
-                                !lm(mi).texture
-                            ) {
-                                return;
-                            }
-                            var wb = worldBounds(mi);
-                            if (!wb) {
-                                return;
-                            }
-                            if (wb[4] - wb[1] > 0.55) {
-                                return;
-                            }
-                            var matrix =
-                                mi.node.getWorldTransform();
-                            var sourcePos = [];
-                            var sourceIndices = [];
-                            var emitted = 0;
-                            var initialPos = vertices.length;
-                            var initialNorm = normals.length;
-                            var initialUv = uvs.length;
-                            try {
-                                mi.mesh.getPositions(sourcePos);
-                                mi.mesh.getIndices(sourceIndices);
-                                var count = sourcePos.length / 3;
-                                if (!sourceIndices.length) {
-                                    for (
-                                        var n = 0;
-                                        n < count;
-                                        n++
-                                    ) {
-                                        sourceIndices.push(n);
-                                    }
-                                }
-                                for (
-                                    var j = 0;
-                                    j + 2 < sourceIndices.length &&
-                                    indices.length / 3 <
-                                    MAX_TRIANGLES;
-                                    j += 3
-                                ) {
-                                    var a = sourceIndices[j];
-                                    var b = sourceIndices[j + 1];
-                                    var d = sourceIndices[j + 2];
-                                    if (
-                                        a >= count ||
-                                        b >= count ||
-                                        d >= count
-                                    ) {
-                                        continue;
-                                    }
-                                    matrix.transformPoint(
-                                        tmpA.set(
-                                            sourcePos[a * 3],
-                                            sourcePos[a * 3 + 1],
-                                            sourcePos[a * 3 + 2]
-                                        ),
-                                        tmpA
-                                    );
-                                    matrix.transformPoint(
-                                        tmpB.set(
-                                            sourcePos[b * 3],
-                                            sourcePos[b * 3 + 1],
-                                            sourcePos[b * 3 + 2]
-                                        ),
-                                        tmpB
-                                    );
-                                    matrix.transformPoint(
-                                        tmpC.set(
-                                            sourcePos[d * 3],
-                                            sourcePos[d * 3 + 1],
-                                            sourcePos[d * 3 + 2]
-                                        ),
-                                        tmpC
-                                    );
-                                    if (emit(tmpA, tmpB, tmpC)) {
-                                        emitted++;
-                                    }
-                                }
-                            } catch (err) {
-                                if (this.debug) {
-                                    console.warn(
-                                        TAG,
-                                        'Panel sin lectura de vertices:',
-                                        c.entity.name,
-                                        err
-                                    );
-                                }
-                            }
-                            if (
-                                !emitted &&
-                                c.type === 'plane' &&
-                                indices.length / 3 + 2 <=
-                                MAX_TRIANGLES
-                            ) {
-                                var wd = matrix.data;
-                                var ny = wd[5] / Math.max(
-                                    1e-8,
-                                    Math.hypot(
-                                        wd[4],
-                                        wd[5],
-                                        wd[6]
-                                    )
-                                );
-                                if (Math.abs(ny) > 0.94) {
-                                    var y =
-                                        (wb[1] + wb[4]) * 0.5;
-                                    var v0 = new pc.Vec3(
-                                        wb[0], y, wb[2]
-                                    );
-                                    var v1 = new pc.Vec3(
-                                        wb[3], y, wb[2]
-                                    );
-                                    var v2 = new pc.Vec3(
-                                        wb[3], y, wb[5]
-                                    );
-                                    var v3 = new pc.Vec3(
-                                        wb[0], y, wb[5]
-                                    );
-                                    emit(v0, v1, v2);
-                                    emit(v0, v2, v3);
-                                    emitted = 2;
-                                }
-                            }
-                            if (emitted) {
-                                var tile = {
-                                    b: wb,
-                                    y: (wb[1] + wb[4]) * 0.5,
-                                    entity: c.entity,
-                                    positions:
-                                        vertices.slice(initialPos),
-                                    normals:
-                                        normals.slice(initialNorm),
-                                    uvs:
-                                        uvs.slice(initialUv)
-                                };
-                                var nv =
-                                    tile.positions.length / 3;
-                                if (
-                                    !Number.isInteger(nv) ||
-                                    nv < 3 ||
-                                    tile.normals.length !==
-                                    nv * 3 ||
-                                    tile.uvs.length !==
-                                    nv * 2
-                                ) {
-                                    console.warn(
-                                        TAG,
-                                        'Panel descartado: streams inconsistentes:',
-                                        c.entity.name
-                                    );
-                                    vertices.length = initialPos;
-                                    normals.length = initialNorm;
-                                    uvs.length = initialUv;
-                                    indices.length -=
-                                        emitted * 3;
-                                    return;
-                                }
-                                tile._giTileId =
-                                    this._groundTiles.length;
-                                this._ground.push(tile);
-                                this._groundTiles.push(tile);
-                            }
-                        },
-                        this
-                    );
-                },
-                this
-            );
-            return {
-                positions: vertices,
-                normals: normals,
-                uvs: uvs,
-                indices: indices,
-                bounds: bounds
-            };
-        };
-    AdvancedGpuInstancer.prototype._findDynamicCasters =
-        function () {
-            var arr = [];
-            shadowComponents(this.app).forEach(function (c) {
-                if (
-                    !c ||
-                    !c.enabled ||
-                    !alive(c.entity) ||
-                    c.isStatic ||
-                    c.entity.__giProxy ||
-                    c.entity.__giShadowCatcher ||
-                    !c.castShadows
-                ) {
-                    return;
-                }
-                var bb = null;
-                (c.meshInstances || []).forEach(function (mi) {
-                    if (
-                        mi &&
-                        mi.mesh &&
-                        mi.visible !== false &&
-                        mi.castShadow
-                    ) {
-                        var b = worldBounds(mi);
-                        if (b) {
-                            bb = union(bb, b);
-                        }
-                    }
-                });
-                if (bb) {
-                    arr.push({
-                        c: c,
-                        b: bb
-                    });
-                }
-            });
-            return arr;
-        };
-    AdvancedGpuInstancer.prototype._createCatchers =
-        function () {
-            this._destroyCatchers();
-            if (!this.dynamicShadowCatcher) {
-                return;
-            }
-            var probe = new pc.StandardMaterial();
-            var supported = 'shadowCatcher' in probe;
-            probe.destroy();
-            if (!supported) {
-                console.warn(
-                    TAG,
-                    'shadowCatcher no disponible'
-                );
-                return;
-            }
-            var suns = this.app.root
-                .findComponents('light')
-                .filter(function (l) {
-                    return (
-                        l.enabled &&
-                        alive(l.entity) &&
-                        l.type === 'directional' &&
-                        l.castShadows
-                    );
-                });
-            if (!suns.length) {
-                return;
-            }
-            var ground = this._scanGround();
-            if (!ground.indices.length) {
-                console.warn(
-                    TAG,
-                    'No se encontraron triangulos de suelo baked horizontales'
-                );
-                return;
-            }
-            this._catcherCandidates =
-                this._findDynamicCasters();
-            var vertexCount =
-                ground.positions.length / 3;
-            if (
-                !Number.isInteger(vertexCount) ||
-                ground.normals.length !==
-                vertexCount * 3 ||
-                ground.uvs.length !==
-                vertexCount * 2
-            ) {
-                console.error(
-                    TAG,
-                    'Shadow Catcher cancelado: streams inconsistentes'
-                );
-                return;
-            }
-            var mesh = null;
-            var mat = null;
-            var entity = null;
-            try {
-                mesh = new pc.Mesh(
-                    this.app.graphicsDevice
-                );
-                this._catcherCapacityVertices =
-                    vertexCount;
-                this._catcherCapacityIndices =
-                    ground.indices.length;
-                if (typeof mesh.clear === 'function') {
-                    mesh.clear(
-                        true,
-                        true,
-                        this._catcherCapacityVertices,
-                        this._catcherCapacityIndices
-                    );
-                }
-                mesh.setPositions(ground.positions);
-                mesh.setNormals(ground.normals);
-                mesh.setUvs(0, ground.uvs);
-                mesh.setIndices(ground.indices);
-                mesh.update(pc.PRIMITIVE_TRIANGLES);
-                mat = this._makeCatcherMaterial();
-                entity = new pc.Entity(
-                    'GI25_ShadowReceiver_MultiPanel'
-                );
-                entity.__giShadowCatcher = true;
-                this.app.root.addChild(entity);
-                var mi = new pc.MeshInstance(
-                    mesh,
-                    mat,
-                    entity
-                );
-                mi.castShadow = false;
-                mi.receiveShadow = true;
-                mi.cull = true;
-                entity.addComponent('render', {
-                    meshInstances: [mi],
-                    castShadows: false,
-                    receiveShadows: true
-                });
-                entity.render.isStatic = false;
-                entity.render.lightmapped = false;
-                this._catcher = {
-                    entity: entity,
-                    mi: mi,
-                    bounds: ground.bounds
-                };
-                this._catcherSelection = '';
-                this._catcherMesh = mesh;
-                this._catcherMat = mat;
-                this._groundTriangleCount =
-                    ground.indices.length / 3;
-                if (this.debug) {
-                    console.log(
-                        TAG,
-                        'Receptor unificado:',
-                        this._ground.length,
-                        'paneles,',
-                        this._groundTriangleCount,
-                        'triangulos, 1 MeshInstance'
-                    );
-                }
-            } catch (e) {
-                console.warn(
-                    TAG,
-                    'No se pudo crear shadow catcher:',
-                    e
-                );
-                if (entity) {
-                    try { entity.destroy(); } catch (_) { }
-                }
-                if (mesh) {
-                    try { mesh.destroy(); } catch (_) { }
-                }
-                if (mat) {
-                    try { mat.destroy(); } catch (_) { }
-                }
-                this._catcher = null;
-                this._catcherMesh = null;
-                this._catcherMat = null;
-            }
-        };
-    function projectedRect(bounds, up, groundY) {
-        if (!up || up.y <= 0) {
-            return null;
-        }
-        if (groundY > bounds[1]) {
-            return null;
-        }
-        var ax = [bounds[0], bounds[3]];
-        var ay = [bounds[1], bounds[4]];
-        var az = [bounds[2], bounds[5]];
-        var result = [
-            Infinity,
-            Infinity,
-            -Infinity,
-            -Infinity
-        ];
-        for (var i = 0; i < 2; i++) {
-            for (var j = 0; j < 2; j++) {
-                for (var k = 0; k < 2; k++) {
-                    var h =
-                        (ay[j] - groundY) / up.y;
-                    var x =
-                        ax[i] - up.x * h;
-                    var z =
-                        az[k] - up.z * h;
-                    result[0] = Math.min(
-                        result[0],
-                        x
-                    );
-                    result[1] = Math.min(
-                        result[1],
-                        z
-                    );
-                    result[2] = Math.max(
-                        result[2],
-                        x
-                    );
-                    result[3] = Math.max(
-                        result[3],
-                        z
-                    );
-                }
-            }
-        }
-        return result;
-    }
-    function intersectsRect(r, b) {
-        return (
-            r[0] <= b[3] &&
-            r[2] >= b[0] &&
-            r[1] <= b[5] &&
-            r[3] >= b[2]
-        );
-    }
-    function bboxVisibleInProject(self, b, light) {
-        var cams = (self._cameras || []).filter(
-            function (c) {
-                return c.enabled && alive(c.entity);
-            }
-        );
-        if (!cams.length) {
-            return true;
-        }
-        var aabb = makeAabb(b);
-        var dist = Number(light.shadowDistance);
-        return cams.some(function (cam) {
-            if (
-                cam.frustum &&
-                !cam.frustum.containsAabb(aabb)
-            ) {
-                return false;
-            }
-            if (
-                Number.isFinite(dist) &&
-                dist > 0
-            ) {
-                var pos =
-                    cam.entity.getPosition();
-                var dx = Math.max(
-                    0,
-                    b[0] - pos.x,
-                    pos.x - b[3]
-                );
-                var dy = Math.max(
-                    0,
-                    b[1] - pos.y,
-                    pos.y - b[4]
-                );
-                var dz = Math.max(
-                    0,
-                    b[2] - pos.z,
-                    pos.z - b[5]
-                );
-                return (
-                    dx * dx +
-                    dy * dy +
-                    dz * dz
-                ) <= dist * dist;
-            }
-            return true;
-        });
-    }
-    AdvancedGpuInstancer.prototype._setCatcherTiles =
-        function (selected) {
-            if (!this._catcher || !this._catcherMesh) {
-                return false;
-            }
-            var key = selected.map(function (t) {
-                return t._giTileId;
-            }).join('|');
-            if (key === this._catcherSelection) {
-                return true;
-            }
-            if (!selected.length) {
-                return false;
-            }
-            var p = [];
-            var n = [];
-            var u = [];
-            var ix = [];
-            var aabb = null;
-            for (var t = 0; t < selected.length; t++) {
-                var tile = selected[t];
-                var tp = tile.positions;
-                var tn = tile.normals;
-                var tu = tile.uvs;
-                var count = tp.length / 3;
-                if (
-                    !Number.isInteger(count) ||
-                    count < 3 ||
-                    tn.length !== tp.length ||
-                    tu.length !== count * 2 ||
-                    count % 3 !== 0
-                ) {
-                    console.warn(
-                        TAG,
-                        'Overlay descartado: streams inconsistentes:',
-                        tile.entity.name,
-                        {
-                            posiciones: tp.length,
-                            normales: tn.length,
-                            uv: tu.length
-                        }
-                    );
-                    return false;
-                }
-                var base = p.length / 3;
-                for (var q = 0; q < tp.length; q++) {
-                    p.push(tp[q]);
-                }
-                for (q = 0; q < tn.length; q++) {
-                    n.push(tn[q]);
-                }
-                for (q = 0; q < tu.length; q++) {
-                    u.push(tu[q]);
-                }
-                for (var k = 0; k < count; k++) {
-                    ix.push(base + k);
-                }
-                aabb = union(aabb, tile.b);
-            }
-            var nv = p.length / 3;
-            if (
-                !Number.isInteger(nv) ||
-                nv < 3 ||
-                n.length !== nv * 3 ||
-                u.length !== nv * 2 ||
-                ix.length !== nv
-            ) {
-                console.error(
-                    TAG,
-                    'Overlay: longitudes incorrectas antes de GPU',
-                    {
-                        posiciones: p.length,
-                        normales: n.length,
-                        uv: u.length,
-                        indices: ix.length
-                    }
-                );
-                return false;
-            }
-            try {
-                this._catcherMesh.setPositions(p);
-                this._catcherMesh.setNormals(n);
-                this._catcherMesh.setUvs(0, u);
-                this._catcherMesh.setIndices(ix);
-                this._catcherMesh.update(
-                    pc.PRIMITIVE_TRIANGLES
-                );
-                this._catcher.bounds = aabb;
-                this._catcherSelectedTriangles =
-                    ix.length / 3;
-                this._catcherTileUpdates++;
-                this._catcherSelection = key;
-                return true;
-            } catch (e) {
-                console.error(
-                    TAG,
-                    'Error reconstruyendo Shadow Catcher:',
-                    e
-                );
-                this._catcherSelection = '';
-                return false;
-            }
-        };
-    AdvancedGpuInstancer.prototype._updateCatchers =
-        function () {
-            var catcher = this._catcher;
-            if (
-                !catcher ||
-                !this._alive ||
-                this._baking
-            ) {
-                return;
-            }
-            var sun = this.app.root
-                .findComponents('light')
-                .find(function (l) {
-                    return (
-                        l.enabled &&
-                        alive(l.entity) &&
-                        l.type === 'directional' &&
+                        inside &&
                         (
-                            l.castShadows ||
-                            (
-                                this._lightOriginals.get(l) ||
-                                {}
-                            ).cast
+                            !Number.isFinite(far) ||
+                            far <= 0 ||
+                            d2 <= far * far
                         )
-                    );
-                }, this);
-            var tiles = this._groundTiles || [];
-            var selected = [];
-            var casters = [];
-            var active = false;
-            if (
-                sun &&
-                this.dynamicShadowCatcher &&
-                sun.entity.up &&
-                sun.entity.up.y > 0
-            ) {
-                var up = sun.entity.up;
-                var sources =
-                    this._findDynamicCasters();
-                tiles.forEach(
-                    function (tile) {
-                        if (
-                            !bboxVisibleInProject(
-                                this,
-                                tile.b,
-                                sun
-                            )
-                        ) {
-                            return;
-                        }
-                        var hit = false;
-                        sources.forEach(function (source) {
-                            var r = projectedRect(
-                                source.b,
-                                up,
-                                tile.y
-                            );
-                            if (
-                                r &&
-                                intersectsRect(r, tile.b)
-                            ) {
-                                hit = true;
-                                if (
-                                    casters.indexOf(
-                                        source.c.entity.name
-                                    ) < 0
-                                ) {
-                                    casters.push(
-                                        source.c.entity.name
-                                    );
-                                }
-                            }
-                        });
-                        if (hit) {
-                            selected.push(tile);
-                        }
-                    },
-                    this
-                );
-                active = selected.length > 0;
-            }
-            if (
-                active &&
-                !this._setCatcherTiles(selected)
-            ) {
-                active = false;
-                selected = [];
-                casters = [];
-            }
-            if (!active) {
-                this._catcherSelection = '';
-            }
-            if (active) {
-                this._catcherOffVotes = 0;
-            } else {
-                this._catcherOffVotes =
-                    (this._catcherOffVotes || 0) + 1;
-            }
-            if (
-                active ||
-                this._catcherOffVotes >= 2
-            ) {
-                catcher.entity.enabled = active;
-                this._catcherActive = active;
-            } else {
-                this._pendingOff = true;
-            }
-            this._nearDynamicCasters = casters;
-            this._catcherSelectedPanels =
-                selected.length;
-        };
-    AdvancedGpuInstancer.prototype.auditDynamicShadows =
-        function () {
-            var rows = [{
-                receptor:
-                    'GI25_ShadowReceiver_MultiPanel',
-                paneles: this._ground.length,
-                triangulos:
-                    this._catcherSelectedTriangles || 0,
-                panelesActivos:
-                    this._catcherSelectedPanels || 0,
-                actualizacionesGPU:
-                    this._catcherTileUpdates || 0,
-                drawCallsReceptor:
-                    this._catcherActive ? 1 : 0,
-                activo: !!this._catcherActive,
-                dinamicosEnRango:
+                    ) {
+                        needed = true;
+                    }
+                });
+
+                if (
+                    !needed &&
                     (
-                        this._nearDynamicCasters || []
-                    ).join(', ') || '-'
-            }];
-            console.table(rows);
-            console.table(this._spotLodReport || []);
-            return rows;
-        };
-    AdvancedGpuInstancer.prototype._restoreDirectionalMasks =
-        function () {
-            if (!this._directionalOriginals) {
-                return;
-            }
-            this._directionalOriginals.forEach(
-                function (rec, c) {
-                    if (
-                        !c ||
-                        !c.entity ||
-                        c.entity._destroyed
-                    ) {
-                        return;
-                    }
-                    try {
-                        if (rec.component !== undefined) {
-                            c.shadowCascadeMask =
-                                rec.component;
-                        }
-                        rec.meshes.forEach(function (x) {
-                            if (x.mi) {
-                                x.mi.shadowCascadeMask =
-                                    x.mask;
-                            }
-                        });
-                    } catch (_) { }
+                        groupDirectionalRelevant(this, g) ||
+                        groupCastsToLocal(this, g)
+                    )
+                ) {
+                    needed = true;
                 }
-            );
-            this._directionalOriginals.clear();
-            this._maskedDirectionalCount = 0;
-        };
-    AdvancedGpuInstancer.prototype._optimizeDirectionalMasks =
-        function () {
-            if (
-                !this._alive ||
-                !this._built ||
-                this._baking
-            ) {
-                return;
-            }
-            var sun = this.app.root
-                .findComponents('light')
-                .find(function (l) {
-                    return (
-                        l.enabled &&
-                        alive(l.entity) &&
-                        l.type === 'directional' &&
-                        (
-                            l.castShadows ||
-                            (
-                                this._lightOriginals.get(l) ||
-                                {}
-                            ).cast
-                        )
-                    );
-                }, this);
-            if (!sun) {
-                this._restoreDirectionalMasks();
-                return;
-            }
-            var scene = shadowScene(this);
-            var dynamics = scene.receivers.filter(
-                function (r) {
-                    return (
-                        !r.baked &&
-                        !r.c.entity.__giShadowCatcher
-                    );
+
+                if (needed) {
+                    g.idle = 0;
+
+                    if (!g.loaded) {
+                        loading.push({
+                            g: g,
+                            d: best
+                        });
+                    }
+
+                } else {
+                    g.idle += dt;
+
+                    if (
+                        g.loaded &&
+                        g.idle > this.unloadDelay
+                    ) {
+                        removing.push({
+                            g: g,
+                            d: best
+                        });
+                    }
                 }
-            );
-            var touched = new Set();
-            shadowComponents(this.app).forEach(
-                function (c) {
-                    if (
-                        !c ||
-                        !c.enabled ||
-                        !alive(c.entity) ||
-                        !(c.isStatic || c.entity.__giProxy)
-                    ) {
-                        return;
-                    }
-                    var miList = (c.meshInstances || [])
-                        .filter(function (mi) {
-                            return mi && mi.mesh;
-                        });
-                    if (!miList.length) {
-                        return;
-                    }
-                    if (
-                        !miList.some(function (mi) {
-                            return baked(c, mi);
-                        })
-                    ) {
-                        return;
-                    }
-                    var needs = false;
-                    var sources =
-                        shadowSources(this, c);
-                    for (
-                        var ri = 0;
-                        ri < dynamics.length && !needs;
-                        ri++
-                    ) {
-                        var r = dynamics[ri];
-                        var rb = sphereOf(r.mi);
-                        if (!rb) {
-                            needs = true;
-                            break;
-                        }
-                        if (
-                            !receiverVisible(
-                                this,
-                                r.mi,
-                                sun
-                            ) ||
-                            !receiverForLight(
-                                sun,
-                                false,
-                                r.mi
-                            )
-                        ) {
-                            continue;
-                        }
-                        for (
-                            var si = 0;
-                            si < sources.length && !needs;
-                            si++
-                        ) {
-                            var sb =
-                                sphereOf(sources[si].mi);
-                            if (
-                                !sb ||
-                                canShadow(sb, rb, sun)
-                            ) {
-                                needs = true;
-                            }
-                        }
-                    }
-                    touched.add(c);
-                    var rec =
-                        this._directionalOriginals.get(c);
-                    if (!needs) {
-                        if (!rec) {
-                            rec = {
-                                component:
-                                    c.shadowCascadeMask,
-                                meshes: miList.map(function (mi) {
-                                    return {
-                                        mi: mi,
-                                        mask: mi.shadowCascadeMask
-                                    };
-                                })
-                            };
-                            this._directionalOriginals.set(
-                                c,
-                                rec
-                            );
-                        }
-                        c.shadowCascadeMask = 0;
-                        miList.forEach(function (mi) {
-                            mi.shadowCascadeMask = 0;
-                        });
-                    } else if (rec) {
-                        if (rec.component !== undefined) {
-                            c.shadowCascadeMask =
-                                rec.component;
-                        }
-                        rec.meshes.forEach(function (x) {
-                            if (x.mi) {
-                                x.mi.shadowCascadeMask =
-                                    x.mask;
-                            }
-                        });
-                        this._directionalOriginals.delete(c);
-                    }
-                },
-                this
-            );
-            this._directionalOriginals.forEach(
-                function (rec, c) {
-                    if (touched.has(c)) {
-                        return;
-                    }
-                    try {
-                        if (rec.component !== undefined) {
-                            c.shadowCascadeMask =
-                                rec.component;
-                        }
-                        rec.meshes.forEach(function (x) {
-                            if (x.mi) {
-                                x.mi.shadowCascadeMask =
-                                    x.mask;
-                            }
-                        });
-                    } catch (_) { }
-                    this._directionalOriginals.delete(c);
-                },
-                this
-            );
-            this._maskedDirectionalCount =
-                this._directionalOriginals.size;
-        };
-    AdvancedGpuInstancer.prototype.initialize =
-        function () {
-            this.lodNearPixels = 90;
-            this.lodFarPixels = 30;
-            this.collisionRadius = 140;
-            this.collisionMargin = 45;
-            this.predictionSeconds = 2;
-            this.physicsBudget = 50;
-            this.smartShadowMode = 'auto';
-            this.shadowOptimizer = true;
-            this.freezeStaticShadows = true;
-            this.shadowPairBudget = 50000;
-            this._catcher = null;
-            this._ground = [];
-            this._catcherMat = null;
-            this._catcherMesh = null;
-            this._catcherActive = false;
-            this._nearDynamicCasters = [];
-            this._groundTriangleCount = 0;
-            this._directionalOriginals = new Map();
-            this._maskedDirectionalCount = 0;
-            this._spotLodReport = [];
-            this._shadowCacheKey = null;
-            this._casterStateKey = null;
-            this._casterChangeToken = null;
-            this._shadowCacheHits = 0;
-            this._shadowAnalyses = 0;
-            this._casterCacheHits = 0;
-            this._casterAnalyses = 0;
-            this._pendingOff = false;
-            this._catcherOffVotes = 0;
-            this._catcherTileUpdates = 0;
-            this._catcherSelectedPanels = 0;
-            this._catcherSelectedTriangles = 0;
-            this._catcherCapacityVertices = 0;
-            this._catcherCapacityIndices = 0;
-            this._groups = [];
-            this._hidden = [];
-            this._physics = [];
-            this._physicsGrid = null;
-            this._physicsLarge = [];
-            this._physicsActive = new Set();
-            this._physicsCellSize = 0;
-            this._materialCache = new Map();
-            this._lods = new Map();
-            this._lodQueue = [];
-            this._lodJobs = [];
-            this._lodWorking = null;
-            this._worker = null;
-            this._ids = new WeakMap();
-            this._id = 0;
-            this._casterOriginals = new Map();
-            this._casterDisabled = 0;
-            this._casterStatus = null;
-            this._lastCasterStatus = '';
-            this._casterReport = [];
-            this._lightOriginals = new Map();
-            this._shadowReport = [];
-            this._probe = null;
-            this._alive = false;
-            this._built = false;
-            this._baking = false;
-            this._clock = 0;
-            this._retry = 0;
-            this._discovery = 0;
-            this._player = null;
-            this._cameras = [];
-            this._frameComponents = null;
-            this._frameLights = null;
-            this._frameParticles = null;
-            this._frameReceivers = null;
-            this._frameLightCasters = null;
-            this._workerEpoch = 0;
-            this._perf = {
-                enabled: false, samples: 0,
-                signature: 0, shadows: 0, systems: 0, total: 0,
-                catcher: 0, casters: 0, directional: 0, lights: 0
-            };
-            this._mobileBaseline = null;
-            this.stats = {};
-            this._groupReport = [];
-            this.on(
-                'disable',
-                this.restore,
-                this
-            );
-            this.on(
-                'destroy',
-                this.restore,
-                this
-            );
-            this.on(
-                'enable',
-                function () {
-                    if (!this._alive) {
-                        this.rebuild();
-                    }
-                },
-                this
-            );
-            this.rebuild();
-        };
-    AdvancedGpuInstancer.prototype._discover =
-        function () {
-            var players =
-                this.app.root.findByTag('is-player');
-            this._player =
-                players.find(function (e) {
-                    return alive(e) && e.rigidbody;
-                }) ||
-                players.find(alive) ||
-                null;
-            var cams = this.app.root
-                .findComponents('camera')
-                .filter(function (c) {
-                    return (
-                        c.enabled &&
-                        alive(c.entity)
-                    );
-                });
-            this._cameras = cams.filter(function (c) {
-                return !c.renderTarget;
+
+            }, this);
+
+            loading.sort(function (a, b) {
+                return a.d - b.d;
             });
-            if (!this._cameras.length) {
-                this._cameras = cams;
-            }
+
+            removing.sort(function (a, b) {
+                return b.d - a.d;
+            });
+
+            loading.slice(0, this.uploadsPerStep)
+                .forEach(function (x) {
+                    reload(this, x.g);
+                }, this);
+
+            removing.slice(0, this.unloadsPerStep)
+                .forEach(function (x) {
+                    unload(this, x.g);
+                }, this);
+
+            this.stats.residentGroups =
+                this.groups.reduce(function (n, g) {
+                    return n + (g.loaded ? 1 : 0);
+                }, 0);
+
+            this.stats.residentInstanceBytes =
+                this.groups.reduce(function (n, g) {
+                    return n + (g.loaded ? g.bytes : 0);
+                }, 0);
         };
-    AdvancedGpuInstancer.prototype.rebuild =
-        function () {
-            this.restore();
-            this._alive = true;
-            this._discover();
-            this.stats = {
-                staticMeshes: 0,
-                instanced: 0,
-                groups: 0,
-                savedDrawsEstimate: 0,
-                minimum: MIN,
-                excluded: {},
-                colliders: 0,
-                lods: 0
-            };
-            var scan = collect(this);
-            if (scan.waiting) {
-                if (this.debug) {
-                    console.log(
-                        TAG,
-                        'Esperando',
-                        scan.waiting,
-                        'lightmaps de PT'
-                    );
-                }
-                return;
-            }
-            var items = scan.items;
-            var size = Math.max(16, this.chunkSize);
-            var visual = new Map();
-            var groups = new Map();
-            var sceneBounds = null;
-            if (items.length <= 64) {
-                items.forEach(function (x) {
-                    sceneBounds = union(sceneBounds, x.bounds);
-                });
-            }
-            var singleZone = items.length <= 64 &&
-                (!sceneBounds ||
-                    (sceneBounds[3] - sceneBounds[0] <= size &&
-                        sceneBounds[5] - sceneBounds[2] <= size));
-            items.forEach(
-                function (x) {
-                    var b = x.bounds;
-                    var chunk = singleZone
-                        ? 'zona-unica'
-                        : (
-                            Math.floor(
-                                (b[0] + b[3]) / (2 * size)
-                            ) +
-                            ',' +
-                            Math.floor(
-                                (b[2] + b[5]) / (2 * size)
-                            )
-                        );
-                    var key = [
-                        chunk,
-                        oid(this, x.mi.mesh),
-                        oid(this, x.mi.material),
-                        x.c.lightmapped ? 1 : 0,
-                        oid(this, x.lm.texture),
-                        oid(this, x.lm.direction)
-                    ].join('|');
-                    var state = stateKey(this, x);
-                    var v = visual.get(key);
-                    if (!v) {
-                        v = {
-                            objeto: x.c.entity.name,
-                            candidatos: 0,
-                            estados: new Set()
-                        };
-                        visual.set(key, v);
-                    }
-                    v.candidatos++;
-                    v.estados.add(state);
-                    var full = key + '|' + state;
-                    var g = groups.get(full);
-                    if (!g) {
-                        g = {
-                            items: [],
-                            bounds: null
-                        };
-                        groups.set(full, g);
-                    }
-                    g.items.push(x);
-                    g.bounds = union(g.bounds, b);
-                },
-                this
-            );
-            this._groupReport = [];
-            visual.forEach(
-                function (v) {
-                    if (v.candidatos >= MIN) {
-                        this._groupReport.push({
-                            objeto: v.objeto,
-                            candidatos: v.candidatos,
-                            estados: v.estados.size
-                        });
-                    }
-                },
-                this
-            );
-            try {
-                var fmt = new pc.VertexFormat(
-                    this.app.graphicsDevice,
-                    SEM.map(function (s) {
-                        return {
-                            semantic: s,
-                            components: 4,
-                            type: pc.TYPE_FLOAT32
-                        };
-                    })
-                );
-                groups.forEach(
-                    function (g) {
-                        if (g.items.length >= MIN) {
-                            build(this, g, fmt);
-                        }
-                    },
-                    this
-                );
-            } catch (e) {
-                console.error(
-                    TAG,
-                    'Instancing:',
-                    e
-                );
-            }
-            this._scanPhysics();
-            this._built = true;
-            this._createCatchers();
-            this._updateCatchers();
-            this._applyCasterMode();
-            this._optimizeDirectionalMasks();
-            this._reconcileLights(0, false);
-            if (this.debug) {
-                console.log(
-                    TAG,
-                    'Listo:',
-                    JSON.stringify(this.stats),
-                    'Jugador:',
-                    this._player
-                        ? this._player.name
-                        : 'no detectado',
-                    'Camaras:',
-                    this._cameras.length,
-                    'DrawCalls frame anterior:',
-                    this.app.stats.drawCallCount
-                );
-                console.table(this._groupReport);
-                this.auditShadowOptimizer();
-            }
-            this.app.fire('gi:ready', this);
-        };
-    AdvancedGpuInstancer.prototype.explainGroups =
-        function () {
-            console.table(this._groupReport);
-            return this._groupReport;
-        };
-    function hasStaticAncestor(e) {
-        for (var p = e; p; p = p.parent) {
-            if (p.render && p.render.isStatic) {
-                return true;
-            }
-        }
-        return false;
-    }
-    function ancestor(a, e) {
-        for (var p = e; p; p = p.parent) {
-            if (p === a) {
-                return true;
-            }
-        }
-        return false;
-    }
-    function collisionBounds(c) {
+
+    // =====================================================
+    // FISICA PREDICTIVA OPT-IN
+    // =====================================================
+
+    function pBounds(c) {
+        if (!c || !c.entity) return null;
+
         var h;
+
         if (c.type === 'box' && c.halfExtents) {
             h = [
                 c.halfExtents.x,
                 c.halfExtents.y,
                 c.halfExtents.z
             ];
+
         } else if (c.type === 'sphere') {
             h = [
                 c.radius,
                 c.radius,
                 c.radius
             ];
+
+        } else if (
+            c.type === 'capsule' ||
+            c.type === 'cylinder'
+        ) {
+            var r = c.radius || 0.5;
+            var k = (c.height || 1) / 2;
+
+            h = c.axis === 0
+                ? [k, r, r]
+                : c.axis === 2
+                    ? [r, r, k]
+                    : [r, k, r];
+
         } else {
             return null;
         }
-        var q = c.angularOffset;
+
         if (
-            q &&
+            c.angularOffset &&
             (
-                Math.abs(q.x) +
-                Math.abs(q.y) +
-                Math.abs(q.z)
-            ) > 1e-5
+                Math.abs(c.angularOffset.x) +
+                Math.abs(c.angularOffset.y) +
+                Math.abs(c.angularOffset.z)
+            ) > 1e-6
         ) {
             return null;
         }
-        var m =
-            c.entity.getWorldTransform().data;
+
         var o = c.linearOffset || {
             x: 0,
             y: 0,
             z: 0
         };
-        var x =
-            m[12] +
-            m[0] * o.x +
-            m[4] * o.y +
-            m[8] * o.z;
-        var y =
-            m[13] +
-            m[1] * o.x +
-            m[5] * o.y +
-            m[9] * o.z;
-        var z =
-            m[14] +
-            m[2] * o.x +
-            m[6] * o.y +
-            m[10] * o.z;
-        var r = [
+
+        var m = c.entity.getWorldTransform().data;
+
+        var p = [
+            m[12] + m[0] * o.x + m[4] * o.y + m[8] * o.z,
+            m[13] + m[1] * o.x + m[5] * o.y + m[9] * o.z,
+            m[14] + m[2] * o.x + m[6] * o.y + m[10] * o.z
+        ];
+
+        var v = [
             Math.abs(m[0]) * h[0] +
             Math.abs(m[4]) * h[1] +
             Math.abs(m[8]) * h[2],
+
             Math.abs(m[1]) * h[0] +
             Math.abs(m[5]) * h[1] +
             Math.abs(m[9]) * h[2],
+
             Math.abs(m[2]) * h[0] +
             Math.abs(m[6]) * h[1] +
             Math.abs(m[10]) * h[2]
         ];
+
         return [
-            x - r[0],
-            y - r[1],
-            z - r[2],
-            x + r[0],
-            y + r[1],
-            z + r[2]
+            p[0] - v[0],
+            p[1] - v[1],
+            p[2] - v[2],
+            p[0] + v[0],
+            p[1] + v[1],
+            p[2] + v[2]
         ];
     }
-    function segmentBox(a, b, box, r) {
-        var lo = 0;
-        var hi = 1;
+
+    function segBox(a, b, v, r) {
+        var t0 = 0;
+        var t1 = 1;
+
         for (var i = 0; i < 3; i++) {
             var d = b[i] - a[i];
-            var mn = box[i] - r;
-            var mx = box[i + 3] + r;
-            if (Math.abs(d) < 1e-8) {
-                if (
-                    a[i] < mn ||
-                    a[i] > mx
-                ) {
+            var lo = v[i] - r;
+            var hi = v[i + 3] + r;
+
+            if (Math.abs(d) < 1e-9) {
+                if (a[i] < lo || a[i] > hi) {
                     return false;
                 }
+
             } else {
-                var t0 = (mn - a[i]) / d;
-                var t1 = (mx - a[i]) / d;
-                if (t0 > t1) {
-                    var t = t0;
-                    t0 = t1;
-                    t1 = t;
+                var x = (lo - a[i]) / d;
+                var y = (hi - a[i]) / d;
+
+                if (x > y) {
+                    var z = x;
+                    x = y;
+                    y = z;
                 }
-                lo = Math.max(lo, t0);
-                hi = Math.min(hi, t1);
-                if (lo > hi) {
-                    return false;
-                }
+
+                t0 = Math.max(t0, x);
+                t1 = Math.min(t1, y);
+
+                if (t0 > t1) return false;
             }
         }
+
         return true;
     }
-    function cellKey(x, z) { return x + ':' + z; }
-    function indexPhysics(self) {
-        var grid = new Map();
-        var large = [];
-        var cell = Math.max(16, self.collisionRadius + self.collisionMargin);
-        self._physics.forEach(function (item) {
-            var b = item.b;
-            var x0 = Math.floor(b[0] / cell), x1 = Math.floor(b[3] / cell);
-            var z0 = Math.floor(b[2] / cell), z1 = Math.floor(b[5] / cell);
-            if ((x1 - x0 + 1) * (z1 - z0 + 1) > 64) {
-                large.push(item);
-                return;
-            }
-            for (var x = x0; x <= x1; x++) {
-                for (var z = z0; z <= z1; z++) {
-                    var key = cellKey(x, z);
-                    var bucket = grid.get(key);
-                    if (!bucket) { bucket = []; grid.set(key, bucket); }
-                    bucket.push(item);
-                }
-            }
-        });
-        self._physicsGrid = grid;
-        self._physicsLarge = large;
-        self._physicsCellSize = cell;
-        self._physicsActive = new Set(self._physics.filter(function (x) {
-            return x.on;
-        }));
-    }
-    function nearbyPhysics(self, a, b, r) {
-        if (!self._physicsGrid) return self._physics;
-        var cell = self._physicsCellSize;
-        var x0 = Math.floor((Math.min(a[0], b[0]) - r) / cell);
-        var x1 = Math.floor((Math.max(a[0], b[0]) + r) / cell);
-        var z0 = Math.floor((Math.min(a[2], b[2]) - r) / cell);
-        var z1 = Math.floor((Math.max(a[2], b[2]) + r) / cell);
-        if ((x1 - x0 + 1) * (z1 - z0 + 1) > 4096) {
-            return self._physics;
-        }
-        var out = new Set(self._physicsLarge);
-        for (var x = x0; x <= x1; x++) {
-            for (var z = z0; z <= z1; z++) {
-                var list = self._physicsGrid.get(cellKey(x, z));
-                if (!list) continue;
-                for (var j = 0; j < list.length; j++) out.add(list[j]);
-            }
-        }
-        return out;
-    }
-    AdvancedGpuInstancer.prototype._scanPhysics = function () {
-        (this._physics || []).forEach(function (x) {
-            try { x.c.enabled = x.origC; x.rb.enabled = x.origR; }
-            catch (_) { }
-        });
-        this._physics = [];
-        this._physicsGrid = null;
-        this._physicsLarge = [];
-        this._physicsActive = new Set();
-        this.stats.colliders = 0;
-        if (!this.physicsStreaming || !this._player) return;
-        this.app.root.findComponents('collision').forEach(function (c) {
-            var e = c.entity, rb = e.rigidbody;
-            if (!c.enabled || !alive(e) || !rb || !rb.enabled ||
-                rb.type !== pc.BODYTYPE_STATIC || c.isTrigger ||
-                !hasStaticAncestor(e) || ancestor(e, this._player) ||
-                (e.tags && e.tags.has('no-gi-physics'))) return;
-            var b = collisionBounds(c);
-            if (!b || Math.max(b[3] - b[0], b[4] - b[1], b[5] - b[2]) > 1024) {
-                return;
-            }
-            this._physics.push({
-                c: c, rb: rb, b: b, on: true,
-                origC: c.enabled, origR: rb.enabled
-            });
-        }, this);
-        this.stats.colliders = this._physics.length;
-        indexPhysics(this);
-    };
-    AdvancedGpuInstancer.prototype.rebuildPhysics = function () {
-        this._discover();
-        this._scanPhysics();
-        return this.auditPhysicsStreaming();
-    };
-    AdvancedGpuInstancer.prototype._switchPhysics = function (x, on) {
-        if (x.on === on) return;
-        if (on) {
-            x.c.enabled = x.origC;
-            x.rb.enabled = x.origR;
-        } else {
-            x.rb.enabled = false;
-            x.c.enabled = false;
-        }
-        x.on = on;
-        if (this._physicsActive) {
-            if (on) this._physicsActive.add(x);
-            else this._physicsActive.delete(x);
-        }
-    };
-    AdvancedGpuInstancer.prototype._updatePhysics = function () {
-        if (!this.physicsStreaming || !this._player || !this._physics.length) {
-            return;
-        }
-        var p = this._player.getPosition();
-        var v = this._player.rigidbody && this._player.rigidbody.linearVelocity;
-        var t = Math.max(0, this.predictionSeconds);
-        var a = [p.x, p.y, p.z];
-        var b = v ? [p.x + v.x * t, p.y + v.y * t, p.z + v.z * t] : a;
-        var r = Math.max(10, this.collisionRadius);
-        var far = r + Math.max(0, this.collisionMargin);
-        var budget = Math.max(1, this.physicsBudget | 0);
-        var nearby = nearbyPhysics(this, a, b, r);
-        nearby.forEach(function (x) {
-            if (!x.on && segmentBox(a, b, x.b, r)) this._switchPhysics(x, true);
-        }, this);
-        for (var x of this._physicsActive) {
-            if (budget <= 0) break;
-            if (x.on && !segmentBox(a, b, x.b, far)) {
-                this._switchPhysics(x, false);
-                budget--;
-            }
-        }
-    };
-    AdvancedGpuInstancer.prototype.auditPhysicsStreaming = function () {
-        var total = this._physics ? this._physics.length : 0;
-        var on = this._physicsActive ? this._physicsActive.size : total;
-        var row = {
-            colliders: total, activos: on,
-            desactivados: total - on,
-            desactivadosPct: total ? +((total - on) * 100 / total).toFixed(2) : 0,
-            celdas: this._physicsGrid ? this._physicsGrid.size : 0,
-            jugador: this._player ? this._player.name : 'no detectado'
-        };
-        console.table([row]);
-        return row;
-    };
-    AdvancedGpuInstancer.prototype._registerLod =
-        function (g) {
-            var mesh = g.items[0].mi.mesh;
-            var mat = g.items[0].mi.material;
-            var lod = this._lods.get(mesh);
-            if (!lod) {
-                lod = {
-                    meshes: [mesh, null, null]
-                };
-                this._lods.set(mesh, lod);
-                if (this.autoLod && !mat.normalMap) {
-                    this._lodQueue.push({
-                        mesh: mesh,
-                        lod: lod
-                    });
-                }
-            }
-            g.lod = lod;
-        };
-    AdvancedGpuInstancer.prototype._prepareLod =
+
+    AdvancedGpuInstancer.prototype._restorePhysics =
         function () {
-            if (
-                !this.autoLod ||
-                !this._lodQueue.length ||
-                typeof Worker === 'undefined'
-            ) {
-                return;
-            }
-            var job = this._lodQueue.shift();
-            var mesh = job.mesh;
-            var p = mesh.primitive;
-            if (
-                !p ||
-                p.length !== 1 ||
-                !p[0].indexed ||
-                p[0].base !== 0 ||
-                p[0].type !== pc.PRIMITIVE_TRIANGLES
-            ) {
-                return;
-            }
-            var allowed = [
-                pc.SEMANTIC_POSITION,
-                pc.SEMANTIC_NORMAL,
-                pc.SEMANTIC_TEXCOORD0,
-                pc.SEMANTIC_TEXCOORD1
-            ];
-            if (
-                mesh.vertexBuffer.getFormat().elements
-                    .some(function (x) {
-                        return allowed.indexOf(x.name) < 0;
-                    })
-            ) {
-                return;
-            }
-            var pos = [];
-            var n = [];
-            var u = [];
-            var v = [];
-            var ix = [];
-            try {
-                mesh.getPositions(pos);
-                mesh.getNormals(n);
-                mesh.getUvs(0, u);
-                mesh.getUvs(1, v);
-                mesh.getIndices(ix);
-            } catch (_) {
-                return;
-            }
-            if (
-                pos.length < 300 ||
-                pos.length > 600000 ||
-                ix.length < 300 ||
-                ix.length % 3 ||
-                ix.length !== p[0].count
-            ) {
-                return;
-            }
-            this._lodJobs.push({
-                lod: job.lod,
-                data: {
-                    p: pos,
-                    n: n,
-                    u: u,
-                    v: v,
-                    ix: ix
+            (this._phys || []).forEach(function (q) {
+                if (
+                    q.c.entity &&
+                    !q.c.entity._destroyed
+                ) {
+                    q.c.enabled = q.c0;
+                    q.rb.enabled = q.r0;
                 }
             });
-            this._startWorker();
+
+            this._phys = [];
+            this._physActive = new Set();
         };
-    AdvancedGpuInstancer.prototype._startWorker =
+
+    AdvancedGpuInstancer.prototype._scanPhysics =
         function () {
-            if (!this._lodJobs.length) {
-                return;
-            }
-            if (!this._worker) {
-                var url;
-                try {
-                    url = URL.createObjectURL(
-                        new Blob(
-                            [
-                                '(' +
-                                lodWorker.toString() +
-                                ')();'
-                            ],
-                            {
-                                type: 'text/javascript'
-                            }
-                        )
-                    );
-                    this._worker = new Worker(url);
-                    var self = this;
-                    var epoch = this._workerEpoch;
-                    this._worker.onmessage = function (ev) {
-                        if (self._workerEpoch !== epoch) return;
-                        var job = self._lodWorking;
-                        self._lodWorking = null;
-                        if (!job || !self._alive) {
-                            return;
-                        }
-                        (ev.data.levels || []).forEach(
-                            function (r, i) {
-                                if (!r) return;
-                                var mesh = null;
-                                try {
-                                    mesh = new pc.Mesh(
-                                        self.app.graphicsDevice
-                                    );
-                                    mesh.setPositions(r.p);
-                                    if (r.n.length) {
-                                        mesh.setNormals(r.n);
-                                    }
-                                    if (r.u.length) {
-                                        mesh.setUvs(0, r.u);
-                                    }
-                                    if (r.v.length) {
-                                        mesh.setUvs(1, r.v);
-                                    }
-                                    mesh.setIndices(r.ix);
-                                    mesh.update(pc.PRIMITIVE_TRIANGLES);
-                                    job.lod.meshes[i + 1] = mesh;
-                                    self.stats.lods++;
-                                } catch (e) {
-                                    if (mesh) {
-                                        try {
-                                            mesh.destroy();
-                                        } catch (_) { }
-                                    }
-                                    console.warn(
-                                        TAG,
-                                        'LOD descartado:',
-                                        e
-                                    );
-                                }
-                            }
-                        );
-                        self._nextWorkerJob();
-                    };
-                    this._worker.onerror = function (e) {
-                        console.warn(
-                            TAG,
-                            'Worker LOD:',
-                            e.message
-                        );
-                        self._stopWorker();
-                    };
-                } catch (e) {
-                    console.warn(
-                        TAG,
-                        'No se pudo crear Worker:',
-                        e
-                    );
-                    return;
-                } finally {
-                    if (url) {
-                        URL.revokeObjectURL(url);
-                    }
-                }
-            }
-            this._nextWorkerJob();
-        };
-    AdvancedGpuInstancer.prototype._nextWorkerJob =
-        function () {
+            this._restorePhysics();
+
             if (
-                !this._worker ||
-                this._lodWorking ||
-                !this._lodJobs.length
+                !this.physicsStreaming ||
+                !this.player
             ) {
                 return;
             }
-            this._lodWorking = this._lodJobs.shift();
-            try {
-                this._worker.postMessage(
-                    this._lodWorking.data
-                );
-            } catch (e) {
-                this._lodWorking = null;
-                console.warn(TAG, e);
-            }
-        };
-    AdvancedGpuInstancer.prototype._stopWorker =
-        function () {
-            if (this._worker) {
-                this._worker.terminate();
-                this._worker = null;
-            }
-            this._lodQueue = [];
-            this._lodJobs = [];
-            this._lodWorking = null;
-        };
-    AdvancedGpuInstancer.prototype._updateLods =
-        function () {
-            if (
-                !this.autoLod ||
-                !this._cameras.length
-            ) {
-                return;
-            }
-            var device = this.app.graphicsDevice;
-            this._groups.forEach(
-                function (g) {
-                    var lod = g.lod;
+
+            this.app.root.findComponents('collision')
+                .forEach(function (c) {
+                    var e = c.entity;
+                    var rb = e.rigidbody;
+
                     if (
-                        !lod ||
-                        (
-                            !lod.meshes[1] &&
-                            !lod.meshes[2]
-                        )
+                        !live(e) ||
+                        !c.enabled ||
+                        !rb ||
+                        !rb.enabled ||
+                        rb.type !== pc.BODYTYPE_STATIC ||
+                        c.isTrigger ||
+                        !tag(e, 'agi-stream-physics') ||
+                        tag(e, 'agi-physics-always')
                     ) {
                         return;
                     }
-                    var pxMax = 0;
-                    this._cameras.forEach(
-                        function (cam) {
-                            if (
-                                !cam.enabled ||
-                                !alive(cam.entity)
-                            ) {
-                                return;
-                            }
-                            var pos =
-                                cam.entity.getPosition();
-                            var dist = Math.max(
-                                0.1,
-                                pos.distance(g.center) -
-                                g.radius
-                            );
-                            var dim = cam.horizontalFov
-                                ? device.width
-                                : device.height;
-                            var px =
-                                cam.projection ===
-                                    pc.PROJECTION_ORTHOGRAPHIC
-                                    ? (
-                                        g.radius * dim /
-                                        Math.max(
-                                            0.01,
-                                            cam.orthoHeight * 2
-                                        )
-                                    )
-                                    : (
-                                        g.radius * dim /
-                                        (
-                                            2 * dist *
-                                            Math.tan(
-                                                Math.max(5, cam.fov) *
-                                                Math.PI / 360
-                                            )
-                                        )
-                                    );
-                            pxMax = Math.max(pxMax, px);
-                        },
-                        this
-                    );
-                    var target =
-                        pxMax > this.lodNearPixels
-                            ? 0
-                            : pxMax > this.lodFarPixels
-                                ? 1
-                                : 2;
-                    while (
-                        target > 0 &&
-                        !lod.meshes[target]
-                    ) {
-                        target--;
-                    }
-                    if (target !== g.current) {
-                        g.mi.mesh = lod.meshes[target];
-                        g.current = target;
-                    }
-                },
-                this
-            );
+
+                    var b = pBounds(c);
+
+                    if (!b) return;
+
+                    var q = {
+                        c: c,
+                        rb: rb,
+                        b: b,
+                        c0: c.enabled,
+                        r0: rb.enabled,
+                        on: true
+                    };
+
+                    this._phys.push(q);
+                    this._physActive.add(q);
+
+                }, this);
         };
-    function lodWorker() {
-        self.onmessage = function (ev) {
+
+    AdvancedGpuInstancer.prototype._streamPhysics =
+        function () {
+            if (
+                !this.player ||
+                !this._phys.length
+            ) {
+                return;
+            }
+
+            var p = this.player.getPosition();
+
+            var v = this.player.rigidbody &&
+                this.player.rigidbody.linearVelocity;
+
+            var now = [p.x, p.y, p.z];
+            var previous = this._prevPlayer || now;
+
+            var phys = this.app.systems.rigidbody;
+
+            var step = phys && phys.fixedTimeStep > 0
+                ? phys.fixedTimeStep
+                : this._lastDt;
+
+            var sub = phys && phys.maxSubSteps > 0
+                ? phys.maxSubSteps
+                : 1;
+
+            var t = step * sub;
+
+            var after = v
+                ? [
+                    p.x + v.x * t,
+                    p.y + v.y * t,
+                    p.z + v.z * t
+                ]
+                : now;
+
+            var pb = this.player.collision
+                ? pBounds(this.player.collision)
+                : null;
+
+            var radius = pb
+                ? Math.hypot(
+                    pb[3] - pb[0],
+                    pb[4] - pb[1],
+                    pb[5] - pb[2]
+                ) / 2
+                : 0;
+
+            var list = cams(this);
+
+            if (!list.length) return;
+
+            var maxFar = Math.max.apply(
+                null,
+                list.map(function (c) {
+                    return c.farClip;
+                })
+            );
+
+            if (
+                !Number.isFinite(maxFar) ||
+                maxFar <= 0
+            ) {
+                return;
+            }
+
+            var reach = Math.max(radius, maxFar);
+            var budget = this.physicsOffBudget;
+
+            this._phys.forEach(function (q) {
+                var want =
+                    segBox(previous, now, q.b, reach) ||
+                    segBox(now, after, q.b, reach);
+
+                if (want && !q.on) {
+                    q.rb.enabled = q.r0;
+                    q.c.enabled = q.c0;
+                    q.on = true;
+
+                    this._physActive.add(q);
+                }
+
+                if (!want && q.on && budget > 0) {
+                    q.rb.enabled = false;
+                    q.c.enabled = false;
+                    q.on = false;
+
+                    this._physActive.delete(q);
+                    budget--;
+                }
+            }, this);
+
+            this._prevPlayer = now;
+        };
+
+    AdvancedGpuInstancer.prototype.rebuildPhysics =
+        function () {
+            this._discover();
+            this._scanPhysics();
+
+            return this.auditStreaming();
+        };
+
+    // =====================================================
+    // AUTOLOD WORKER
+    // =====================================================
+
+    function workerSource() {
+        self.onmessage = function (e) {
             try {
                 self.postMessage({
-                    levels: [
-                        reduce(ev.data, 0.5),
-                        reduce(ev.data, 0.24)
+                    id: e.data.id,
+                    result: [
+                        reduce(e.data, 0.55),
+                        reduce(e.data, 0.27)
                     ]
                 });
-            } catch (e) {
+
+            } catch (err) {
                 self.postMessage({
-                    error: String(e)
+                    id: e.data.id,
+                    result: [null, null],
+                    error: String(err)
                 });
             }
         };
-        function reduce(s, factor) {
-            var p = s.p;
-            var n = s.n;
-            var u = s.u;
-            var v = s.v;
-            var ix = s.ix;
-            var N = p.length / 3;
-            var mn = [Infinity, Infinity, Infinity];
-            var mx = [-Infinity, -Infinity, -Infinity];
-            var i;
-            var k;
-            for (i = 0; i < N; i++) {
-                for (k = 0; k < 3; k++) {
-                    mn[k] = Math.min(
-                        mn[k],
-                        p[3 * i + k]
+
+        function reduce(d, ratio) {
+            var pos = d.pos;
+            var n = d.n;
+            var u = d.u;
+            var v = d.v;
+            var idx = d.idx;
+
+            var count = pos.length / 3;
+
+            if (
+                count < 80 ||
+                idx.length < 240
+            ) {
+                return null;
+            }
+
+            var keys = new Map();
+            var out = [];
+            var ref = [];
+
+            var ext = [
+                Infinity,
+                Infinity,
+                Infinity,
+                -Infinity,
+                -Infinity,
+                -Infinity
+            ];
+
+            for (var i = 0; i < count; i++) {
+                for (var j = 0; j < 3; j++) {
+                    ext[j] = Math.min(
+                        ext[j],
+                        pos[i * 3 + j]
                     );
-                    mx[k] = Math.max(
-                        mx[k],
-                        p[3 * i + k]
+
+                    ext[j + 3] = Math.max(
+                        ext[j + 3],
+                        pos[i * 3 + j]
                     );
                 }
             }
-            var cells = Math.max(
+
+            var div = Math.max(
                 2,
-                Math.ceil(Math.cbrt(N * factor))
+                Math.ceil(Math.cbrt(count * ratio))
             );
-            var hn = n.length === N * 3;
-            var hu = u.length === N * 2;
-            var hv = v.length === N * 2;
-            var table = new Map();
-            var nodes = [];
-            var remap = new Uint32Array(N);
-            for (i = 0; i < N; i++) {
-                var key = [];
-                for (k = 0; k < 3; k++) {
-                    key.push(
-                        Math.min(
-                            cells - 1,
-                            Math.floor(
-                                (
-                                    p[i * 3 + k] -
-                                    mn[k]
-                                ) /
-                                Math.max(
-                                    1e-7,
-                                    mx[k] - mn[k]
-                                ) *
-                                cells
-                            )
-                        )
+
+            var nn = n.length === count * 3;
+            var uu = u.length === count * 2;
+            var vv = v.length === count * 2;
+
+            for (i = 0; i < count; i++) {
+                var k = [];
+
+                for (j = 0; j < 3; j++) {
+                    k.push(Math.floor(
+                        (pos[i * 3 + j] - ext[j]) /
+                        Math.max(
+                            1e-7,
+                            ext[j + 3] - ext[j]
+                        ) * div
+                    ));
+                }
+
+                if (uu) {
+                    k.push(
+                        Math.round(u[2 * i] * 1024),
+                        Math.round(u[2 * i + 1] * 1024)
                     );
                 }
-                if (hu) {
-                    key.push(
-                        Math.round(
-                            u[i * 2] * cells * 2
-                        ),
-                        Math.round(
-                            u[i * 2 + 1] * cells * 2
-                        )
+
+                if (vv) {
+                    k.push(
+                        Math.round(v[2 * i] * 4096),
+                        Math.round(v[2 * i + 1] * 4096)
                     );
                 }
-                if (hv) {
-                    key.push(
-                        Math.round(
-                            v[i * 2] * cells * 2
-                        ),
-                        Math.round(
-                            v[i * 2 + 1] * cells * 2
-                        )
+
+                if (nn) {
+                    k.push(
+                        Math.round(n[3 * i] * 16),
+                        Math.round(n[3 * i + 1] * 16),
+                        Math.round(n[3 * i + 2] * 16)
                     );
                 }
-                if (hn) {
-                    key.push(
-                        Math.round(n[i * 3] * 4),
-                        Math.round(n[i * 3 + 1] * 4),
-                        Math.round(n[i * 3 + 2] * 4)
-                    );
-                }
-                key = key.join(',');
-                var id = table.get(key);
-                if (id === undefined) {
-                    id = nodes.length;
-                    table.set(key, id);
-                    nodes.push({
+
+                var key = k.join(',');
+                var at = keys.get(key);
+
+                if (at === undefined) {
+                    at = out.length;
+                    keys.set(key, at);
+
+                    out.push({
                         p: [0, 0, 0],
                         n: [0, 0, 0],
                         u: [0, 0],
                         v: [0, 0],
-                        w: 0
+                        c: 0
                     });
                 }
-                remap[i] = id;
-                var o = nodes[id];
-                o.w++;
-                for (k = 0; k < 3; k++) {
-                    o.p[k] += p[i * 3 + k];
-                    if (hn) {
-                        o.n[k] += n[i * 3 + k];
+
+                ref[i] = at;
+
+                var o = out[at];
+                o.c++;
+
+                for (j = 0; j < 3; j++) {
+                    o.p[j] += pos[i * 3 + j];
+
+                    if (nn) {
+                        o.n[j] += n[i * 3 + j];
                     }
                 }
-                if (hu) {
-                    o.u[0] += u[i * 2];
-                    o.u[1] += u[i * 2 + 1];
+
+                if (uu) {
+                    o.u[0] += u[2 * i];
+                    o.u[1] += u[2 * i + 1];
                 }
-                if (hv) {
-                    o.v[0] += v[i * 2];
-                    o.v[1] += v[i * 2 + 1];
+
+                if (vv) {
+                    o.v[0] += v[2 * i];
+                    o.v[1] += v[2 * i + 1];
                 }
             }
-            var inds = [];
-            for (i = 0; i < ix.length; i += 3) {
-                var a = remap[ix[i]];
-                var b = remap[ix[i + 1]];
-                var c = remap[ix[i + 2]];
+
+            var ind = [];
+
+            for (i = 0; i < idx.length; i += 3) {
+                var a = ref[idx[i]];
+                var b = ref[idx[i + 1]];
+                var c = ref[idx[i + 2]];
+
                 if (
                     a !== b &&
-                    a !== c &&
-                    b !== c
+                    b !== c &&
+                    a !== c
                 ) {
-                    inds.push(a, b, c);
+                    ind.push(a, b, c);
                 }
             }
+
             if (
-                inds.length < 3 ||
-                inds.length >= ix.length * 0.85 ||
-                nodes.length >= N * 0.9
+                ind.length < 3 ||
+                ind.length > idx.length * 0.8
             ) {
                 return null;
             }
-            var P = [];
-            var NN = [];
-            var U = [];
-            var V = [];
-            nodes.forEach(function (o) {
-                for (var j = 0; j < 3; j++) {
-                    P.push(o.p[j] / o.w);
+
+            var p = [];
+            var norm = [];
+            var uv = [];
+            var uv1 = [];
+
+            out.forEach(function (o) {
+                for (var i = 0; i < 3; i++) {
+                    p.push(o.p[i] / o.c);
                 }
-                if (hn) {
+
+                if (nn) {
                     var len = Math.hypot(
                         o.n[0],
                         o.n[1],
                         o.n[2]
                     ) || 1;
-                    for (j = 0; j < 3; j++) {
-                        NN.push(o.n[j] / len);
+
+                    for (i = 0; i < 3; i++) {
+                        norm.push(o.n[i] / len);
                     }
                 }
-                if (hu) {
-                    U.push(
-                        o.u[0] / o.w,
-                        o.u[1] / o.w
+
+                if (uu) {
+                    uv.push(
+                        o.u[0] / o.c,
+                        o.u[1] / o.c
                     );
                 }
-                if (hv) {
-                    V.push(
-                        o.v[0] / o.w,
-                        o.v[1] / o.w
+
+                if (vv) {
+                    uv1.push(
+                        o.v[0] / o.c,
+                        o.v[1] / o.c
                     );
                 }
             });
+
             return {
-                p: P,
-                n: NN,
-                u: U,
-                v: V,
-                ix: inds
+                pos: p,
+                n: norm,
+                u: uv,
+                v: uv1,
+                idx: ind
             };
         }
     }
-    AdvancedGpuInstancer.prototype.setBakeMode =
-        function (on) {
-            on = !!on;
+
+    // =====================================================
+    // AUTOLOD CONTROL
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype._stopLod =
+        function () {
+            if (this._worker) {
+                this._worker.terminate();
+                this._worker = null;
+            }
+
+            this._lodQueue = [];
+            this._lodJob = null;
+        };
+
+    AdvancedGpuInstancer.prototype._nextLod =
+        function () {
             if (
-                !this._alive ||
-                this._baking === on
+                !this._worker ||
+                this._lodJob ||
+                !this._lodQueue.length
             ) {
                 return;
             }
-            if (on) {
-                this._endProbe(false);
-                this._destroyCatchers();
-                this._restoreDirectionalMasks();
-                this._restoreCasters(true);
-                this._restoreLights(true);
-            }
-            this._baking = on;
-            this._groups.forEach(function (g) {
-                g.mi.visible = !on;
-            });
-            this._hidden.forEach(function (h) {
-                h.mi.visible = on ? h.visible : false;
-            });
-            if (!on) {
-                this.rebuild();
+
+            var j = this._lodQueue.shift();
+
+            j.id = ++this._lodCounter;
+            this._lodJob = j;
+
+            try {
+                this._worker.postMessage(j);
+            } catch (e) {
+                this._stopLod();
             }
         };
-    AdvancedGpuInstancer.prototype._shadowSignature =
+
+    AdvancedGpuInstancer.prototype._startLod =
         function () {
-            var sig = [];
-            var cameraSig = [];
-            (this._cameras || []).forEach(function (c) {
-                cameraSig.push(
-                    'C',
-                    c.enabled,
-                    signature(c.entity),
-                    c.nearClip,
-                    c.farClip,
-                    c.fov,
-                    c.aspectRatio,
-                    c.orthoHeight,
-                    c.projection
+            if (
+                !this.autoLod ||
+                typeof Worker === 'undefined'
+            ) {
+                return;
+            }
+
+            var meshes = new Set();
+            var s = this;
+
+            this.groups.forEach(function (g) {
+                if (!tag(g.items[0].c.entity, 'agi-no-lod')) {
+                    meshes.add(g.mesh);
+                }
+            });
+
+            this._lodQueue = [];
+
+            meshes.forEach(function (m) {
+                var pr = m.primitive;
+
+                if (
+                    !pr ||
+                    pr.length !== 1 ||
+                    !pr[0].indexed ||
+                    pr[0].base !== 0 ||
+                    pr[0].type !== pc.PRIMITIVE_TRIANGLES
+                ) {
+                    return;
+                }
+
+                var allowed = [
+                    pc.SEMANTIC_POSITION,
+                    pc.SEMANTIC_NORMAL,
+                    pc.SEMANTIC_TEXCOORD0,
+                    pc.SEMANTIC_TEXCOORD1
+                ];
+
+                if (
+                    m.vertexBuffer.getFormat()
+                        .elements.some(function (x) {
+                            return allowed.indexOf(x.name) < 0;
+                        })
+                ) {
+                    return;
+                }
+
+                var pos = [];
+                var n = [];
+                var u = [];
+                var v = [];
+                var idx = [];
+
+                try {
+                    m.getPositions(pos);
+                    m.getNormals(n);
+                    m.getUvs(0, u);
+                    m.getUvs(1, v);
+                    m.getIndices(idx);
+
+                } catch (_) {
+                    return;
+                }
+
+                if (
+                    pos.length > 350000 ||
+                    idx.length !== pr[0].count ||
+                    idx.length < 240
+                ) {
+                    return;
+                }
+
+                if (
+                    s.groups.some(function (g) {
+                        return (
+                            g.mesh === m &&
+                            g.items[0].c.lightmapped
+                        );
+                    }) &&
+                    v.length !== pos.length * 2 / 3
+                ) {
+                    return;
+                }
+
+                s._lodQueue.push({
+                    mesh: m,
+                    pos: pos,
+                    n: n,
+                    u: u,
+                    v: v,
+                    idx: idx
+                });
+            });
+
+            if (!this._lodQueue.length) return;
+
+            var url;
+
+            try {
+                url = URL.createObjectURL(
+                    new Blob(
+                        ['(' + workerSource.toString() + ')();'],
+                        { type: 'text/javascript' }
+                    )
                 );
-            });
-            shadowLights(this.app).forEach(
-                function (l) {
-                    sig.push(
-                        'L',
-                        l.enabled,
-                        l.entity.enabled,
-                        l.castShadows,
-                        lightSignature(l),
-                        l.bake,
-                        l.affectDynamic,
-                        l.affectLightmapped,
-                        l.shadowIntensity,
-                        (
-                            this._lightOriginals.get(l) ||
-                            {}
-                        ).cast === undefined
-                            ? l.castShadows
-                            : this._lightOriginals.get(l).cast
-                    );
-                },
-                this
-            );
-            shadowComponents(this.app).forEach(
-                function (c) {
-                    if (c.entity.__giShadowCatcher) {
-                        return;
-                    }
-                    sig.push(
-                        'R',
-                        c.entity.guid || c.entity.name,
-                        c.enabled,
-                        c.entity.enabled,
-                        c.isStatic,
-                        c.lightmapped,
-                        this._casterOriginals.has(c)
-                            ? this._casterOriginals.get(c).cast
-                            : c.castShadows,
-                        c.receiveShadows
-                    );
-                    if (c.isStatic || c.entity.__giProxy) {
-                        return;
-                    }
-                    (c.meshInstances || []).forEach(
-                        function (mi) {
-                            var bb = mi && mi.aabb;
-                            sig.push(mi.castShadow, mi.receiveShadow, mi.visible);
-                            if (bb && bb.center && bb.halfExtents) {
-                                var ce = bb.center, he = bb.halfExtents;
-                                sig.push(ce.x - he.x, ce.y - he.y, ce.z - he.z,
-                                    ce.x + he.x, ce.y + he.y, ce.z + he.z);
-                            } else {
-                                sig.push('?');
-                            }
+
+                this._worker = new Worker(url);
+
+            } catch (e) {
+                if (this.debug) {
+                    console.warn(TAG, 'Worker LOD', e);
+                }
+
+                return;
+
+            } finally {
+                if (url) {
+                    URL.revokeObjectURL(url);
+                }
+            }
+
+            this._worker.onmessage = function (e) {
+                if (
+                    !s._alive ||
+                    !s._lodJob ||
+                    e.data.id !== s._lodJob.id
+                ) {
+                    return;
+                }
+
+                var job = s._lodJob;
+                var out = [job.mesh, null, null];
+
+                s._lodJob = null;
+
+                (e.data.result || []).forEach(function (d, i) {
+                    if (!d) return;
+
+                    var mesh;
+
+                    try {
+                        mesh = new pc.Mesh(
+                            s.app.graphicsDevice
+                        );
+
+                        mesh.setPositions(d.pos);
+
+                        if (d.n.length) {
+                            mesh.setNormals(d.n);
                         }
-                    );
-                },
-                this
-            );
-            var sceneKey = sig.join('|');
-            this._casterChangeToken = sceneKey;
-            return cameraSig.join('|') + '~' + sceneKey;
+
+                        if (d.u.length) {
+                            mesh.setUvs(0, d.u);
+                        }
+
+                        if (d.v.length) {
+                            mesh.setUvs(1, d.v);
+                        }
+
+                        mesh.setIndices(d.idx);
+                        mesh.update(pc.PRIMITIVE_TRIANGLES);
+
+                        out[i + 1] = mesh;
+
+                        s._ownedLod.add(mesh);
+                        s.stats.lodMeshes++;
+
+                    } catch (err) {
+                        if (mesh) {
+                            try { mesh.destroy(); } catch (_) { }
+                        }
+
+                        if (s.debug) {
+                            console.warn(TAG, 'LOD', err);
+                        }
+                    }
+                });
+
+                s._lodMeshes.set(job.mesh, out);
+                s._nextLod();
+            };
+
+            this._worker.onerror = function (e) {
+                console.warn(TAG, 'Worker', e.message);
+                s._stopLod();
+            };
+
+            this._nextLod();
         };
-    AdvancedGpuInstancer.prototype.invalidateShadows =
+
+    AdvancedGpuInstancer.prototype._updateLod =
         function () {
-            this._shadowCacheKey = null;
-            this._casterStateKey = null;
+            if (!this.autoLod) return;
+
+            var cameras = cams(this);
+            var dev = this.app.graphicsDevice;
+
+            this.groups.forEach(function (g) {
+                if (!g.loaded) return;
+
+                var levels = this._lodMeshes.get(g.mesh);
+
+                if (
+                    !levels ||
+                    (!levels[1] && !levels[2])
+                ) {
+                    return;
+                }
+
+                var px = 0;
+
+                cameras.forEach(function (c) {
+                    var p = c.entity.getPosition();
+
+                    var d = Math.max(
+                        0.1,
+                        Math.hypot(
+                            p.x - g.cx,
+                            p.y - g.cy,
+                            p.z - g.cz
+                        ) - g.radius
+                    );
+
+                    var dim = c.horizontalFov
+                        ? dev.width
+                        : dev.height;
+
+                    var q = c.projection ===
+                        pc.PROJECTION_ORTHOGRAPHIC
+                        ? g.radius * dim /
+                        Math.max(0.01, 2 * c.orthoHeight)
+                        : g.radius * dim /
+                        (
+                            d * Math.tan(
+                                Math.max(5, c.fov) *
+                                Math.PI / 360
+                            )
+                        );
+
+                    px = Math.max(px, q);
+                });
+
+                var a = this.lodNearPixels *
+                    this._lodQuality;
+
+                var b = this.lodFarPixels *
+                    this._lodQuality;
+
+                var n = px >= a
+                    ? 0
+                    : px >= b
+                        ? 1
+                        : 2;
+
+                if (
+                    g.lod !== n &&
+                    Math.abs(
+                        px - (g.lod === 0 ? a : b)
+                    ) < 8
+                ) {
+                    n = g.lod;
+                }
+
+                while (n > 0 && !levels[n]) {
+                    n--;
+                }
+
+                if (n !== g.lod) {
+                    g.mi.mesh = levels[n];
+                    g.lod = n;
+                }
+
+            }, this);
         };
-    function percentLess(a, b) {
-        return Number.isFinite(a) && a > 0 && Number.isFinite(b)
-            ? +((a - b) * 100 / a).toFixed(2) : null;
-    }
-    AdvancedGpuInstancer.prototype.auditPerformance = function (enabled) {
-        var p = this._perf;
-        if (enabled === true) {
-            p.samples = p.signature = p.shadows = p.systems = p.total = 0;
-            p.catcher = p.casters = p.directional = p.lights = 0;
-            p.enabled = true;
-        } else if (enabled === false) {
-            p.enabled = false;
-        }
-        var n = Math.max(1, p.samples);
-        var report = {
-            activo: p.enabled,
-            muestras: p.samples,
-            firmaMs: +(p.signature / n).toFixed(4),
-            sombrasMs: +(p.shadows / n).toFixed(4),
-            catcherMs: +(p.catcher / n).toFixed(4),
-            castersMs: +(p.casters / n).toFixed(4),
-            direccionalesMs: +(p.directional / n).toFixed(4),
-            lucesMs: +(p.lights / n).toFixed(4),
-            sistemasMs: +(p.systems / n).toFixed(4),
-            totalMs: +(p.total / n).toFixed(4),
-            drawCallsUltimoFrame: this.app.stats.drawCallCount,
-            grupos: this.stats.groups,
-            colliders: this.stats.colliders
+
+    // =====================================================
+    // AGI3.9 - SNAPSHOTS DE CASTERS DINAMICOS
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype._snapshotCasters =
+        function () {
+            var list = this._dynamicSnapshots;
+            var active = this._activeCasterSnapshots;
+
+            active.length = 0;
+
+            var dirty = false;
+
+            for (var i = 0; i < list.length; i++) {
+                var rec = list[i];
+                var c = rec.c;
+                var mi = rec.mi;
+                var e = c.entity;
+
+                var visible = !!(
+                    c.enabled &&
+                    live(e) &&
+                    !c.isStatic &&
+                    !c.lightmapped &&
+                    !tag(e, 'agi-no-shadow') &&
+                    c.castShadows &&
+                    mi.mesh &&
+                    mi.visible !== false &&
+                    mi.castShadow
+                );
+
+                if (rec.active !== visible) {
+                    rec.active = visible;
+                    dirty = true;
+                }
+
+                if (!visible) continue;
+
+                var moved = matrixChanged(rec, mi.node);
+                var deform = !!(
+                    mi.skinInstance ||
+                    mi.morphInstance
+                );
+
+                if (
+                    moved ||
+                    deform ||
+                    rec.mesh !== mi.mesh ||
+                    !rec.box
+                ) {
+                    rec.mesh = mi.mesh;
+                    rec.box = bounds(mi);
+
+                    dirty = true;
+
+                    this.stats.casterAabbUpdates++;
+                }
+
+                if (rec.box) {
+                    active.push(rec);
+                }
+            }
+
+            if (dirty) {
+                this._casterVersion++;
+                this._catcherVisibilityDirty = true;
+            }
+
+            this.stats.dynamicCasterCount = active.length;
+
+            return active;
         };
-        console.table([report]);
-        return report;
-    };
-    AdvancedGpuInstancer.prototype.mobileReport = function () {
-        var s = this.stats, st = this.app.stats;
-        var before = (s.instanced || 0);
-        var after = (s.groups || 0);
-        var totalP = this._physics ? this._physics.length : 0;
-        var activeP = this._physicsActive ? this._physicsActive.size : totalP;
-        var analyses = this._shadowAnalyses || 0;
-        var hits = this._shadowCacheHits || 0;
-        var p = this._perf, n = Math.max(1, p.samples);
-        var cpu = p.samples ? p.total / n : null;
-        var report = {
-            version: 'GI2.5',
-            instanciadas: before,
-            grupos: after,
-            ahorroDrawsTeoricoPct: before ? +((before - after) * 100 / before).toFixed(2) : 0,
-            drawCallsMedidas: st.drawCallCount,
-            cacheSombrasPct: analyses + hits ? +(hits * 100 / (analyses + hits)).toFixed(2) : 0,
-            cacheCastersPct: this._casterAnalyses + this._casterCacheHits
-                ? +(this._casterCacheHits * 100 / (this._casterAnalyses + this._casterCacheHits)).toFixed(2) : 0,
-            colliders: totalP,
-            collidersDesactivadosPct: totalP ? +((totalP - activeP) * 100 / totalP).toFixed(2) : 0,
-            tiempoScriptMs: cpu === null ? null : +cpu.toFixed(4),
-            presupuesto30FPSConsumidoEnEstaPCPct: cpu === null ? null : +(cpu / 33.333333 * 100).toFixed(3),
-            vramEstimadaBytes: Number.isFinite(st.vramTotalBytes) ? st.vramTotalBytes : null,
-            dispositivo: 'Medicion local; NO predice FPS en moviles'
-        };
-        console.table([report]);
-        return report;
-    };
-    AdvancedGpuInstancer.prototype.captureMobileBaseline = function () {
-        var st = this.app.stats, p = this._perf;
-        var snap = {
-            drawCalls: st.drawCallCount,
-            cpuUpdateMs: st.cpuUpdateTime,
-            cpuRenderMs: st.cpuRenderTime,
-            gpuMs: st.gpuFrameTime,
-            vramBytes: st.vramTotalBytes,
-            giCpuMs: p.samples ? p.total / p.samples : null
-        };
-        this._mobileBaseline = snap;
-        console.table([snap]);
-        return snap;
-    };
-    AdvancedGpuInstancer.prototype.compareMobileBaseline = function (baseline) {
-        var a = baseline || this._mobileBaseline;
-        if (!a) {
-            console.warn(TAG, 'Falta baseline; use captureMobileBaseline()');
+
+    // =====================================================
+    // PROYECCION DE SOMBRAS
+    // =====================================================
+
+    function projShadow(b, l, floor) {
+        var dir = l.entity.up;
+
+        if (
+            !dir ||
+            Math.abs(dir.y) < 1e-7 ||
+            !floor
+        ) {
             return null;
         }
-        var st = this.app.stats, p = this._perf;
-        var cpu = p.samples ? p.total / p.samples : null;
-        var row = {
-            ahorroDrawCallsPct: percentLess(a.drawCalls, st.drawCallCount),
-            ahorroCpuUpdatePct: percentLess(a.cpuUpdateMs, st.cpuUpdateTime),
-            ahorroCpuRenderPct: percentLess(a.cpuRenderMs, st.cpuRenderTime),
-            ahorroGpuPct: percentLess(a.gpuMs, st.gpuFrameTime),
-            ahorroVramEstimadaPct: percentLess(a.vramBytes, st.vramTotalBytes),
-            ahorroCpuGiPct: percentLess(a.giCpuMs, cpu)
-        };
-        console.table([row]);
-        console.log(TAG, 'Porcentajes medidos en ESTE dispositivo; no son FPS movil.');
-        return row;
-    };
-    AdvancedGpuInstancer.prototype.update = function (dt) {
-        if (!this._alive || this._baking) return;
-        this._retry += dt;
-        this._clock += dt;
-        this._discovery += dt;
-        if (!this._built) {
-            if (this._retry >= 0.75) {
-                this._retry = 0;
-                this.rebuild();
+
+        var fy = (floor[1] + floor[4]) / 2;
+
+        if (b[4] < fy) return null;
+
+        var xmin = Infinity;
+        var xmax = -Infinity;
+        var zmin = Infinity;
+        var zmax = -Infinity;
+
+        for (var i = 0; i < 2; i++) {
+            for (var j = 0; j < 2; j++) {
+                for (var k = 0; k < 2; k++) {
+                    var y = b[j ? 4 : 1];
+                    var t = (y - fy) / dir.y;
+
+                    var x = b[i ? 3 : 0] - dir.x * t;
+                    var z = b[k ? 5 : 2] - dir.z * t;
+
+                    xmin = Math.min(xmin, x);
+                    xmax = Math.max(xmax, x);
+                    zmin = Math.min(zmin, z);
+                    zmax = Math.max(zmax, z);
+                }
             }
-            return;
         }
-        var p = this._perf;
-        var measure = p.enabled && typeof performance !== 'undefined';
-        var t0 = measure ? performance.now() : 0;
-        var t = t0;
-        var shadowStart = 0;
-        this._frameComponents = shadowComponents(this.app);
-        this._frameLights = shadowLights(this.app);
-        this._frameParticles = null;
-        this._frameReceivers = null;
-        this._frameLightCasters = null;
-        frameOwner = this;
-        try {
-            var key = this._shadowSignature();
-            var geometryKey = this._casterChangeToken;
-            if (measure) {
-                p.signature += performance.now() - t;
-                t = performance.now();
-                shadowStart = t;
-            }
-            if (key !== this._shadowCacheKey || this._pendingOff) {
-                this._pendingOff = false;
-                this._updateCatchers();
-                if (measure) {
-                    p.catcher += performance.now() - t;
-                    t = performance.now();
-                }
-                if (!this._probe) {
-                    if (geometryKey !== this._casterStateKey) {
-                        this._frameLightCasters = null;
-                        this._applyCasterMode();
-                        this._casterAnalyses++;
-                    } else {
-                        this._casterCacheHits++;
-                    }
-                    if (measure) {
-                        p.casters += performance.now() - t;
-                        t = performance.now();
-                    }
-                    this._optimizeDirectionalMasks();
-                    if (measure) {
-                        p.directional += performance.now() - t;
-                        t = performance.now();
-                    }
-                    this._reconcileLights(dt, false);
-                    if (measure) {
-                        p.lights += performance.now() - t;
-                        t = performance.now();
-                    }
-                }
-                this._shadowAnalyses++;
-                this._shadowCacheKey = this._shadowSignature();
-                this._casterStateKey = this._casterChangeToken;
-            } else {
-                this._shadowCacheHits++;
-            }
-            if (measure) {
-                p.shadows += performance.now() - shadowStart;
-                t = performance.now();
-            }
-            if (this._discovery >= 3) {
-                this._discovery = 0;
-                var oldPlayer = this._player;
-                var oldCameras = this._cameras.slice();
-                this._discover();
-                if (oldPlayer !== this._player) this._scanPhysics();
-                if (oldCameras.length !== this._cameras.length ||
-                    oldCameras.some(function (c, i) { return c !== this._cameras[i]; }, this)) {
-                    this.invalidateShadows();
-                }
-            }
-            if (this._clock >= 0.25) {
-                this._clock = 0;
-                this._prepareLod();
-                this._updateLods();
-                this._updatePhysics();
-            }
-            if (measure) p.systems += performance.now() - t;
-        } finally {
-            frameOwner = null;
-            this._frameComponents = null;
-            this._frameLights = null;
-            this._frameParticles = null;
-            this._frameReceivers = null;
-            this._frameLightCasters = null;
-            if (measure) { p.total += performance.now() - t0; p.samples++; }
-        }
-    };
-    AdvancedGpuInstancer.prototype.restore =
+
+        return Number.isFinite(
+            xmin + xmax + zmin + zmax
+        )
+            ? [xmin, fy, zmin, xmax, fy, zmax]
+            : null;
+    }
+
+    function intersectsXZ(a, b) {
+        return !!(
+            a &&
+            b &&
+            a[0] <= b[3] &&
+            a[3] >= b[0] &&
+            a[2] <= b[5] &&
+            a[5] >= b[2]
+        );
+    }
+
+    // =====================================================
+    // DESTRUIR SHADOW CATCHER
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype._destroyCatcher =
         function () {
-            this._shadowCacheKey = null;
-            this._casterStateKey = null;
-            this._casterChangeToken = null;
-            this._pendingOff = false;
+            var c = this._catcher;
+
+            if (c) {
+                try { c.entity.destroy(); } catch (_) { }
+                try { c.mesh.destroy(); } catch (_) { }
+                try { c.mat.destroy(); } catch (_) { }
+            }
+
+            this._catcher = null;
+            this._catcherActive = false;
+            this._floorBounds = null;
+
+            this._catcherCache = null;
+            this._projectionCache = new Map();
+            this._catcherVisibilityDirty = true;
+        };
+
+    // =====================================================
+    // CONSTRUCCION DE SHADOW CATCHER
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype._buildCatcher =
+        function () {
+            this._destroyCatcher();
+
+            if (!this.dynamicShadowCatcher) {
+                return;
+            }
+
+            var probe = new pc.StandardMaterial();
+            var supported = 'shadowCatcher' in probe;
+
+            probe.destroy();
+
+            if (!supported) return;
+
+            var P = [];
+            var N = [];
+            var U = [];
+            var I = [];
+
+            var floorBox = null;
+            var quads = 0;
+            var s = this;
+
+            this.app.root.findComponents('render')
+                .forEach(function (c) {
+                    if (
+                        !c.enabled ||
+                        !live(c.entity) ||
+                        !floorSource(c) ||
+                        c.entity.__agiProxy
+                    ) {
+                        return;
+                    }
+
+                    (c.meshInstances || []).forEach(function (mi) {
+                        if (
+                            !mi ||
+                            !mi.mesh ||
+                            !lmOf(mi).tex
+                        ) {
+                            return;
+                        }
+
+                        var b = bounds(mi);
+
+                        if (!b) return;
+
+                        var pos = [];
+                        var ind = [];
+
+                        try {
+                            mi.mesh.getPositions(pos);
+                            mi.mesh.getIndices(ind);
+                        } catch (_) {
+                            return;
+                        }
+
+                        if (!ind.length) {
+                            for (
+                                var j = 0;
+                                j < pos.length / 3;
+                                j++
+                            ) {
+                                ind.push(j);
+                            }
+                        }
+
+                        var M = mi.node.getWorldTransform();
+
+                        var a = new pc.Vec3();
+                        var v = new pc.Vec3();
+                        var w = new pc.Vec3();
+
+                        var count = 0;
+
+                        for (
+                            var k = 0;
+                            k + 2 < ind.length &&
+                            I.length / 3 < s.maxCatcherTriangles;
+                            k += 3
+                        ) {
+                            var ia = ind[k];
+                            var ib = ind[k + 1];
+                            var ic = ind[k + 2];
+
+                            var nn = pos.length / 3;
+
+                            if (
+                                ia >= nn ||
+                                ib >= nn ||
+                                ic >= nn
+                            ) {
+                                continue;
+                            }
+
+                            M.transformPoint(
+                                a.set(
+                                    pos[ia * 3],
+                                    pos[ia * 3 + 1],
+                                    pos[ia * 3 + 2]
+                                ),
+                                a
+                            );
+
+                            M.transformPoint(
+                                v.set(
+                                    pos[ib * 3],
+                                    pos[ib * 3 + 1],
+                                    pos[ib * 3 + 2]
+                                ),
+                                v
+                            );
+
+                            M.transformPoint(
+                                w.set(
+                                    pos[ic * 3],
+                                    pos[ic * 3 + 1],
+                                    pos[ic * 3 + 2]
+                                ),
+                                w
+                            );
+
+                            var abx = v.x - a.x;
+                            var aby = v.y - a.y;
+                            var abz = v.z - a.z;
+
+                            var acx = w.x - a.x;
+                            var acy = w.y - a.y;
+                            var acz = w.z - a.z;
+
+                            var cy = abz * acx - abx * acz;
+
+                            var len = Math.hypot(
+                                aby * acz - abz * acy,
+                                cy,
+                                abx * acy - aby * acx
+                            );
+
+                            if (
+                                len < 1e-8 ||
+                                Math.abs(cy / len) < 0.94
+                            ) {
+                                continue;
+                            }
+
+                            var order = cy < 0
+                                ? [a, w, v]
+                                : [a, v, w];
+
+                            var start = P.length / 3;
+
+                            order.forEach(function (pt) {
+                                P.push(
+                                    pt.x,
+                                    pt.y + 0.006,
+                                    pt.z
+                                );
+
+                                N.push(0, 1, 0);
+
+                                U.push(
+                                    pt.x * 0.01,
+                                    pt.z * 0.01
+                                );
+                            });
+
+                            I.push(
+                                start,
+                                start + 1,
+                                start + 2
+                            );
+
+                            count++;
+                        }
+
+                        if (count) {
+                            floorBox = joinBox(floorBox, b);
+                            quads++;
+                        }
+                    });
+                });
+
+            this.stats.catcherTiles = quads;
+
+            if (!I.length) return;
+
+            var mesh;
+            var mat;
+            var e;
+
+            try {
+                mesh = new pc.Mesh(
+                    this.app.graphicsDevice
+                );
+
+                mesh.setPositions(P);
+                mesh.setNormals(N);
+                mesh.setUvs(0, U);
+                mesh.setIndices(I);
+                mesh.update(pc.PRIMITIVE_TRIANGLES);
+
+                mat = new pc.StandardMaterial();
+
+                mat.name = 'AGI39_ShadowCatcher';
+                mat.shadowCatcher = true;
+
+                mat.blendType = pc.BLEND_MULTIPLICATIVE;
+                mat.cull = pc.CULLFACE_NONE;
+
+                mat.depthWrite = false;
+                mat.depthTest = true;
+                mat.useSkybox = false;
+
+                mat.diffuse.set(0, 0, 0);
+                mat.specular.set(0, 0, 0);
+
+                mat.update();
+
+                e = new pc.Entity(
+                    'AGI_ShadowReceiver_JoinedQuads'
+                );
+
+                e.__agiCatcher = true;
+
+                this.app.root.addChild(e);
+
+                var mi = new pc.MeshInstance(
+                    mesh,
+                    mat,
+                    e
+                );
+
+                mi.castShadow = false;
+                mi.receiveShadow = true;
+
+                e.addComponent('render', {
+                    meshInstances: [mi],
+                    castShadows: false,
+                    receiveShadows: true
+                });
+
+                e.render.isStatic = false;
+                e.render.lightmapped = false;
+
+                e.enabled = false;
+
+                this._catcher = {
+                    entity: e,
+                    mesh: mesh,
+                    mat: mat,
+                    mi: mi
+                };
+
+                this._floorBounds = floorBox;
+
+                this._catcherCache = null;
+                this._projectionCache = new Map();
+                this._catcherVisibilityDirty = true;
+
+            } catch (err) {
+                console.warn(TAG, 'Catcher', err);
+
+                if (e) {
+                    try { e.destroy(); } catch (_) { }
+                }
+
+                if (mesh) {
+                    try { mesh.destroy(); } catch (_) { }
+                }
+
+                if (mat) {
+                    try { mat.destroy(); } catch (_) { }
+                }
+            }
+        };
+
+    // =====================================================
+    // AGI3.9 - SHADOW CATCHER CON DOBLE CACHE
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype._updateCatcher =
+        function () {
+            var receiver = this._catcher;
+
+            if (
+                !receiver ||
+                !this.dynamicShadowCatcher ||
+                !this.optimizeBakedCasters
+            ) {
+                if (
+                    receiver &&
+                    receiver.entity.enabled
+                ) {
+                    receiver.entity.enabled = false;
+                }
+
+                this._catcherActive = false;
+                return;
+            }
+
+            var floor = this._floorBounds;
+
+            if (!floor) return;
+
+            // CACHE 1: bounds de casters dinamicos.
+            var casters = this._snapshotCasters();
+
+            var list = this._directionalLights || [];
+            var cameraList = this._cameras || [];
+
+            var revisionsChanged = false;
+
+            var projected = this._projectionCache;
+            var candidates = this._shadowProjectedCandidates;
+
+            candidates.length = 0;
+
+            // CACHE 2: proyeccion caster -> suelo.
+            // No depende de la posicion de la camara.
+
+            for (var i = 0; i < list.length; i++) {
+                var light = list[i];
+
+                if (
+                    !light ||
+                    !light.entity ||
+                    light.entity._destroyed
+                ) {
+                    continue;
+                }
+
+                var current = projected.get(light);
+                var dir = light.entity.up;
+
+                var can = !!(
+                    light.enabled &&
+                    live(light.entity) &&
+                    light.castShadows &&
+                    !light.affectLightmapped
+                );
+
+                var distance = +light.shadowDistance;
+
+                if (
+                    !can ||
+                    !Number.isFinite(distance) ||
+                    distance <= 0
+                ) {
+                    continue;
+                }
+
+                if (!current) {
+                    current = {
+                        version: -1,
+                        shapes: [],
+                        x: NaN,
+                        y: NaN,
+                        z: NaN
+                    };
+
+                    projected.set(light, current);
+                }
+
+                // Reproyectar solo cuando cambian
+                // casters o direccion de la luz.
+
+                if (
+                    current.version !== this._casterVersion ||
+                    current.x !== dir.x ||
+                    current.y !== dir.y ||
+                    current.z !== dir.z
+                ) {
+                    current.version = this._casterVersion;
+
+                    current.x = dir.x;
+                    current.y = dir.y;
+                    current.z = dir.z;
+
+                    current.shapes.length = 0;
+
+                    revisionsChanged = true;
+
+                    for (var j = 0; j < casters.length; j++) {
+                        var b = projShadow(
+                            casters[j].box,
+                            light,
+                            floor
+                        );
+
+                        if (!intersectsXZ(b, floor)) {
+                            continue;
+                        }
+
+                        var overlap = [
+                            Math.max(b[0], floor[0]),
+                            floor[1],
+                            Math.max(b[2], floor[2]),
+                            Math.min(b[3], floor[3]),
+                            floor[4],
+                            Math.min(b[5], floor[5])
+                        ];
+
+                        current.shapes.push({
+                            bounds: overlap,
+                            box: box3(overlap)
+                        });
+
+                        this.stats.shadowProjectionRebuilds++;
+                    }
+                }
+
+                if (current.shapes.length) {
+                    candidates.push({
+                        light: light,
+                        distance: distance,
+                        shapes: current.shapes
+                    });
+                }
+            }
+
+            // CACHE 3: visibilidad de camara.
+            // Mover la camara no invalida proyecciones.
+
+            var cameraChanged =
+                this._catcherVisibilityDirty ||
+                revisionsChanged;
+
+            var cache = this._cameraVisibilityCache;
+
+            if (cache.length !== cameraList.length) {
+                cache.length = cameraList.length;
+                cameraChanged = true;
+            }
+
+            for (i = 0; i < cameraList.length; i++) {
+                var c = cameraList[i];
+                var state = cache[i];
+
+                if (!state || state.c !== c) {
+                    state = { c: c };
+                    cache[i] = state;
+                    cameraChanged = true;
+                }
+
+                if (matrixChanged(state, c.entity)) {
+                    cameraChanged = true;
+                }
+
+                if (
+                    state.enabled !== c.enabled ||
+                    state.entityEnabled !== c.entity.enabled ||
+                    state.far !== c.farClip ||
+                    state.near !== c.nearClip ||
+                    state.fov !== c.fov ||
+                    state.aspect !== c.aspectRatio ||
+                    state.projection !== c.projection ||
+                    state.ortho !== c.orthoHeight ||
+                    state.culling !== c.frustumCulling
+                ) {
+                    state.enabled = c.enabled;
+                    state.entityEnabled = c.entity.enabled;
+                    state.far = c.farClip;
+                    state.near = c.nearClip;
+                    state.fov = c.fov;
+                    state.aspect = c.aspectRatio;
+                    state.projection = c.projection;
+                    state.ortho = c.orthoHeight;
+                    state.culling = c.frustumCulling;
+
+                    cameraChanged = true;
+                }
+            }
+
+            if (
+                this._catcherLightsSnapshot.length !== list.length
+            ) {
+                this._catcherLightsSnapshot.length = list.length;
+                cameraChanged = true;
+            }
+
+            for (i = 0; i < list.length; i++) {
+                light = list[i];
+
+                var old = this._catcherLightsSnapshot[i];
+
+                if (!old || old.l !== light) {
+                    old = { l: light };
+
+                    this._catcherLightsSnapshot[i] = old;
+                    cameraChanged = true;
+                }
+
+                if (
+                    old.distance !== light.shadowDistance ||
+                    old.enabled !== light.enabled ||
+                    old.entityEnabled !== light.entity.enabled ||
+                    old.cast !== light.castShadows ||
+                    old.affect !== light.affectLightmapped
+                ) {
+                    old.distance = light.shadowDistance;
+                    old.enabled = light.enabled;
+                    old.entityEnabled = light.entity.enabled;
+                    old.cast = light.castShadows;
+                    old.affect = light.affectLightmapped;
+
+                    cameraChanged = true;
+                }
+            }
+
+            if (!cameraChanged) {
+                this.stats.catcherCacheHits++;
+                return;
+            }
+
+            this._catcherVisibilityDirty = false;
+            this.stats.catcherVisibilityTests++;
+
+            var on = false;
+
+            outer:
+            for (i = 0; i < candidates.length; i++) {
+                var candidate = candidates[i];
+                var dist = candidate.distance;
+                var shapes = candidate.shapes;
+
+                if (!cameraList.length) {
+                    on = true;
+                    break;
+                }
+
+                for (var k = 0; k < cameraList.length; k++) {
+                    c = cameraList[k];
+
+                    if (
+                        !c.enabled ||
+                        !live(c.entity)
+                    ) {
+                        continue;
+                    }
+
+                    var limit = Math.min(
+                        +c.farClip,
+                        dist
+                    );
+
+                    if (
+                        !Number.isFinite(limit) ||
+                        limit <= 0
+                    ) {
+                        continue;
+                    }
+
+                    var cm = c.entity
+                        .getWorldTransform().data;
+
+                    var pos = this._tmpCameraPosition.set(
+                        cm[12],
+                        cm[13],
+                        cm[14]
+                    );
+
+                    if (
+                        boxDist2(floor, pos) >
+                        limit * limit
+                    ) {
+                        continue;
+                    }
+
+                    for (j = 0; j < shapes.length; j++) {
+                        var shape = shapes[j];
+
+                        if (
+                            boxDist2(shape.bounds, pos) >
+                            limit * limit
+                        ) {
+                            continue;
+                        }
+
+                        if (
+                            !c.frustumCulling ||
+                            !c.frustum ||
+                            c.frustum.containsAabb(shape.box)
+                        ) {
+                            on = true;
+                            break outer;
+                        }
+                    }
+                }
+            }
+
+            if (on !== this._catcherActive) {
+                receiver.entity.enabled = on;
+                this._catcherActive = on;
+
+                this.stats.catcherRebuilds++;
+            }
+        };
+
+    // =====================================================
+    // DESCUBRIMIENTO AUTOMATICO
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype._discover =
+        function () {
+            var p = this.app.root.findByTag('is-player');
+
+            this.player =
+                p.find(function (e) {
+                    return live(e) && !!e.rigidbody;
+                }) ||
+                p.find(live) ||
+                null;
+
+            this._cameras =
+                this.app.root.findComponents('camera')
+                    .filter(function (c) {
+                        return (
+                            c.enabled &&
+                            live(c.entity)
+                        );
+                    });
+        };
+
+    // =====================================================
+    // AGI3.9 - SNAPSHOT DE COMPONENTES
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype._refresh =
+        function () {
+            var lights = this.app.root.findComponents('light');
+
+            var render =
+                this.app.root.findComponents('render')
+                    .concat(
+                        this.app.root.findComponents('model')
+                    );
+
+            var local = [];
+            var spots = [];
+            var directional = [];
+            var dynamic = [];
+            var original = [];
+
+            for (var i = 0; i < lights.length; i++) {
+                var l = lights[i];
+
+                if (l.type === 'spot') {
+                    spots.push(l);
+                    local.push(l);
+
+                } else if (l.type === 'omni') {
+                    local.push(l);
+
+                } else if (l.type === 'directional') {
+                    directional.push(l);
+                }
+            }
+
+            for (i = 0; i < render.length; i++) {
+                var c = render[i];
+
+                if (
+                    !c ||
+                    c.isStatic ||
+                    c.entity.__agiProxy ||
+                    c.entity.__agiCatcher
+                ) {
+                    continue;
+                }
+
+                dynamic.push(c);
+
+                var mesh = c.meshInstances || [];
+
+                for (var j = 0; j < mesh.length; j++) {
+                    var mi = mesh[j];
+
+                    if (mi && mi.mesh && mi.node) {
+                        original.push({
+                            c: c,
+                            mi: mi
+                        });
+                    }
+                }
+            }
+
+            var old = this._dynamicSnapshots || [];
+
+            var same = old.length === original.length;
+
+            if (same) {
+                for (i = 0; i < original.length; i++) {
+                    if (
+                        old[i].c !== original[i].c ||
+                        old[i].mi !== original[i].mi
+                    ) {
+                        same = false;
+                        break;
+                    }
+                }
+            }
+
+            if (!same) {
+                this._dynamicSnapshots = original;
+                this._activeCasterSnapshots = [];
+
+                this._casterVersion++;
+                this._catcherVisibilityDirty = true;
+            }
+
+            if (!sameRefs(this._watchLights, lights)) {
+                this._castersDirty = true;
+            }
+
+            var spotSet = new Set(spots);
+            var self = this;
+
+            this._spotStates.forEach(function (st, l) {
+                if (spotSet.has(l)) return;
+
+                if (
+                    st.suspended &&
+                    l.entity &&
+                    !l.entity._destroyed
+                ) {
+                    l.castShadows = st.original;
+                }
+
+                self._spotStates.delete(l);
+            });
+
+            var localSet = new Set(local);
+
+            this._localCasterWatch.forEach(function (st, l) {
+                if (!localSet.has(l)) {
+                    self._localCasterWatch.delete(l);
+                }
+            });
+
+            this._watchLights = lights;
+            this._spotLights = spots;
+            this._localLights = local;
+            this._directionalLights = directional;
+            this._watchDynamic = dynamic;
+        };
+
+    // =====================================================
+    // CONTROL PUBLICO DE SOMBRAS
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype.invalidateShadows =
+        function () {
+            this._castersDirty = true;
+            this._catcherVisibilityDirty = true;
+            this._casterVersion++;
+
+            this.stats.shadowInvalidations++;
+        };
+
+    AdvancedGpuInstancer.prototype.setShadowOptimization =
+        function (on) {
+            this.optimizeBakedCasters = !!on;
+
+            if (!on) {
+                this._restoreCasters();
+                this._restoreSpotShadows();
+
+                if (this._catcher) {
+                    this._catcher.entity.enabled = false;
+                }
+
+                this._catcherActive = false;
+                this._catcherVisibilityDirty = true;
+
+            } else {
+                this.invalidateShadows();
+            }
+
+            return this.auditShadows();
+        };
+
+    // =====================================================
+    // INITIALIZE
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype.initialize =
+        function () {
+            this.unloadDelay = 2;
+
+            this.uploadsPerStep = 8;
+            this.unloadsPerStep = 8;
+
+            this.physicsOffBudget = 50;
+
+            this.lodNearPixels = 90;
+            this.lodFarPixels = 30;
+
+            this.adaptiveMobile = true;
+            this.targetFPS = 30;
+
+            this.maxCatcherTriangles = 12000;
+
+            this.optimizeBakedCasters = true;
+
+            this._lodQuality = 1;
+            this._lastDt = 0;
+
+            this._frameEMA = 0;
+            this._adaptiveClock = 0;
+            this._streamClock = 0;
+            this._discoveryClock = 0;
+
             this._alive = false;
             this._built = false;
             this._baking = false;
-            this._endProbe(false);
-            this._destroyCatchers();
-            this._restoreDirectionalMasks();
-            this._restoreCasters(true);
-            this._restoreLights(true);
-            this._stopWorker();
+            this._retry = 0;
+
+            this._ids = new WeakMap();
+            this._id = 0;
+
+            this.groups = [];
+            this._hidden = [];
+
+            this._materials = new Map();
+            this._format = null;
+
+            this._cameras = [];
+            this.player = null;
+
+            this._watchLights = [];
+            this._watchDynamic = [];
+
+            this._castersOriginal = new Map();
+            this._spotStates = new Map();
+            this._localCasterWatch = new Map();
+            this._castersDirty = true;
+
+            this._spotLights = [];
+            this._localLights = [];
+            this._directionalLights = [];
+
+            this._dynamicSnapshots = [];
+            this._activeCasterSnapshots = [];
+            this._casterVersion = 0;
+
+            this._projectionCache = new Map();
+            this._shadowProjectedCandidates = [];
+
+            this._cameraVisibilityCache = [];
+            this._catcherLightsSnapshot = [];
+
+            this._catcherVisibilityDirty = true;
+            this._tmpCameraPosition = new pc.Vec3();
+
+            this._phys = [];
+            this._physActive = new Set();
+            this._prevPlayer = null;
+
+            this._catcher = null;
+            this._catcherActive = false;
+            this._catcherCache = null;
+            this._floorBounds = null;
+
+            this._worker = null;
+            this._lodQueue = [];
+            this._lodJob = null;
+            this._lodCounter = 0;
+
+            this._lodMeshes = new Map();
+            this._ownedLod = new Set();
+
+            this.stats = {};
+
+            this._perf = {
+                on: false,
+                n: 0,
+                total: 0,
+                shadows: 0,
+                catcher: 0,
+                graphics: 0,
+                physics: 0,
+                lod: 0
+            };
+
+            this._bench = null;
+
+            this.on('disable', this.restore, this);
+            this.on('destroy', this.restore, this);
+
+            this.on('enable', function () {
+                if (!this._alive) {
+                    this.rebuild();
+                }
+            }, this);
+
+            this.rebuild();
+        };
+
+    // =====================================================
+    // REBUILD
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype.rebuild =
+        function () {
+            this.restore();
+
+            this._alive = true;
+            this._discover();
+
+            this.stats = {
+                sources: 0,
+                instances: 0,
+                groups: 0,
+
+                instanceBytes: 0,
+                residentGroups: 0,
+                residentInstanceBytes: 0,
+
+                vbUploads: 0,
+                vbUnloads: 0,
+
+                excluded: {},
+                lodMeshes: 0,
+
+                catcherTiles: 0,
+                catcherRebuilds: 0,
+                catcherCacheHits: 0,
+
+                catcherVisibilityTests: 0,
+                shadowProjectionRebuilds: 0,
+                casterAabbUpdates: 0,
+
+                bakedCastersDisabled: 0,
+                bakedSpotRetained: 0,
+                bakedDirectionalExcluded: 0,
+
+                shadowInvalidations: 0,
+
+                spotSuspended: 0,
+                spotDistanceTransitions: 0,
+
+                dynamicCasterCount: 0,
+                qualityChanges: 0
+            };
+
+            var candidates = [];
+            var waiting = 0;
+
+            this.app.root.findComponents('render')
+                .forEach(function (c) {
+                    if (
+                        !c.enabled ||
+                        !live(c.entity) ||
+                        !c.isStatic ||
+                        c.entity.__agiProxy ||
+                        c.entity.__agiCatcher
+                    ) {
+                        return;
+                    }
+
+                    (c.meshInstances || []).forEach(function (mi) {
+                        this.stats.sources++;
+
+                        var reason = chooseMi(c, mi);
+
+                        if (reason) {
+                            this.stats.excluded[reason] =
+                                (this.stats.excluded[reason] || 0) + 1;
+
+                            if (reason === 'esperando PT') {
+                                waiting++;
+                            }
+
+                            return;
+                        }
+
+                        var b = bounds(mi);
+
+                        if (b) {
+                            candidates.push({
+                                mi: mi,
+                                c: c,
+                                b: b,
+                                lm: lmOf(mi)
+                            });
+                        }
+
+                    }, this);
+
+                }, this);
+
+            if (waiting) {
+                this._built = false;
+                this._waitCount = waiting;
+                return;
+            }
+
+            this._waitCount = 0;
+
+            var groups = new Map();
+            var size = Math.max(16, this.chunkSize);
+            var extent = null;
+
+            if (candidates.length <= 64) {
+                candidates.forEach(function (x) {
+                    extent = joinBox(extent, x.b);
+                });
+            }
+
+            var single =
+                candidates.length <= 64 &&
+                extent &&
+                extent[3] - extent[0] <= size &&
+                extent[5] - extent[2] <= size;
+
+            candidates.forEach(function (x) {
+                var b = x.b;
+
+                var cell = single
+                    ? '0:0'
+                    : Math.floor(
+                        (b[0] + b[3]) / (2 * size)
+                    ) + ':' +
+                    Math.floor(
+                        (b[2] + b[5]) / (2 * size)
+                    );
+
+                var key = [
+                    cell,
+                    objId(this, x.mi.mesh),
+                    objId(this, x.mi.material),
+                    objId(this, x.lm.tex),
+                    objId(this, x.lm.dir),
+                    x.c.lightmapped ? 1 : 0,
+                    floorSource(x.c) ? 1 : 0,
+                    signature(x)
+                ].join('|');
+
+                var g = groups.get(key);
+
+                if (!g) {
+                    g = {
+                        cell: cell,
+                        items: [],
+                        b: null
+                    };
+
+                    groups.set(key, g);
+                }
+
+                g.items.push(x);
+                g.b = joinBox(g.b, b);
+
+            }, this);
+
+            try {
+                this._format = new pc.VertexFormat(
+                    this.app.graphicsDevice,
+                    SEM.map(function (n) {
+                        return {
+                            semantic: n,
+                            components: 4,
+                            type: pc.TYPE_FLOAT32
+                        };
+                    })
+                );
+
+                groups.forEach(function (g) {
+                    if (g.items.length < 2) return;
+
+                    g.cx = (g.b[0] + g.b[3]) / 2;
+                    g.cy = (g.b[1] + g.b[4]) / 2;
+                    g.cz = (g.b[2] + g.b[5]) / 2;
+
+                    g.radius = Math.hypot(
+                        g.b[3] - g.b[0],
+                        g.b[4] - g.b[1],
+                        g.b[5] - g.b[2]
+                    ) / 2;
+
+                    addGroup(this, g);
+
+                }, this);
+
+            } catch (e) {
+                console.error(TAG, 'Instancing', e);
+            }
+
+            this.stats.residentGroups = this.stats.groups;
+
+            this.stats.residentInstanceBytes =
+                this.stats.instanceBytes;
+
+            this._refresh();
+            this._scanPhysics();
+
+            this._built = true;
+
+            this._updateSpotShadows();
+            this._localCasterConfigChanged();
+
+            if (this.optimizeBakedCasters) {
+                this._updateCasters();
+            }
+
+            this._buildCatcher();
+            this._updateCatcher();
+            this._startLod();
+
+            this._castersDirty = false;
+
+            if (this.debug) {
+                console.log(
+                    TAG,
+                    'Listo',
+                    JSON.stringify(this.stats),
+                    'player',
+                    this.player
+                        ? this.player.name
+                        : 'sin tag is-player',
+                    'cameras',
+                    this._cameras.length
+                );
+            }
+
+            this.app.fire('agi:ready', this);
+            this.app.fire('gi:ready', this);
+        };
+
+    // =====================================================
+    // PT BAKE MODE
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype.setBakeMode =
+        function (on) {
+            on = !!on;
+
+            if (
+                !this._alive ||
+                on === this._baking
+            ) {
+                return;
+            }
+
+            this._baking = on;
+
+            if (on) {
+                this._restoreCasters();
+                this._restoreSpotShadows();
+
+                if (this._catcher) {
+                    this._catcher.entity.enabled = false;
+                }
+
+                this._catcherActive = false;
+
+                this.groups.forEach(function (g) {
+                    g.mi.visible = false;
+                });
+
+                this._hidden.forEach(function (h) {
+                    h.mi.visible = h.visible;
+                });
+
+            } else {
+                this.rebuild();
+            }
+        };
+
+    // =====================================================
+    // ADAPTACION DE LOD
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype._adaptive =
+        function (dt) {
+            if (!this.adaptiveMobile) return;
+
+            var ms = Math.min(250, dt * 1000);
+
+            this._frameEMA = this._frameEMA
+                ? this._frameEMA * 0.95 + ms * 0.05
+                : ms;
+
+            this._adaptiveClock += dt;
+
+            if (this._adaptiveClock < 3) return;
+
+            this._adaptiveClock = 0;
+
+            var old = this._lodQuality;
+
+            if (
+                this._frameEMA >
+                (1000 / this.targetFPS) * 1.15
+            ) {
+                this._lodQuality = Math.min(
+                    1.65,
+                    old * 1.12
+                );
+
+            } else if (
+                this._frameEMA <
+                (1000 / this.targetFPS) * 0.79
+            ) {
+                this._lodQuality = Math.max(
+                    1,
+                    old * 0.95
+                );
+            }
+
+            if (old !== this._lodQuality) {
+                this.stats.qualityChanges++;
+            }
+        };
+
+    // =====================================================
+    // UPDATE
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype.update =
+        function (dt) {
+            if (
+                !this._alive ||
+                this._baking
+            ) {
+                return;
+            }
+
+            if (!this._built) {
+                this._retry += dt;
+
+                if (this._retry > 0.85) {
+                    this._retry = 0;
+                    this.rebuild();
+                }
+
+                return;
+            }
+
+            this._lastDt = dt;
+
+            var perf = this._perf;
+            var on = perf.on;
+
+            var start = on ? performance.now() : 0;
+            var t = start;
+
+            this._adaptive(dt);
+
+            this._streamClock += dt;
+            this._discoveryClock += dt;
+
+            if (this._discoveryClock >= 3) {
+                this._discoveryClock = 0;
+
+                var oldPlayer = this.player;
+
+                this._discover();
+                this._refresh();
+
+                if (oldPlayer !== this.player) {
+                    this._prevPlayer = null;
+                    this._scanPhysics();
+                }
+
+                this._catcherVisibilityDirty = true;
+            }
+
+            if (
+                this._castersDirty &&
+                this.optimizeBakedCasters
+            ) {
+                this._updateCasters();
+                this._castersDirty = false;
+            }
+
+            if (on) {
+                perf.shadows += performance.now() - t;
+                t = performance.now();
+            }
+
+            if (this._streamClock >= 0.1) {
+                var elapsed = this._streamClock;
+
+                this._streamClock = 0;
+
+                this._streamGraphics(elapsed);
+
+                if (on) {
+                    perf.graphics += performance.now() - t;
+                    t = performance.now();
+                }
+
+                this._streamPhysics();
+
+                if (on) {
+                    perf.physics += performance.now() - t;
+                    t = performance.now();
+                }
+
+                this._updateLod();
+
+                if (on) {
+                    perf.lod += performance.now() - t;
+                    t = performance.now();
+                }
+            }
+
+            if (on) {
+                perf.total += performance.now() - start;
+                perf.n++;
+            }
+        };
+
+    // =====================================================
+    // POSTUPDATE
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype.postUpdate =
+        function () {
+            if (
+                !this._alive ||
+                !this._built ||
+                this._baking
+            ) {
+                return;
+            }
+
+            var p = this._perf;
+            var on = p.on;
+
+            var start = on ? performance.now() : 0;
+            var t = start;
+
+            this._updateSpotShadows();
+
+            if (this._localCasterConfigChanged()) {
+                this._castersDirty = true;
+            }
+
+            if (
+                this._castersDirty &&
+                this.optimizeBakedCasters
+            ) {
+                this._updateCasters();
+                this._castersDirty = false;
+            }
+
+            if (on) {
+                p.shadows += performance.now() - t;
+                t = performance.now();
+            }
+
+            this._updateCatcher();
+
+            if (on) {
+                p.catcher += performance.now() - t;
+                p.total += performance.now() - start;
+            }
+        };
+
+    // =====================================================
+    // RESTAURACION COMPLETA
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype.restore =
+        function () {
+            this._alive = false;
+            this._built = false;
+            this._baking = false;
+
+            if (this._bench) {
+                this.cancelBenchmark();
+            }
+
+            if (this._castersOriginal) {
+                this._restoreCasters();
+            }
+
+            if (this._spotStates) {
+                this._restoreSpotShadows();
+            }
+
+            this._destroyCatcher();
+            this._stopLod();
+
+            (this.groups || []).forEach(function (g) {
+                if (g.mi) {
+                    try {
+                        g.mi.setInstancing(null);
+                    } catch (_) { }
+                }
+
+                if (g.proxy) {
+                    try {
+                        g.proxy.destroy();
+                    } catch (_) { }
+                }
+
+                if (g.vb) {
+                    try {
+                        g.vb.destroy();
+                    } catch (_) { }
+                }
+            });
+
             (this._hidden || []).forEach(function (h) {
                 try {
                     h.mi.visible = h.visible;
                 } catch (_) { }
             });
-            (this._groups || []).forEach(function (g) {
-                try {
-                    g.mi.setInstancing(null);
-                } catch (_) { }
-                try {
-                    g.proxy.destroy();
-                } catch (_) { }
-                try {
-                    g.vb.destroy();
-                } catch (_) { }
-            });
-            if (this._materialCache) {
-                this._materialCache.forEach(function (mat) {
-                    try { mat.destroy(); } catch (_) { }
+
+            this._restorePhysics();
+
+            if (this._materials) {
+                this._materials.forEach(function (m) {
+                    try {
+                        m.destroy();
+                    } catch (_) { }
                 });
-                this._materialCache.clear();
+
+                this._materials.clear();
             }
-            (this._physics || []).forEach(function (x) {
-                try {
-                    x.c.enabled = x.origC;
-                    x.rb.enabled = x.origR;
-                } catch (_) { }
-            });
-            if (this._lods) {
-                this._lods.forEach(function (l) {
-                    for (
-                        var i = 1;
-                        i < l.meshes.length;
-                        i++
-                    ) {
-                        if (l.meshes[i]) {
-                            try {
-                                l.meshes[i].destroy();
-                            } catch (_) { }
-                        }
-                    }
+
+            if (this._ownedLod) {
+                this._ownedLod.forEach(function (m) {
+                    try {
+                        m.destroy();
+                    } catch (_) { }
                 });
+
+                this._ownedLod.clear();
             }
-            this._groups = [];
+
+            this.groups = [];
             this._hidden = [];
-            this._physics = [];
-            this._physicsGrid = null;
-            this._physicsLarge = [];
-            this._physicsActive = new Set();
-            this._frameComponents = null;
-            this._frameLights = null;
-            this._frameParticles = null;
-            this._frameReceivers = null;
-            this._frameLightCasters = null;
-            this._workerEpoch = (this._workerEpoch || 0) + 1;
-            if (frameOwner === this) frameOwner = null;
-            this._lods = new Map();
+
+            this._lodMeshes = new Map();
+
             this._ids = new WeakMap();
             this._id = 0;
-            this._shadowReport = [];
-            this._casterStatus = null;
-            this._lastCasterStatus = '';
-            this._casterReport = [];
-            this._casterDisabled = 0;
+
+            this._prevPlayer = null;
+            this._castersDirty = true;
+
+            if (this._localCasterWatch) {
+                this._localCasterWatch.clear();
+            }
+
+            if (this._projectionCache) {
+                this._projectionCache.clear();
+            }
+
+            if (this._dynamicSnapshots) {
+                this._dynamicSnapshots.length = 0;
+            }
+
+            if (this._activeCasterSnapshots) {
+                this._activeCasterSnapshots.length = 0;
+            }
+
+            if (this._cameraVisibilityCache) {
+                this._cameraVisibilityCache.length = 0;
+            }
+
+            this._catcherVisibilityDirty = true;
+
             if (this.app) {
+                this.app.fire('agi:restored', this);
                 this.app.fire('gi:restored', this);
             }
         };
+
+    // =====================================================
+    // AUDITORIA DEL SPOT
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype.auditSpotDistances =
+        function () {
+            var cameraList = cams(this);
+            var rows = [];
+
+            this._watchLights.forEach(function (l) {
+                if (l.type !== 'spot') return;
+
+                var st = this._spotStates.get(l);
+
+                var lightPos = l.entity.getPosition();
+                var best = Infinity;
+
+                cameraList.forEach(function (c) {
+                    var p = c.entity.getPosition();
+
+                    best = Math.min(
+                        best,
+                        Math.hypot(
+                            p.x - lightPos.x,
+                            p.y - lightPos.y,
+                            p.z - lightPos.z
+                        )
+                    );
+                });
+
+                rows.push({
+                    luz: l.entity.name,
+                    shadowDistance: l.shadowDistance,
+                    range: l.range,
+
+                    distanciaCamara:
+                        Number.isFinite(best)
+                            ? +best.toFixed(2)
+                            : null,
+
+                    sombraConfigurada:
+                        st ? st.original : l.castShadows,
+
+                    sombraEfectiva: l.castShadows,
+
+                    suspendidaPorAGI:
+                        st ? st.suspended : false,
+
+                    iluminacionActiva:
+                        l.enabled && live(l.entity),
+
+                    updateMode: l.shadowUpdateMode
+                });
+
+            }, this);
+
+            console.table(rows);
+
+            return rows;
+        };
+
+    // =====================================================
+    // DISTANCIAS CONFIGURADAS POR EL JUEGO
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype.auditEngineDistances =
+        function () {
+            var rows = [];
+
+            cams(this).forEach(function (c) {
+                rows.push({
+                    tipo: 'camera',
+                    nombre: c.entity.name,
+                    farClip: c.farClip,
+                    nearClip: c.nearClip,
+                    frustumCulling: c.frustumCulling
+                });
+            });
+
+            this._watchLights.forEach(function (l) {
+                rows.push({
+                    tipo: l.type,
+                    nombre: l.entity.name,
+
+                    shadowDistance: l.shadowDistance,
+
+                    range:
+                        l.type === 'directional'
+                            ? 'no aplica'
+                            : l.range,
+
+                    castShadows: l.castShadows,
+                    shadowUpdateMode: l.shadowUpdateMode,
+                    bake: l.bake,
+                    affectLightmapped: l.affectLightmapped
+                });
+            });
+
+            console.table(rows);
+
+            return rows;
+        };
+
+    // =====================================================
+    // AGI3.9 - AUDITORIA DE SOMBRAS
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype.auditShadows =
+        function () {
+            var n = this.stats;
+
+            var row = {
+                version: 'AGI3.9',
+
+                castersBakedSoloSpot:
+                    n.bakedSpotRetained,
+
+                castersBakedSinRealtime:
+                    n.bakedCastersDisabled,
+
+                direccionalExcluida:
+                    n.bakedDirectionalExcluded,
+
+                spotsSuspendidos:
+                    n.spotSuspended,
+
+                transicionesSpot:
+                    n.spotDistanceTransitions,
+
+                castersDinamicos:
+                    n.dynamicCasterCount,
+
+                catcherActivo:
+                    this._catcherActive,
+
+                quadsCatcher:
+                    n.catcherTiles,
+
+                cacheCatcher:
+                    n.catcherCacheHits,
+
+                proyecciones:
+                    n.shadowProjectionRebuilds,
+
+                testsCamaras:
+                    n.catcherVisibilityTests,
+
+                actualizacionesAABB:
+                    n.casterAabbUpdates,
+
+                drawCalls:
+                    this.app.stats.drawCallCount
+            };
+
+            console.table([row]);
+
+            return row;
+        };
+
+    // =====================================================
+    // STREAMING REPORT
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype.auditStreaming =
+        function () {
+            var n = this.stats;
+
+            var row = {
+                version: 'AGI3.9',
+
+                instancias: n.instances,
+                grupos: n.groups,
+                residentes: n.residentGroups,
+
+                bytes: n.instanceBytes,
+                bytesResidentes: n.residentInstanceBytes,
+
+                uploads: n.vbUploads,
+                unloads: n.vbUnloads,
+
+                colisionesOptIn: this._phys.length,
+                colisionesActivas: this._physActive.size
+            };
+
+            console.table([row]);
+
+            return row;
+        };
+
+    // =====================================================
+    // CPU PROFILER
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype.auditPerformance =
+        function (enabled) {
+            var p = this._perf;
+
+            if (enabled === true) {
+                p.on = true;
+                p.n = 0;
+
+                p.total = 0;
+                p.shadows = 0;
+                p.catcher = 0;
+                p.graphics = 0;
+                p.physics = 0;
+                p.lod = 0;
+
+            } else if (enabled === false) {
+                p.on = false;
+            }
+
+            var n = p.n || 1;
+
+            var row = {
+                version: 'AGI3.9',
+                samples: p.n,
+
+                cpuAGIMs:
+                    p.n ? +(p.total / n).toFixed(4) : null,
+
+                cpuSombrasMs:
+                    p.n ? +(p.shadows / n).toFixed(4) : null,
+
+                cpuCatcherMs:
+                    p.n ? +(p.catcher / n).toFixed(4) : null,
+
+                cpuCeldasMs:
+                    p.n ? +(p.graphics / n).toFixed(4) : null,
+
+                cpuFisicaMs:
+                    p.n ? +(p.physics / n).toFixed(4) : null,
+
+                cpuLodMs:
+                    p.n ? +(p.lod / n).toFixed(4) : null,
+
+                drawCalls:
+                    this.app.stats.drawCallCount
+            };
+
+            console.table([row]);
+
+            return row;
+        };
+
+    // =====================================================
+    // AUDITORIA GLOBAL
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype.audit =
+        function () {
+            return {
+                performance: this.auditPerformance(),
+                shadows: this.auditShadows(),
+                spot: this.auditSpotDistances(),
+                stream: this.auditStreaming(),
+                game: this.auditEngineDistances()
+            };
+        };
+
+    AdvancedGpuInstancer.prototype.mobileReport =
+        function () {
+            return this.audit();
+        };
+
+    AdvancedGpuInstancer.prototype.auditShadowRouting =
+        function () {
+            var rows = [];
+
+            this._castersOriginal.forEach(function (orig, c) {
+                if (
+                    !c.entity ||
+                    c.entity._destroyed
+                ) {
+                    return;
+                }
+
+                rows.push({
+                    nombre: c.entity.name,
+
+                    proxy:
+                        !!c.entity.__agiProxy,
+
+                    realtime:
+                        c.castShadows,
+
+                    cascadas:
+                        (c.meshInstances || [])
+                            .map(function (mi) {
+                                return mi.shadowCascadeMask;
+                            }).join(','),
+
+                    miCast:
+                        (c.meshInstances || [])
+                            .some(function (mi) {
+                                return mi.castShadow;
+                            })
+                });
+            });
+
+            console.table(rows);
+
+            return rows;
+        };
+
+    // =====================================================
+    // BENCHMARK
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype.benchmark =
+        function (seconds) {
+            if (this._bench) {
+                return console.warn(
+                    TAG,
+                    'Benchmark ya activo'
+                );
+            }
+
+            var s = this;
+            var sec = clamp(+seconds || 10, 3, 120);
+
+            var start = performance.now();
+            var last = start;
+
+            var frames = [];
+            var calls = [];
+            var pauses = 0;
+
+            function tick() {
+                var t = performance.now();
+                var dt = t - last;
+
+                last = t;
+
+                if (dt > 250) {
+                    pauses++;
+                    return;
+                }
+
+                if (dt > 0) {
+                    frames.push(dt);
+
+                    calls.push(
+                        s.app.stats.drawCallCount
+                    );
+                }
+            }
+
+            function stop() {
+                if (s._bench !== state) return;
+
+                s.app.off('frameend', tick);
+
+                clearTimeout(state.timer);
+                s._bench = null;
+
+                var cpu = s.auditPerformance(false);
+                var elapsed = performance.now() - start;
+
+                var row = {
+                    version: 'AGI3.9',
+
+                    seg:
+                        +(elapsed / 1000).toFixed(2),
+
+                    frames:
+                        frames.length,
+
+                    fps:
+                        +(
+                            frames.length * 1000 /
+                            Math.max(1, elapsed)
+                        ).toFixed(2),
+
+                    frameP50:
+                        median(frames, 0.5),
+
+                    frameP95:
+                        median(frames, 0.95),
+
+                    drawsP50:
+                        median(calls, 0.5),
+
+                    drawsP95:
+                        median(calls, 0.95),
+
+                    cpuAGIMs:
+                        cpu.cpuAGIMs,
+
+                    cpuCatcherMs:
+                        cpu.cpuCatcherMs,
+
+                    spotSuspendido:
+                        s.stats.spotSuspended,
+
+                    pausas:
+                        pauses
+                };
+
+                console.log(TAG, 'BENCHMARK');
+                console.table([row]);
+
+                s.auditSpotDistances();
+
+                return row;
+            }
+
+            var state = {
+                stop: stop,
+                timer: null
+            };
+
+            this._bench = state;
+            this.auditPerformance(true);
+
+            this.app.on('frameend', tick);
+
+            state.timer = setTimeout(
+                stop,
+                sec * 1000
+            );
+
+            console.log(
+                TAG,
+                'Benchmark',
+                sec,
+                's'
+            );
+        };
+
+    AdvancedGpuInstancer.prototype.cancelBenchmark =
+        function () {
+            if (this._bench) {
+                this._bench.stop();
+            }
+        };
+
+    // =====================================================
+    // ESTIMACION DE ESCALADO
+    // =====================================================
+
+    AdvancedGpuInstancer.prototype.estimateScaling =
+        function () {
+            var n = this.stats;
+
+            var avg = n.groups
+                ? n.instances / n.groups
+                : 0;
+
+            var unit = n.instances
+                ? n.instanceBytes / n.instances
+                : 0;
+
+            var rows = [1000, 5000, 10000]
+                .map(function (q) {
+                    return {
+                        objetos: q,
+
+                        grupos:
+                            avg
+                                ? Math.ceil(q / avg)
+                                : null,
+
+                        bytes:
+                            Math.round(q * unit),
+
+                        fps:
+                            'medir en runtime'
+                    };
+                });
+
+            console.table(rows);
+
+            return rows;
+        };
+
 })();
