@@ -1,473 +1,308 @@
 /*
- * ================================================================
- * AGI4.15.2 - ADVANCED GPU INSTANCER
- * INDEPENDENT INSTANCING
- * ================================================================
+ * AGI4.15.5 - Advanced GPU Instancer
+ * Scoped Core & Modern JavaScript
  *
- * PlayCanvas 2.23.x
- * WebGPU / WebGL2
- *
+ * PlayCanvas 2.23.x / WebGPU / WebGL2
  * Script ID: advancedGpuInstancer
  *
- * OBJETIVO
+ * ARQUITECTURA
  *
- * GPU Instancing independiente de cualquier horneador.
+ * - Unico identificador global requerido por PlayCanvas.
+ * - Atributos del Editor declarados individualmente.
+ * - Constantes, shaders y helpers encapsulados en _core.
+ * - API publica mediante prototype.
+ * - Variables locales const / let.
+ * - Sin IIFE y sin helpers globales.
  *
- * MODOS AUTOMATICOS
+ * ILUMINACION
  *
- * 1. Lightmaps compartidos con UV1 atlas:
- *    Reutiliza las texturas y sus rectangulos.
- *
- * 2. Lightmaps nativos individuales:
- *    Intenta consolidarlos en atlas GPU compatibles.
- *
- * 3. Sin lightmaps:
- *    Instancing con iluminacion realtime.
+ * - Atlas PT compartidos.
+ * - Lightmaps nativos consolidados automaticamente.
+ * - Iluminacion realtime sin lightmaps.
  *
  * CONSERVA
  *
- * - Politica pre-bake AGI4.15
- * - Separacion baked / realtime
- * - Sombras dinamicas
- * - Shadow Catcher
- * - Baked Shadow Mask
- * - Streaming fisico
- * - Auditorias
- * - Benchmark A/B
- *
- * No modifica propiedades de las luces.
- * No modifica BakePathTracing.
- * No requiere atributos PT para funcionar.
- *
- * Los atlas originales nunca se destruyen.
- * Si falla una copia, permanecen visibles los originales.
- * ================================================================
+ * - Politica pre-bake AGI4.15.
+ * - Separacion baked / realtime.
+ * - Baked Shadow Mask.
+ * - Shadow Catcher.
+ * - Streaming fisico.
+ * - Restauracion de recursos GPU.
+ * - Auditorias y benchmarks.
  */
 
-var AdvancedGpuInstancer =
-    pc.createScript('advancedGpuInstancer');
+var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
 
-// ================================================================
-// ATRIBUTOS DEL EDITOR
-// ================================================================
+// ============================================================
+// 1. ATRIBUTOS DEL EDITOR
+// ============================================================
 
-[
-    ['chunkSize', 'number', 96, 8],
-    ['scanInterval', 'number', 1.5, 0.2],
-    ['directionalShadowCatcher', 'boolean', true],
-    ['smartShadowCatcher', 'boolean', true],
-    ['bakedShadowMask', 'boolean', true],
-    ['bakedShadowRatio', 'number', 0.56, 0.05, 0.95],
-    ['bakedShadowSoftness', 'number', 0.10, 0.01, 0.40],
-    ['distanceCulling', 'boolean', true],
-    ['physicsStreaming', 'boolean', true],
-    ['debug', 'boolean', true]
-].forEach(function (a) {
-    var options = {
-        type: a[1],
-        default: a[2],
-        title: a[0]
-    };
-
-    if (a.length > 3) {
-        options.min = a[3];
-
-        if (a.length > 4) {
-            options.max = a[4];
-        }
-    }
-
-    AdvancedGpuInstancer.attributes.add(a[0], options);
+AdvancedGpuInstancer.attributes.add('chunkSize', {
+    type: 'number', default: 96, min: 8
 });
 
-(function () {
-    'use strict';
+AdvancedGpuInstancer.attributes.add('scanInterval', {
+    type: 'number', default: 1.5, min: 0.2
+});
 
-    // ============================================================
-    // CONSTANTES
-    // ============================================================
+AdvancedGpuInstancer.attributes.add('directionalShadowCatcher', {
+    type: 'boolean', default: true
+});
 
-    var TAG = '[AGI4.15.2]';
+AdvancedGpuInstancer.attributes.add('smartShadowCatcher', {
+    type: 'boolean', default: true
+});
 
-    var MAX_INSTANCES_PER_GROUP = 256;
-    var INSTANCE_FLOATS = 20;
+AdvancedGpuInstancer.attributes.add('bakedShadowMask', {
+    type: 'boolean', default: true
+});
 
-    var CATCHER_INTERVAL = 0.15;
-    var PHYSICS_INTERVAL = 0.22;
+AdvancedGpuInstancer.attributes.add('bakedShadowRatio', {
+    type: 'number', default: 0.56, min: 0.05, max: 0.95
+});
 
-    var DEFAULT_ATLAS_RECT = [0, 0, 1, 1];
+AdvancedGpuInstancer.attributes.add('bakedShadowSoftness', {
+    type: 'number', default: 0.10, min: 0.01, max: 0.40
+});
 
-    // Borde de proteccion entre regiones de atlas.
-    var ATLAS_BORDER = 1;
+AdvancedGpuInstancer.attributes.add('distanceCulling', {
+    type: 'boolean', default: true
+});
 
-    var SEM = [
+AdvancedGpuInstancer.attributes.add('physicsStreaming', {
+    type: 'boolean', default: true
+});
+
+AdvancedGpuInstancer.attributes.add('debug', {
+    type: 'boolean', default: true
+});
+
+// ============================================================
+// 2. NUCLEO INTERNO ENCAPSULADO
+//
+// Un unico objeto compartido por las instancias de AGI.
+// Ninguna funcion auxiliar se declara en el scope global.
+// Object.freeze evita reasignar los miembros del nucleo.
+// ============================================================
+
+AdvancedGpuInstancer._core = Object.freeze({
+
+    TAG: '[AGI4.15.5]',
+
+    MAX_GROUP: 256,
+    FLOATS_PER_INSTANCE: 20,
+
+    CATCHER_INTERVAL: 0.15,
+    PHYSICS_INTERVAL: 0.22,
+
+    ATLAS_BORDER: 1,
+
+    RECT_ONE: Object.freeze([0, 0, 1, 1]),
+
+    DYNAMIC_MASK: pc.MASK_AFFECT_DYNAMIC || 1,
+
+    SEM: Object.freeze([
         pc.SEMANTIC_ATTR11,
         pc.SEMANTIC_ATTR12,
         pc.SEMANTIC_ATTR14,
         pc.SEMANTIC_ATTR15,
         pc.SEMANTIC_ATTR13
-    ];
+    ]),
 
-    // ============================================================
-    // SHADERS DE INSTANCING
-    // ============================================================
+    // ========================================================
+    // SHADERS - Se preserva el WGSL validado en AGI4.15.4
+    // ========================================================
 
-    var GL = [
-        'attribute vec4 aAGI0;',
-        'attribute vec4 aAGI1;',
-        'attribute vec4 aAGI2;',
-        'attribute vec4 aAGI3;',
-        'attribute vec4 aAGIRect;',
-        'mat4 getModelMatrix(){',
-        '    return mat4(aAGI0,aAGI1,aAGI2,aAGI3);',
-        '}'
-    ].join('\n');
+    GL: [
+        'attribute vec4 aAGI0,aAGI1,aAGI2,aAGI3,aAGIRect;',
+        'mat4 getModelMatrix(){return mat4(aAGI0,aAGI1,aAGI2,aAGI3);}'
+    ].join('\n'),
 
-    var WG = [
+    WG: [
         'attribute aAGI0: vec4f;',
         'attribute aAGI1: vec4f;',
         'attribute aAGI2: vec4f;',
         'attribute aAGI3: vec4f;',
         'attribute aAGIRect: vec4f;',
         'fn getModelMatrix() -> mat4x4f {',
-        '    return mat4x4f(aAGI0,aAGI1,aAGI2,aAGI3);',
+        'return mat4x4f(aAGI0,aAGI1,aAGI2,aAGI3);',
         '}'
-    ].join('\n');
+    ].join('\n'),
 
-    var UVG = [
-        '#if defined(INSTANCING) && defined(UV1_UNMODIFIED)',
-        'vUv1 = vUv1 * aAGIRect.zw + aAGIRect.xy;',
-        '#endif'
-    ].join('\n');
+    UVG: '\n#if defined(INSTANCING) && defined(UV1_UNMODIFIED)\n' +
+        'vUv1=vUv1*aAGIRect.zw+aAGIRect.xy;\n#endif',
 
-    var UVW = [
-        '#if defined(INSTANCING) && defined(UV1_UNMODIFIED)',
-        'output.vUv1 = output.vUv1 * aAGIRect.zw + aAGIRect.xy;',
-        '#endif'
-    ].join('\n');
+    UVW: '\n#if defined(INSTANCING) && defined(UV1_UNMODIFIED)\n' +
+        'output.vUv1=output.vUv1*aAGIRect.zw+aAGIRect.xy;\n#endif',
 
-    // ============================================================
-    // BAKED SHADOW MASK
-    // ============================================================
+    MVG:
+        'varying vec2 vAGIBakeUV; varying vec4 vAGIBakeRect;' +
+        'attribute vec2 aAGIBakeUV;',
 
-    var MVG = [
-        'varying vec2 vAGIBakeUV;',
-        'varying vec4 vAGIBakeRect;',
-        'attribute vec2 aAGIBakeUV;'
-    ].join('\n');
+    MVW: [
+        'varying vAGIBakeUV: vec2f;',
+        'varying vAGIBakeRect: vec4f;',
+        'attribute aAGIBakeUV: vec2f;'
+    ].join('\n'),
 
-    var MVW = [
-        'varying vAGIBakeUV:vec2f;',
-        'varying vAGIBakeRect:vec4f;',
-        'attribute aAGIBakeUV:vec2f;'
-    ].join('\n');
+    MEG:
+        'vAGIBakeUV=aAGIBakeUV*aAGIRect.zw+aAGIRect.xy;' +
+        'vAGIBakeRect=aAGIRect;',
 
-    var MEG = [
-        'vAGIBakeUV =',
-        'aAGIBakeUV * aAGIRect.zw + aAGIRect.xy;',
-        'vAGIBakeRect = aAGIRect;'
-    ].join('\n');
+    MEW:
+        'output.vAGIBakeUV=aAGIBakeUV*aAGIRect.zw+aAGIRect.xy;' +
+        'output.vAGIBakeRect=aAGIRect;',
 
-    var MEW = [
-        'output.vAGIBakeUV =',
-        'aAGIBakeUV * aAGIRect.zw + aAGIRect.xy;',
-        'output.vAGIBakeRect = aAGIRect;'
-    ].join('\n');
+    MPG:
+        'varying vec2 vAGIBakeUV; varying vec4 vAGIBakeRect;' +
+        'uniform sampler2D agiBakedAtlas; uniform vec4 agiMaskParams;' +
+        'float agiLum(vec3 c){return dot(c,vec3(.2126,.7152,.0722));}',
 
-    var MPG = [
-        'varying vec2 vAGIBakeUV;',
-        'varying vec4 vAGIBakeRect;',
-        'uniform sampler2D agiBakedAtlas;',
-        'uniform vec4 agiMaskParams;',
-
-        'float agiLum(vec3 c) {',
-        '    return dot(c,vec3(.2126,.7152,.0722));',
+    MPW: [
+        'varying vAGIBakeUV: vec2f;',
+        'varying vAGIBakeRect: vec4f;',
+        'var agiBakedAtlas: texture_2d<f32>;',
+        'var agiBakedAtlasSampler: sampler;',
+        'uniform agiMaskParams: vec4f;',
+        'fn agiLum(c: vec3f) -> f32 {',
+        '    return dot(c, vec3f(.2126, .7152, .0722));',
         '}'
-    ].join('\n');
+    ].join('\n'),
 
-    var MPW = [
-        'varying vAGIBakeUV:vec2f;',
-        'varying vAGIBakeRect:vec4f;',
-        'var agiBakedAtlas:texture_2d<f32>;',
-        'var agiBakedAtlasSampler:sampler;',
-        'uniform agiMaskParams:vec4f;',
-
-        'fn agiLum(c:vec3f)->f32 {',
-        '    return dot(c,vec3f(.2126,.7152,.0722));',
+    MFG: [
+        'if(agiMaskParams.z>.5){',
+        'vec2 ro=vAGIBakeRect.xy,rs=vAGIBakeRect.zw;',
+        'float refL=.0001;',
+        'refL=max(refL,agiLum(texture2D(agiBakedAtlas,ro+rs*vec2(.17,.17)).rgb));',
+        'refL=max(refL,agiLum(texture2D(agiBakedAtlas,ro+rs*vec2(.83,.17)).rgb));',
+        'refL=max(refL,agiLum(texture2D(agiBakedAtlas,ro+rs*vec2(.17,.83)).rgb));',
+        'refL=max(refL,agiLum(texture2D(agiBakedAtlas,ro+rs*vec2(.83,.83)).rgb));',
+        'float lum=agiLum(texture2D(agiBakedAtlas,vAGIBakeUV).rgb);',
+        'float w=smoothstep(agiMaskParams.x-agiMaskParams.y,',
+        'agiMaskParams.x+agiMaskParams.y,lum/refL);',
+        'gl_FragColor.rgb=mix(vec3(1.),gl_FragColor.rgb,w);',
         '}'
-    ].join('\n');
+    ].join('\n'),
 
-    var MFG = [
-        'if (agiMaskParams.z > .5) {',
-
-        'vec2 ro = vAGIBakeRect.xy;',
-        'vec2 rs = vAGIBakeRect.zw;',
-
-        'float refL = .0001;',
-
-        'refL = max(refL,agiLum(texture2D(',
-        'agiBakedAtlas,ro+rs*vec2(.17,.17)).rgb));',
-
-        'refL = max(refL,agiLum(texture2D(',
-        'agiBakedAtlas,ro+rs*vec2(.83,.17)).rgb));',
-
-        'refL = max(refL,agiLum(texture2D(',
-        'agiBakedAtlas,ro+rs*vec2(.17,.83)).rgb));',
-
-        'refL = max(refL,agiLum(texture2D(',
-        'agiBakedAtlas,ro+rs*vec2(.83,.83)).rgb));',
-
-        'float lum = agiLum(texture2D(',
-        'agiBakedAtlas,vAGIBakeUV).rgb);',
-
-        'float w = smoothstep(',
-        'agiMaskParams.x-agiMaskParams.y,',
-        'agiMaskParams.x+agiMaskParams.y,',
-        'lum/refL);',
-
-        'gl_FragColor.rgb = mix(',
-        'vec3(1.),gl_FragColor.rgb,w);',
-
+    MFW: [
+        'if(uniform.agiMaskParams.z>.5){',
+        'let ro=vAGIBakeRect.xy; let rs=vAGIBakeRect.zw;',
+        'var refL:f32=.0001;',
+        'refL=max(refL,agiLum(textureSampleLevel(agiBakedAtlas,agiBakedAtlasSampler,ro+rs*vec2f(.17,.17),0.).rgb));',
+        'refL=max(refL,agiLum(textureSampleLevel(agiBakedAtlas,agiBakedAtlasSampler,ro+rs*vec2f(.83,.17),0.).rgb));',
+        'refL=max(refL,agiLum(textureSampleLevel(agiBakedAtlas,agiBakedAtlasSampler,ro+rs*vec2f(.17,.83),0.).rgb));',
+        'refL=max(refL,agiLum(textureSampleLevel(agiBakedAtlas,agiBakedAtlasSampler,ro+rs*vec2f(.83,.83),0.).rgb));',
+        'let lum=agiLum(textureSampleLevel(agiBakedAtlas,agiBakedAtlasSampler,vAGIBakeUV,0.).rgb);',
+        'let w=smoothstep(uniform.agiMaskParams.x-uniform.agiMaskParams.y,',
+        'uniform.agiMaskParams.x+uniform.agiMaskParams.y,lum/refL);',
+        'output.color=vec4f(mix(vec3f(1.),output.color.rgb,w),output.color.a);',
         '}'
-    ].join('\n');
+    ].join('\n'),
 
-    var MFW = [
-        'if (uniform.agiMaskParams.z > .5) {',
+    // ========================================================
+    // 3. UTILIDADES BASICAS
+    // ========================================================
 
-        'let ro = vAGIBakeRect.xy;',
-        'let rs = vAGIBakeRect.zw;',
+    alive(entity) {
+        return !!(entity && entity.enabled && !entity._destroyed);
+    },
 
-        'var refL:f32 = .0001;',
+    tagged(entity, name) {
+        return !!(entity && entity.tags && entity.tags.has(name));
+    },
 
-        'refL = max(refL,agiLum(textureSampleLevel(',
-        'agiBakedAtlas,agiBakedAtlasSampler,',
-        'ro+rs*vec2f(.17,.17),0.).rgb));',
+    n3(value) {
+        return Number.isFinite(value) ? +value.toFixed(3) : null;
+    },
 
-        'refL = max(refL,agiLum(textureSampleLevel(',
-        'agiBakedAtlas,agiBakedAtlasSampler,',
-        'ro+rs*vec2f(.83,.17),0.).rgb));',
+    power2(value) {
+        let result = 1;
 
-        'refL = max(refL,agiLum(textureSampleLevel(',
-        'agiBakedAtlas,agiBakedAtlasSampler,',
-        'ro+rs*vec2f(.17,.83),0.).rgb));',
-
-        'refL = max(refL,agiLum(textureSampleLevel(',
-        'agiBakedAtlas,agiBakedAtlasSampler,',
-        'ro+rs*vec2f(.83,.83),0.).rgb));',
-
-        'let lum = agiLum(textureSampleLevel(',
-        'agiBakedAtlas,agiBakedAtlasSampler,',
-        'vAGIBakeUV,0.).rgb);',
-
-        'let w = smoothstep(',
-        'uniform.agiMaskParams.x-uniform.agiMaskParams.y,',
-        'uniform.agiMaskParams.x+uniform.agiMaskParams.y,',
-        'lum/refL);',
-
-        'output.color = vec4f(',
-        'mix(vec3f(1.),output.color.rgb,w),',
-        'output.color.a);',
-
-        '}'
-    ].join('\n');
-
-    // ============================================================
-    // UTILIDADES
-    // ============================================================
-
-    function alive(e) {
-        return !!(
-            e &&
-            e.enabled &&
-            !e._destroyed
-        );
-    }
-
-    function tag(e, n) {
-        return !!(
-            e &&
-            e.tags &&
-            e.tags.has(n)
-        );
-    }
-
-    function num(x) {
-        return Number.isFinite(x) ?
-            +x.toFixed(3) : null;
-    }
-
-    function oid(s, x) {
-        if (!x) return 0;
-
-        if (!s._ids.has(x)) {
-            s._ids.set(x, ++s._id);
+        while (result < value) {
+            result *= 2;
         }
 
-        return s._ids.get(x);
-    }
+        return result;
+    },
 
-    function param(mi, n) {
-        var p = mi.getParameter ?
-            mi.getParameter(n) : null;
+    id(script, object) {
+        if (!object) return 0;
 
-        return p && p.data !== undefined ?
-            p.data : p;
-    }
-
-    // ============================================================
-    // PARAMETROS DE MASCARA CON CACHE
-    // ============================================================
-
-    function maskParams(s) {
-        var ratio = Math.fround(
-            Math.max(
-                .05,
-                Math.min(.95, s.bakedShadowRatio)
-            )
-        );
-
-        var softness = Math.fround(
-            Math.max(
-                .01,
-                Math.min(.4, s.bakedShadowSoftness)
-            )
-        );
-
-        var enabled = s.bakedShadowMask ? 1 : 0;
-
-        var p = s._maskParams;
-
-        if (
-            !p ||
-            p[0] !== ratio ||
-            p[1] !== softness ||
-            p[2] !== enabled
-        ) {
-            s._maskParams = new Float32Array([
-                ratio,
-                softness,
-                enabled,
-                0
-            ]);
-
-            s._maskVersion++;
+        if (!script._ids.has(object)) {
+            script._ids.set(object, ++script._lastId);
         }
 
-        return s._maskParams;
-    }
+        return script._ids.get(object);
+    },
 
-    function syncMaskParams(s) {
-        var p = maskParams(s);
+    readParameter(meshInstance, name) {
+        const parameter = meshInstance && meshInstance.getParameter
+            ? meshInstance.getParameter(name)
+            : null;
 
-        if (
-            s._maskUploadedVersion ===
-            s._maskVersion
-        ) {
-            return;
-        }
+        return parameter && parameter.data !== undefined
+            ? parameter.data
+            : parameter;
+    },
 
-        s._groups.forEach(function (group) {
-            if (group.catcher) {
-                group.catcher.mi.setParameter(
-                    'agiMaskParams',
-                    p
-                );
-            }
+    snapshot(script) {
+        script._renders = script.app.root.findComponents('render');
+        script._lights = script.app.root.findComponents('light');
+        script._cameras = script.app.root.findComponents('camera');
+        script._collisions = script.app.root.findComponents('collision');
+    },
+
+    cameras(script) {
+        const core = AdvancedGpuInstancer._core;
+
+        return script._cameras.filter(function (camera) {
+            return camera.enabled && core.alive(camera.entity);
         });
+    },
 
-        s._maskUploadedVersion = s._maskVersion;
-    }
+    directionals(script) {
+        const core = AdvancedGpuInstancer._core;
 
-    // ============================================================
-    // LIGHTMAPS
-    // ============================================================
+        return script._lights.filter(function (light) {
+            return light.enabled &&
+                core.alive(light.entity) &&
+                light.type === 'directional' &&
+                light.castShadows &&
+                light.affectDynamic;
+        });
+    },
 
-    function lm(mi) {
-        var names =
-            pc.MeshInstance.lightmapParamNames ||
-            [
-                'texture_lightMap',
-                'texture_dirLightMap'
-            ];
+    spots(script) {
+        const core = AdvancedGpuInstancer._core;
 
-        var tex =
-            param(mi, names[0]) ||
-            param(mi, 'instance_lightMap') ||
-            param(mi, 'texture_lightMap');
+        return script._lights.filter(function (light) {
+            return light.enabled &&
+                core.alive(light.entity) &&
+                light.type === 'spot';
+        });
+    },
 
-        var dir =
-            param(mi, names[1]) ||
-            param(mi, 'texture_dirLightMap');
+    renderBounds(meshInstance) {
+        const aabb = meshInstance && meshInstance.aabb;
 
-        var rect =
-            param(mi, 'uPT6LmRect');
+        if (!aabb) return null;
 
-        if (
-            !(
-                tex &&
-                typeof tex === 'object' &&
-                tex.width
-            )
-        ) {
-            tex = null;
-        }
-
-        if (
-            !(
-                dir &&
-                typeof dir === 'object' &&
-                dir.width
-            )
-        ) {
-            dir = null;
-        }
-
-        return {
-            name: names[0],
-            dirName: names[1],
-            tex: tex,
-            dir: dir,
-
-            rect:
-                rect && rect.length === 4 ?
-                    Array.from(rect) :
-                    null,
-
-            fromPT:
-                !!(rect && rect.length === 4)
-        };
-    }
-
-    // ============================================================
-    // BOUNDS
-    // ============================================================
-
-    function bounds(mi) {
-        var a = mi && mi.aabb;
-
-        if (!a) return null;
-
-        var c = a.center;
-        var h = a.halfExtents;
+        const center = aabb.center;
+        const half = aabb.halfExtents;
 
         return [
-            c.x - h.x,
-            c.y - h.y,
-            c.z - h.z,
-            c.x + h.x,
-            c.y + h.y,
-            c.z + h.z
+            center.x - half.x,
+            center.y - half.y,
+            center.z - half.z,
+            center.x + half.x,
+            center.y + half.y,
+            center.z + half.z
         ];
-    }
+    },
 
-    function merge(a, b) {
-        if (!a) {
-            return b ? b.slice() : null;
-        }
-
-        if (!b) {
-            return a;
-        }
+    merge(a, b) {
+        if (!a) return b ? b.slice() : null;
+        if (!b) return a;
 
         return [
             Math.min(a[0], b[0]),
@@ -477,386 +312,509 @@ var AdvancedGpuInstancer =
             Math.max(a[4], b[4]),
             Math.max(a[5], b[5])
         ];
-    }
+    },
 
-    function aabb(b) {
+    box3(bounds) {
         return new pc.BoundingBox(
             new pc.Vec3(
-                (b[0] + b[3]) / 2,
-                (b[1] + b[4]) / 2,
-                (b[2] + b[5]) / 2
+                (bounds[0] + bounds[3]) / 2,
+                (bounds[1] + bounds[4]) / 2,
+                (bounds[2] + bounds[5]) / 2
             ),
             new pc.Vec3(
-                (b[3] - b[0]) / 2,
-                (b[4] - b[1]) / 2,
-                (b[5] - b[2]) / 2
+                (bounds[3] - bounds[0]) / 2,
+                (bounds[4] - bounds[1]) / 2,
+                (bounds[5] - bounds[2]) / 2
             )
         );
-    }
+    },
 
-    function isFloor(c) {
-        return (
-            c.type === 'plane' ||
-            tag(c.entity, 'agi-floor')
-        );
-    }
+    floor(component) {
+        const core = AdvancedGpuInstancer._core;
 
-    function cameras(s) {
-        return s.app.root
-            .findComponents('camera')
-            .filter(function (c) {
-                return c.enabled && alive(c.entity);
-            });
-    }
+        return component.type === 'plane' ||
+            core.tagged(component.entity, 'agi-floor');
+    },
 
-    function directionals(s) {
-        return s.app.root
-            .findComponents('light')
-            .filter(function (l) {
-                return (
-                    l.enabled &&
-                    alive(l.entity) &&
-                    l.type === 'directional' &&
-                    l.castShadows &&
-                    l.affectDynamic
-                );
-            });
-    }
+    // ========================================================
+    // 4. DETECCION DE LIGHTMAPS
+    // ========================================================
 
-    function spots(s) {
-        return s.app.root
-            .findComponents('light')
-            .filter(function (l) {
-                return (
-                    l.enabled &&
-                    alive(l.entity) &&
-                    l.type === 'spot'
-                );
-            });
-    }
+    lightmap(meshInstance) {
+        const core = AdvancedGpuInstancer._core;
 
-    // ============================================================
-    // POLITICA PRE-BAKE
-    // ============================================================
+        const names = pc.MeshInstance.lightmapParamNames || [
+            'texture_lightMap',
+            'texture_dirLightMap'
+        ];
 
-    function bakeRole(c) {
-        if (
-            !c ||
-            !c.entity ||
-            c.entity.__agiProxy ||
-            c.entity.__agiCatcher
-        ) {
+        let texture =
+            core.readParameter(meshInstance, names[0]) ||
+            core.readParameter(meshInstance, 'instance_lightMap') ||
+            core.readParameter(meshInstance, 'texture_lightMap');
+
+        let direction =
+            core.readParameter(meshInstance, names[1]) ||
+            core.readParameter(meshInstance, 'texture_dirLightMap');
+
+        const rect = core.readParameter(meshInstance, 'uPT6LmRect');
+
+        if (!(texture && typeof texture === 'object' && texture.width)) {
+            texture = null;
+        }
+
+        if (!(direction && typeof direction === 'object' && direction.width)) {
+            direction = null;
+        }
+
+        const hasRect = !!(rect && rect.length === 4);
+
+        return {
+            name: names[0],
+            dirName: names[1],
+            tex: texture,
+            dir: direction,
+            rect: hasRect ? Array.from(rect) : null,
+            fromPT: hasRect,
+            consolidated: false,
+            atlas: null
+        };
+    },
+
+    // ========================================================
+    // 5. POLITICA DE SOMBRAS BAKED / REALTIME
+    // ========================================================
+
+    bakeRole(component) {
+        const core = AdvancedGpuInstancer._core;
+
+        if (!component || !component.entity ||
+            component.entity.__agiProxy ||
+            component.entity.__agiCatcher) {
             return 'ignore';
         }
 
-        if (
-            tag(c.entity, 'agi-realtime-only') ||
-            tag(c.entity, 'agi-no-bake-shadow')
-        ) {
+        if (core.tagged(component.entity, 'agi-realtime-only') ||
+            core.tagged(component.entity, 'agi-no-bake-shadow')) {
             return 'realtime';
         }
 
-        if (
-            tag(c.entity, 'agi-bake-caster') ||
-            tag(c.entity, 'agi-baked-only')
-        ) {
+        if (core.tagged(component.entity, 'agi-bake-caster') ||
+            core.tagged(component.entity, 'agi-baked-only')) {
             return 'baked';
         }
 
-        if (!c.isStatic) {
-            return 'realtime';
-        }
+        if (!component.isStatic) return 'realtime';
+        if (component.lightmapped) return 'baked';
+        if (component.castShadows) return 'realtime';
 
-        if (c.lightmapped) {
-            return 'baked';
-        }
+        return component.castShadowsLightmap ? 'baked' : 'none';
+    },
 
-        if (c.castShadows) {
-            return 'realtime';
-        }
+    preBakePolicy(script) {
+        const core = AdvancedGpuInstancer._core;
 
-        return c.castShadowsLightmap ?
-            'baked' :
-            'none';
-    }
-
-    function preBakePolicy(s) {
-        s.app.root
-            .findComponents('render')
-            .forEach(function (c) {
-                if (
-                    !c ||
-                    !c.entity ||
-                    c.entity._destroyed ||
-                    c.entity.__agiProxy ||
-                    c.entity.__agiCatcher
-                ) {
-                    return;
-                }
-
-                var role = bakeRole(c);
-
-                if (role === 'ignore') {
-                    return;
-                }
-
-                if (!s._bakeOriginal.has(c)) {
-                    s._bakeOriginal.set(c, {
-                        castShadowsLightmap:
-                            !!c.castShadowsLightmap,
-                        role: role
-                    });
-                }
-
-                var target =
-                    role === 'realtime' ?
-                        false :
-                        s._bakeOriginal.get(c)
-                            .castShadowsLightmap;
-
-                if (
-                    !!c.castShadowsLightmap !==
-                    !!target
-                ) {
-                    c.castShadowsLightmap = !!target;
-                    s._counts.bakeChanges++;
-                }
-            });
-    }
-
-    function restoreBake(s) {
-        s._bakeOriginal.forEach(
-            function (old, c) {
-                if (
-                    c &&
-                    c.entity &&
-                    !c.entity._destroyed
-                ) {
-                    c.castShadowsLightmap =
-                        old.castShadowsLightmap;
-                }
+        script._renders.forEach(function (component) {
+            if (!component || !component.entity ||
+                component.entity._destroyed ||
+                component.entity.__agiProxy ||
+                component.entity.__agiCatcher) {
+                return;
             }
-        );
 
-        s._bakeOriginal.clear();
-    }
+            const role = core.bakeRole(component);
 
-    // ============================================================
-    // DETECCION DE ILUMINACION BAKED
-    // ============================================================
+            if (role === 'ignore') return;
 
-    function lightmapsAvailable(s) {
-        return s.app.root
-            .findComponents('render')
-            .some(function (c) {
-                return (
-                    c.lightmapped &&
-                    !c.entity.__agiProxy &&
-                    !c.entity.__agiCatcher &&
-                    (c.meshInstances || [])
-                        .some(function (mi) {
-                            return mi && !!lm(mi).tex;
-                        })
-                );
-            });
-    }
+            if (!script._bakeOriginal.has(component)) {
+                script._bakeOriginal.set(component, {
+                    castShadowsLightmap: !!component.castShadowsLightmap,
+                    role: role
+                });
+            }
 
-    function hasBakeLights(s) {
-        return s.app.root
-            .findComponents('light')
-            .some(function (l) {
-                return (
-                    l.enabled &&
-                    alive(l.entity) &&
-                    !!l.bake
-                );
-            });
-    }
+            const original = script._bakeOriginal.get(component);
 
-    // ============================================================
-    // CASTERS BAKED
-    // ============================================================
+            const target = role === 'realtime'
+                ? false
+                : original.castShadowsLightmap;
 
-    function bakedCaster(c) {
-        if (
-            !c ||
-            !c.isStatic ||
-            tag(c.entity, 'agi-keep-realtime-shadows') ||
-            tag(c.entity, 'agi-spot-caster') ||
-            tag(c.entity, 'agi-realtime-only')
-        ) {
+            if (!!component.castShadowsLightmap !== !!target) {
+                component.castShadowsLightmap = !!target;
+                script._counts.bakeChanges++;
+            }
+        });
+    },
+
+    restoreBake(script) {
+        script._bakeOriginal.forEach(function (original, component) {
+            if (component && component.entity &&
+                !component.entity._destroyed) {
+                component.castShadowsLightmap =
+                    original.castShadowsLightmap;
+            }
+        });
+
+        script._bakeOriginal.clear();
+    },
+
+    hasLightmaps(script) {
+        const core = AdvancedGpuInstancer._core;
+
+        return script._renders.some(function (component) {
+            return component &&
+                component.lightmapped &&
+                !component.entity.__agiProxy &&
+                !component.entity.__agiCatcher &&
+                (component.meshInstances || []).some(function (mi) {
+                    return mi && !!core.lightmap(mi).tex;
+                });
+        });
+    },
+
+    hasBakeLights(script) {
+        const core = AdvancedGpuInstancer._core;
+
+        return script._lights.some(function (light) {
+            return light.enabled &&
+                core.alive(light.entity) &&
+                !!light.bake;
+        });
+    },
+
+    bakedCaster(component) {
+        const core = AdvancedGpuInstancer._core;
+
+        if (!component || !component.isStatic ||
+            core.tagged(component.entity, 'agi-keep-realtime-shadows') ||
+            core.tagged(component.entity, 'agi-spot-caster') ||
+            core.tagged(component.entity, 'agi-realtime-only')) {
             return false;
         }
 
-        return (
-            !!c.castShadowsLightmap &&
+        return !!component.castShadowsLightmap &&
             (
-                c.lightmapped ||
-                tag(c.entity, 'agi-bake-caster') ||
-                tag(c.entity, 'agi-baked-only')
-            )
-        );
-    }
+                component.lightmapped ||
+                core.tagged(component.entity, 'agi-bake-caster') ||
+                core.tagged(component.entity, 'agi-baked-only')
+            );
+    },
 
-    function suppressBakedRealtime(s) {
-        if (!lightmapsAvailable(s)) {
-            return;
-        }
+    suppressBakedRealtime(script) {
+        const core = AdvancedGpuInstancer._core;
 
-        s.app.root
-            .findComponents('render')
-            .forEach(function (c) {
-                if (
-                    !c ||
-                    !c.enabled ||
-                    !alive(c.entity) ||
-                    c.entity.__agiProxy ||
-                    c.entity.__agiCatcher ||
-                    !bakedCaster(c)
-                ) {
-                    return;
-                }
+        if (!core.hasLightmaps(script)) return;
 
-                var mis = c.meshInstances || [];
+        script._renders.forEach(function (component) {
+            if (!component || !component.enabled ||
+                !core.alive(component.entity) ||
+                component.entity.__agiProxy ||
+                component.entity.__agiCatcher ||
+                !core.bakedCaster(component)) {
+                return;
+            }
 
-                if (!mis.length) {
-                    return;
-                }
+            const meshInstances = component.meshInstances || [];
 
-                if (!s._casterOriginal.has(c)) {
-                    s._casterOriginal.set(c, {
-                        component:
-                            !!c.castShadows,
+            if (!meshInstances.length) return;
 
-                        mesh: mis.map(function (mi) {
-                            return {
-                                mi: mi,
-                                cast: !!mi.castShadow
-                            };
-                        })
-                    });
-                }
-
-                var was =
-                    c.castShadows ||
-                    mis.some(function (mi) {
-                        return mi.castShadow;
-                    });
-
-                c.castShadows = false;
-
-                mis.forEach(function (mi) {
-                    mi.castShadow = false;
-                });
-
-                if (was) {
-                    s._counts.bakedCasterSuppressed++;
-                }
-            });
-    }
-
-    function restoreRealtime(s) {
-        s._casterOriginal.forEach(
-            function (old, c) {
-                if (
-                    !c ||
-                    !c.entity ||
-                    c.entity._destroyed
-                ) {
-                    return;
-                }
-
-                c.castShadows = old.component;
-
-                old.mesh.forEach(function (x) {
-                    if (x.mi) {
-                        x.mi.castShadow = x.cast;
-                    }
+            if (!script._casterOriginal.has(component)) {
+                script._casterOriginal.set(component, {
+                    component: !!component.castShadows,
+                    mesh: meshInstances.map(function (mi) {
+                        return { mi: mi, cast: !!mi.castShadow };
+                    })
                 });
             }
-        );
 
-        s._casterOriginal.clear();
-    }
+            const was = !!component.castShadows ||
+                meshInstances.some(function (mi) {
+                    return !!mi.castShadow;
+                });
 
-    // ============================================================
-    // CASTERS REALTIME
-    // ============================================================
+            component.castShadows = false;
 
-    function realtimeCasters(s) {
-        var out = [];
-
-        s.app.root
-            .findComponents('render')
-            .forEach(function (c) {
-                if (
-                    !c.enabled ||
-                    !alive(c.entity) ||
-                    !c.castShadows ||
-                    c.entity.__agiProxy ||
-                    c.entity.__agiCatcher ||
-                    s._parked.has(c) ||
-                    tag(c.entity, 'agi-no-catcher') ||
-                    bakedCaster(c)
-                ) {
-                    return;
-                }
-
-                (c.meshInstances || [])
-                    .forEach(function (mi) {
-                        if (
-                            mi &&
-                            mi.mesh &&
-                            mi.visible &&
-                            mi.castShadow &&
-                            (
-                                mi.mask &
-                                (pc.MASK_AFFECT_DYNAMIC || 1)
-                            )
-                        ) {
-                            out.push({
-                                c: c,
-                                mi: mi
-                            });
-                        }
-                    });
+            meshInstances.forEach(function (mi) {
+                mi.castShadow = false;
             });
 
-        return out;
-    }
+            if (was) {
+                script._counts.bakedCasterSuppressed++;
+            }
+        });
+    },
 
-    // ============================================================
-    // ATLAS AUTOMATICO DE LIGHTMAPS NATIVOS
-    // ============================================================
+    restoreRealtime(script) {
+        script._casterOriginal.forEach(function (original, component) {
+            if (!component || !component.entity ||
+                component.entity._destroyed) {
+                return;
+            }
 
-    function powerOfTwo(n) {
-        var v = 1;
+            component.castShadows = original.component;
 
-        while (v < n) {
-            v *= 2;
-        }
+            original.mesh.forEach(function (item) {
+                if (item.mi) {
+                    item.mi.castShadow = item.cast;
+                }
+            });
+        });
 
-        return v;
-    }
+        script._casterOriginal.clear();
+    },
 
-    function atlasCompatible(m) {
-        var t = m.tex;
-        var d = m.dir;
+    realtimeCasters(script) {
+        const core = AdvancedGpuInstancer._core;
+        const output = [];
 
-        if (
-            !t ||
-            !t.width ||
-            !t.height ||
-            m.fromPT
-        ) {
+        script._renders.forEach(function (component) {
+            if (!component || !component.enabled ||
+                !core.alive(component.entity) ||
+                !component.castShadows ||
+                component.entity.__agiProxy ||
+                component.entity.__agiCatcher ||
+                script._parked.has(component) ||
+                core.tagged(component.entity, 'agi-no-catcher') ||
+                core.bakedCaster(component)) {
+                return;
+            }
+
+            (component.meshInstances || []).forEach(function (mi) {
+                if (mi && mi.mesh && mi.visible &&
+                    mi.castShadow &&
+                    (mi.mask & core.DYNAMIC_MASK)) {
+                    output.push({ c: component, mi: mi });
+                }
+            });
+        });
+
+        return output;
+    },
+
+    // ========================================================
+    // 6. FUENTES DE INSTANCING
+    // ========================================================
+
+    eligible(component, pendingBake) {
+        const core = AdvancedGpuInstancer._core;
+
+        if (!component || !component.enabled ||
+            !core.alive(component.entity) ||
+            !component.isStatic ||
+            component.entity.__agiProxy ||
+            component.entity.__agiCatcher ||
+            core.tagged(component.entity, 'agi-no-instance') ||
+            core.tagged(component.entity, 'agi-native-spot-receiver') ||
+            component.batchGroupId >= 0 ||
+            !component.meshInstances ||
+            component.meshInstances.length !== 1) {
             return false;
         }
 
-        // Por seguridad, solo formatos sin compresion.
-        // Los formatos comprimidos requieren tratar
-        // limites de bloques y no se consolidan aqui.
+        const mi = component.meshInstances[0];
 
-        var supported = [
+        if (!mi || !mi.mesh || !mi.mesh.vertexBuffer ||
+            !mi.node || !mi.material || !mi.visible ||
+            mi.instancingData || mi.skinInstance ||
+            mi.morphInstance || mi.calculateSortDistance) {
+            return false;
+        }
+
+        if (!(mi.material instanceof pc.StandardMaterial) ||
+            mi.material.blendType !== pc.BLEND_NONE) {
+            return false;
+        }
+
+        const primitive = mi.mesh.primitive;
+
+        if (!primitive || primitive.length !== 1 ||
+            primitive[0].type !== pc.PRIMITIVE_TRIANGLES) {
+            return false;
+        }
+
+        const format = mi.mesh.vertexBuffer.getFormat();
+
+        if (!format || format.elements.some(function (element) {
+            return core.SEM.indexOf(element.name) >= 0;
+        })) {
+            return false;
+        }
+
+        const lm = core.lightmap(mi);
+
+        if (lm.tex) {
+            const hasUV1 = format.elements.some(function (element) {
+                return element.name === pc.SEMANTIC_TEXCOORD1;
+            });
+
+            if (!hasUV1) return false;
+
+            if (!lm.rect) {
+                lm.rect = core.RECT_ONE;
+            }
+
+            if (lm.rect[2] <= 0 || lm.rect[3] <= 0) {
+                return false;
+            }
+        } else if (component.lightmapped && pendingBake) {
+            return false;
+        }
+
+        if (mi.parameters && mi.parameters.forEach) {
+            let unknown = false;
+
+            mi.parameters.forEach(function (value, name) {
+                if (name !== lm.name &&
+                    name !== lm.dirName &&
+                    name !== 'instance_lightMap' &&
+                    name !== 'texture_lightMap' &&
+                    name !== 'texture_dirLightMap' &&
+                    name !== 'uPT6LmRect') {
+                    unknown = true;
+                }
+            });
+
+            if (unknown) return false;
+        }
+
+        return lm;
+    },
+
+    sources(script) {
+        const core = AdvancedGpuInstancer._core;
+        const output = [];
+        const pendingBake = core.hasBakeLights(script);
+
+        script._renders.forEach(function (component) {
+            const lm = core.eligible(component, pendingBake);
+
+            if (!lm) return;
+
+            const mi = component.meshInstances[0];
+            const bounds = core.renderBounds(mi);
+
+            if (!bounds) return;
+
+            output.push({
+                c: component,
+                mi: mi,
+                lm: lm,
+                bounds: bounds,
+                layers: component.layers.slice()
+            });
+        });
+
+        return output;
+    },
+
+    cellOf(bounds, size) {
+        return Math.round((bounds[0] + bounds[3]) / (2 * size)) +
+            ':' +
+            Math.round((bounds[2] + bounds[5]) / (2 * size));
+    },
+
+    groupKey(script, item, cell, withLightmap) {
+        const core = AdvancedGpuInstancer._core;
+        const mi = item.mi;
+
+        const parts = [
+            cell,
+            core.id(script, mi.mesh),
+            core.id(script, mi.material),
+            item.c.lightmapped ? 1 : 0,
+            core.floor(item.c) ? 1 : 0,
+            item.layers.join(','),
+            mi.mask,
+            mi.castShadow,
+            mi.receiveShadow,
+            mi.renderStyle,
+            mi.shaderPassMask,
+            mi.shadowCascadeMask,
+            mi.drawOrder,
+            mi.drawBucket,
+            item.c.castShadows,
+            item.c.receiveShadows
+        ];
+
+        if (withLightmap) {
+            parts.push(
+                core.id(script, item.lm.tex),
+                core.id(script, item.lm.dir)
+            );
+        } else {
+            parts.push(
+                item.lm.tex ? 'BAKED' : 'REALTIME',
+                item.lm.dir ? 'DIR' : 'NO-DIR'
+            );
+        }
+
+        return parts.join('|');
+    },
+
+    prepare(script, items) {
+        const core = AdvancedGpuInstancer._core;
+        let extent = null;
+
+        items.forEach(function (item) {
+            extent = core.merge(extent, item.bounds);
+        });
+
+        const size = Math.max(8, script.chunkSize);
+
+        const common = !!(
+            items.length <= core.MAX_GROUP &&
+            extent &&
+            extent[3] - extent[0] <= size &&
+            extent[5] - extent[2] <= size
+        );
+
+        items.forEach(function (item) {
+            item.cell = common
+                ? '0:0'
+                : core.cellOf(item.bounds, size);
+
+            item.common = common;
+        });
+
+        return items;
+    },
+
+    groupsOf(script, items, withLightmap) {
+        const core = AdvancedGpuInstancer._core;
+        const output = new Map();
+
+        items.forEach(function (item) {
+            const key = core.groupKey(
+                script,
+                item,
+                item.cell,
+                withLightmap
+            );
+
+            if (!output.has(key)) {
+                output.set(key, []);
+            }
+
+            output.get(key).push(item);
+        });
+
+        return output;
+    },
+
+    // ========================================================
+    // 7. ATLAS NATIVOS AUTOMATICOS
+    // ========================================================
+
+    atlasCompatible(lm) {
+        const texture = lm.tex;
+        const direction = lm.dir;
+
+        if (!texture || !texture.width ||
+            !texture.height || lm.fromPT) {
+            return false;
+        }
+
+        const formats = [
             pc.PIXELFORMAT_RGBA8,
             pc.PIXELFORMAT_SRGBA8,
             pc.PIXELFORMAT_RGBA16F,
@@ -865,82 +823,76 @@ var AdvancedGpuInstancer =
             pc.PIXELFORMAT_111110F
         ];
 
-        if (supported.indexOf(t.format) < 0) {
+        if (formats.indexOf(texture.format) < 0) {
             return false;
         }
 
-        if (
-            d &&
-            (
-                supported.indexOf(d.format) < 0 ||
-                d.width !== t.width ||
-                d.height !== t.height
-            )
-        ) {
+        if (direction &&
+            (formats.indexOf(direction.format) < 0 ||
+                direction.width !== texture.width ||
+                direction.height !== texture.height)) {
             return false;
         }
 
         return true;
-    }
+    },
 
-    // Empaquetado determinista por estanterias.
-    // Se crean paginas adicionales cuando es necesario.
+    atlasFormatKey(lm) {
+        const texture = lm.tex;
+        const direction = lm.dir;
 
-    function atlasPlan(entries, maxSize) {
-        var sorted = entries.slice().sort(
-            function (a, b) {
-                return (
-                    b.tex.height - a.tex.height ||
-                    b.tex.width - a.tex.width
-                );
-            }
-        );
+        return [
+            texture.format,
+            texture.type,
+            texture.encoding,
+            !!texture.srgb,
+            texture.minFilter,
+            texture.magFilter,
+            direction ? direction.format : '-',
+            direction ? direction.type : '-',
+            direction ? direction.encoding : '-',
+            direction ? !!direction.srgb : '-',
+            direction ? direction.minFilter : '-',
+            direction ? direction.magFilter : '-'
+        ].join('|');
+    },
 
-        var pixels = 0;
-        var widest = 0;
+    atlasLayout(entries, maxSize) {
+        const core = AdvancedGpuInstancer._core;
 
-        sorted.forEach(function (e) {
-            var w =
-                e.tex.width +
-                ATLAS_BORDER * 2;
-
-            var h =
-                e.tex.height +
-                ATLAS_BORDER * 2;
-
-            pixels += w * h;
-            widest = Math.max(widest, w);
+        const sorted = entries.slice().sort(function (a, b) {
+            return b.tex.height - a.tex.height ||
+                b.tex.width - a.tex.width;
         });
 
-        if (
-            sorted.some(function (e) {
-                return (
-                    e.tex.height +
-                    ATLAS_BORDER * 2 >
-                    maxSize
-                );
-            })
-        ) {
+        let pixels = 0;
+        let widest = 0;
+
+        sorted.forEach(function (entry) {
+            const width = entry.tex.width + 2 * core.ATLAS_BORDER;
+            const height = entry.tex.height + 2 * core.ATLAS_BORDER;
+
+            pixels += width * height;
+            widest = Math.max(widest, width);
+        });
+
+        if (sorted.some(function (entry) {
+            return entry.tex.width + 2 * core.ATLAS_BORDER > maxSize ||
+                entry.tex.height + 2 * core.ATLAS_BORDER > maxSize;
+        })) {
             return [];
         }
 
-        var width = powerOfTwo(
-            Math.max(
-                widest,
-                Math.ceil(Math.sqrt(pixels))
-            )
+        let width = core.power2(
+            Math.max(widest, Math.ceil(Math.sqrt(pixels)))
         );
 
-        if (width > maxSize) {
-            return [];
-        }
-
-        var best = null;
+        let best = null;
 
         while (width <= maxSize) {
-            var pages = [];
+            const pages = [];
 
-            var page = {
+            let page = {
                 tiles: [],
                 x: 0,
                 y: 0,
@@ -951,22 +903,17 @@ var AdvancedGpuInstancer =
 
             pages.push(page);
 
-            sorted.forEach(function (e) {
-                var w =
-                    e.tex.width +
-                    ATLAS_BORDER * 2;
+            sorted.forEach(function (entry) {
+                const tileW = entry.tex.width + 2 * core.ATLAS_BORDER;
+                const tileH = entry.tex.height + 2 * core.ATLAS_BORDER;
 
-                var h =
-                    e.tex.height +
-                    ATLAS_BORDER * 2;
-
-                if (page.x + w > width) {
+                if (page.x + tileW > width) {
                     page.x = 0;
                     page.y += page.rowH;
                     page.rowH = 0;
                 }
 
-                if (page.y + h > maxSize) {
+                if (page.y + tileH > maxSize) {
                     page = {
                         tiles: [],
                         x: 0,
@@ -980,609 +927,338 @@ var AdvancedGpuInstancer =
                 }
 
                 page.tiles.push({
-                    entry: e,
+                    entry: entry,
                     x: page.x,
                     y: page.y
                 });
 
-                page.usedW = Math.max(
-                    page.usedW,
-                    page.x + w
-                );
+                page.usedW = Math.max(page.usedW, page.x + tileW);
+                page.usedH = Math.max(page.usedH, page.y + tileH);
 
-                page.usedH = Math.max(
-                    page.usedH,
-                    page.y + h
-                );
-
-                page.x += w;
-
-                page.rowH = Math.max(
-                    page.rowH,
-                    h
-                );
+                page.x += tileW;
+                page.rowH = Math.max(page.rowH, tileH);
             });
 
-            pages.forEach(function (p) {
-                p.width = powerOfTwo(p.usedW);
-                p.height = powerOfTwo(p.usedH);
+            pages.forEach(function (item) {
+                item.width = core.power2(item.usedW);
+                item.height = core.power2(item.usedH);
             });
 
-            var area = pages.reduce(
-                function (a, p) {
-                    return (
-                        a +
-                        p.width * p.height
-                    );
-                },
-                0
-            );
+            const area = pages.reduce(function (total, item) {
+                return total + item.width * item.height;
+            }, 0);
 
-            if (
-                !best ||
+            if (!best ||
                 pages.length < best.pages.length ||
-                (
-                    pages.length === best.pages.length &&
-                    area < best.area
-                )
-            ) {
-                best = {
-                    pages: pages,
-                    area: area
-                };
+                (pages.length === best.pages.length && area < best.area)) {
+                best = { pages: pages, area: area };
             }
 
-            if (pages.length === 1) {
-                break;
-            }
+            if (pages.length === 1) break;
 
             width *= 2;
         }
 
         return best ? best.pages : [];
-    }
+    },
 
-    // ============================================================
-    // CREACION DE TEXTURAS DE ATLAS
-    // ============================================================
+    createAtlasTexture(script, source, width, height, name) {
+        return new pc.Texture(script.app.graphicsDevice, {
+            name: name,
+            width: width,
+            height: height,
+            format: source.format,
+            type: source.type,
+            srgb: !!source.srgb,
+            mipmaps: false,
+            minFilter: source.minFilter === pc.FILTER_NEAREST
+                ? pc.FILTER_NEAREST
+                : pc.FILTER_LINEAR,
+            magFilter: source.magFilter === pc.FILTER_NEAREST
+                ? pc.FILTER_NEAREST
+                : pc.FILTER_LINEAR,
+            addressU: pc.ADDRESS_CLAMP_TO_EDGE,
+            addressV: pc.ADDRESS_CLAMP_TO_EDGE
+        });
+    },
 
-    function makeAtlasTexture(
-        s,
-        source,
-        width,
-        height,
-        name
-    ) {
-        var nearest =
-            source.format === pc.PIXELFORMAT_RGBA32F &&
-            !s.app.graphicsDevice.textureFloatFilterable;
+    copyWithBorder(destination, source, x, y) {
+        const core = AdvancedGpuInstancer._core;
 
-        return new pc.Texture(
-            s.app.graphicsDevice,
-            {
-                name: name,
-                width: width,
-                height: height,
+        const width = source.width;
+        const height = source.height;
+        const border = core.ATLAS_BORDER;
 
-                format: source.format,
-                type: source.type,
-                srgb: !!source.srgb,
-
-                mipmaps: false,
-
-                minFilter: nearest ?
-                    pc.FILTER_NEAREST :
-                    pc.FILTER_LINEAR,
-
-                magFilter: nearest ?
-                    pc.FILTER_NEAREST :
-                    pc.FILTER_LINEAR,
-
-                addressU: pc.ADDRESS_CLAMP_TO_EDGE,
-                addressV: pc.ADDRESS_CLAMP_TO_EDGE
-            }
-        );
-    }
-
-    // ============================================================
-    // COPIAR REGION CON BORDES
-    // ============================================================
-
-    function copyWithBorder(dst, source, x, y) {
-        var w = source.width;
-        var h = source.height;
-
-        var b = ATLAS_BORDER;
-        var ok = true;
-
-        function cp(
-            x0,
-            y0,
-            ww,
-            hh,
-            dx,
-            dy
-        ) {
-            if (
-                dst.copy(source, {
-                    sourceX: x0,
-                    sourceY: y0,
-
-                    width: ww,
-                    height: hh,
-
-                    destX: dx,
-                    destY: dy
-                }) === false
-            ) {
-                ok = false;
-            }
+        function copy(sourceX, sourceY, w, h, destX, destY) {
+            return destination.copy(source, {
+                sourceX: sourceX,
+                sourceY: sourceY,
+                width: w,
+                height: h,
+                destX: destX,
+                destY: destY
+            }) !== false;
         }
 
-        // Interior.
-        cp(0, 0, w, h, x + b, y + b);
+        return copy(0, 0, width, height, x + border, y + border) &&
+            copy(0, 0, width, 1, x + border, y) &&
+            copy(0, height - 1, width, 1, x + border, y + border + height) &&
+            copy(0, 0, 1, height, x, y + border) &&
+            copy(width - 1, 0, 1, height, x + border + width, y + border) &&
+            copy(0, 0, 1, 1, x, y) &&
+            copy(width - 1, 0, 1, 1, x + border + width, y) &&
+            copy(0, height - 1, 1, 1, x, y + border + height) &&
+            copy(width - 1, height - 1, 1, 1,
+                x + border + width, y + border + height);
+    },
 
-        // Bordes verticales y horizontales.
-        cp(0, 0, w, 1, x + b, y);
-        cp(0, h - 1, w, 1, x + b, y + b + h);
+    consolidateNative(script, items) {
+        const core = AdvancedGpuInstancer._core;
 
-        cp(0, 0, 1, h, x, y + b);
-        cp(w - 1, 0, 1, h, x + b + w, y + b);
+        const potential = new Set();
 
-        // Esquinas.
-        cp(0, 0, 1, 1, x, y);
-        cp(w - 1, 0, 1, 1, x + b + w, y);
-
-        cp(0, h - 1, 1, 1, x, y + b + h);
-
-        cp(
-            w - 1,
-            h - 1,
-            1,
-            1,
-            x + b + w,
-            y + b + h
-        );
-
-        return ok;
-    }
-
-    // ============================================================
-    // CONSOLIDACION DE LIGHTMAPS NATIVOS
-    // ============================================================
-
-    function consolidateNative(s, items) {
-        var buckets = new Map();
-
-        items.forEach(function (item) {
-            var m = item.lm;
-
-            if (!atlasCompatible(m)) {
-                return;
+        core.groupsOf(script, items, false).forEach(function (group) {
+            if (group.length >= 2) {
+                group.forEach(function (item) {
+                    potential.add(item);
+                });
             }
-
-            // Nunca combinar formatos incompatibles.
-
-            var key = [
-                m.tex.format,
-                m.tex.type,
-                m.tex.encoding,
-
-                m.dir ? m.dir.format : 'no-dir',
-                m.dir ? m.dir.type : 'no-dir',
-                m.dir ? m.dir.encoding : 'no-dir'
-            ].join('|');
-
-            var bucket = buckets.get(key);
-
-            if (!bucket) {
-                bucket = new Map();
-                buckets.set(key, bucket);
-            }
-
-            // Si dos instancias usan exactamente
-            // la misma textura, reutilizan el tile.
-
-            var identity =
-                oid(s, m.tex) +
-                '/' +
-                oid(s, m.dir);
-
-            var entry = bucket.get(identity);
-
-            if (!entry) {
-                entry = {
-                    tex: m.tex,
-                    dir: m.dir,
-                    items: []
-                };
-
-                bucket.set(identity, entry);
-            }
-
-            entry.items.push(item);
         });
 
-        var maxSize =
-            s.app.graphicsDevice.maxTextureSize ||
-            4096;
+        const buckets = new Map();
 
-        var total = 0;
-
-        buckets.forEach(function (byTexture) {
-            var entries =
-                Array.from(byTexture.values());
-
-            if (entries.length < 2) {
+        items.forEach(function (item) {
+            if (!potential.has(item) ||
+                !core.atlasCompatible(item.lm)) {
                 return;
             }
 
-            var pages = atlasPlan(
-                entries,
-                maxSize
-            );
+            const formatKey = core.atlasFormatKey(item.lm);
 
-            pages.forEach(function (page) {
-                if (page.tiles.length < 2) {
-                    return;
-                }
+            if (!buckets.has(formatKey)) {
+                buckets.set(formatKey, new Map());
+            }
 
-                var color = null;
-                var direction = null;
-                var success = false;
+            const bucket = buckets.get(formatKey);
+
+            const textureKey =
+                core.id(script, item.lm.tex) + '/' +
+                core.id(script, item.lm.dir);
+
+            if (!bucket.has(textureKey)) {
+                bucket.set(textureKey, {
+                    tex: item.lm.tex,
+                    dir: item.lm.dir,
+                    items: []
+                });
+            }
+
+            bucket.get(textureKey).items.push(item);
+        });
+
+        const maxSize =
+            script.app.graphicsDevice.maxTextureSize || 4096;
+
+        buckets.forEach(function (uniqueTextures) {
+            const entries = Array.from(uniqueTextures.values());
+
+            if (entries.length < 2) return;
+
+            core.atlasLayout(entries, maxSize).forEach(function (page) {
+                if (page.tiles.length < 2) return;
+
+                let color = null;
+                let direction = null;
+                let success = false;
 
                 try {
-                    var first = page.tiles[0].entry;
+                    const sample = page.tiles[0].entry;
 
-                    color = makeAtlasTexture(
-                        s,
-                        first.tex,
-                        page.width,
-                        page.height,
-                        'AGI4152_NativeColorAtlas'
+                    color = core.createAtlasTexture(
+                        script, sample.tex,
+                        page.width, page.height,
+                        'AGI4155_NativeLightmap'
                     );
 
-                    if (first.dir) {
-                        direction = makeAtlasTexture(
-                            s,
-                            first.dir,
-                            page.width,
-                            page.height,
-                            'AGI4152_NativeDirectionAtlas'
+                    if (sample.dir) {
+                        direction = core.createAtlasTexture(
+                            script, sample.dir,
+                            page.width, page.height,
+                            'AGI4155_NativeDirection'
                         );
                     }
 
-                    success = page.tiles.every(
-                        function (tile) {
-                            return (
-                                copyWithBorder(
-                                    color,
-                                    tile.entry.tex,
-                                    tile.x,
-                                    tile.y
-                                ) &&
-                                (
-                                    !direction ||
-                                    copyWithBorder(
-                                        direction,
-                                        tile.entry.dir,
-                                        tile.x,
-                                        tile.y
-                                    )
-                                )
-                            );
-                        }
-                    );
-
-                } catch (err) {
-                    if (s.debug) {
+                    success = page.tiles.every(function (tile) {
+                        return core.copyWithBorder(
+                            color, tile.entry.tex,
+                            tile.x, tile.y
+                        ) &&
+                            (!direction || core.copyWithBorder(
+                                direction, tile.entry.dir,
+                                tile.x, tile.y
+                            ));
+                    });
+                } catch (error) {
+                    if (script.debug) {
                         console.warn(
-                            TAG,
-                            'Atlas nativo no disponible:',
-                            err
+                            core.TAG,
+                            'Atlas nativo no compatible:',
+                            error
                         );
                     }
                 }
 
                 if (!success) {
-                    if (color) {
-                        color.destroy();
-                    }
-
-                    if (direction) {
-                        direction.destroy();
-                    }
-
-                    // No se tocan las fuentes.
+                    if (color) color.destroy();
+                    if (direction) direction.destroy();
                     return;
                 }
 
-                s._nativeAtlases.push(color);
+                const atlas = {
+                    color: color,
+                    dir: direction,
+                    used: false
+                };
 
-                if (direction) {
-                    s._nativeAtlases.push(direction);
-                }
+                script._nativeAtlases.push(atlas);
 
                 page.tiles.forEach(function (tile) {
-                    var e = tile.entry;
+                    const entry = tile.entry;
 
-                    var rect = [
-                        (
-                            tile.x +
-                            ATLAS_BORDER
-                        ) / page.width,
-
-                        (
-                            tile.y +
-                            ATLAS_BORDER
-                        ) / page.height,
-
-                        e.tex.width / page.width,
-
-                        e.tex.height / page.height
+                    const rect = [
+                        (tile.x + core.ATLAS_BORDER) / page.width,
+                        (tile.y + core.ATLAS_BORDER) / page.height,
+                        entry.tex.width / page.width,
+                        entry.tex.height / page.height
                     ];
 
-                    e.items.forEach(function (item) {
+                    entry.items.forEach(function (item) {
                         item.lm = {
                             name: item.lm.name,
                             dirName: item.lm.dirName,
-
                             tex: color,
                             dir: direction,
-
                             rect: rect,
-
                             fromPT: false,
-                            consolidated: true
+                            consolidated: true,
+                            atlas: atlas
                         };
                     });
-
-                    total += e.items.length;
                 });
+            });
+        });
+    },
 
-                s._counts.nativeAtlasPages++;
+    releaseUnusedAtlases(script) {
+        let usedCount = 0;
+        let pageCount = 0;
+
+        script._groups.forEach(function (group) {
+            group.items.forEach(function (item) {
+                if (item.lm.consolidated && item.lm.atlas) {
+                    item.lm.atlas.used = true;
+                    usedCount++;
+                }
             });
         });
 
-        s._counts.nativeAtlasInstances = total;
-    }
-
-    // ============================================================
-    // ELEGIBILIDAD GPU
-    // ============================================================
-
-    function eligible(c, s) {
-        if (
-            !c ||
-            !c.enabled ||
-            !alive(c.entity) ||
-            !c.isStatic ||
-            c.entity.__agiProxy ||
-            c.entity.__agiCatcher ||
-            tag(c.entity, 'agi-no-instance') ||
-            tag(c.entity, 'agi-native-spot-receiver') ||
-            c.batchGroupId >= 0 ||
-            !c.meshInstances ||
-            c.meshInstances.length !== 1
-        ) {
-            return false;
-        }
-
-        var mi = c.meshInstances[0];
-
-        if (
-            !mi ||
-            !mi.mesh ||
-            !mi.mesh.vertexBuffer ||
-            !mi.node ||
-            !mi.material ||
-            !mi.visible ||
-            mi.instancingData ||
-            mi.skinInstance ||
-            mi.morphInstance ||
-            mi.calculateSortDistance
-        ) {
-            return false;
-        }
-
-        if (
-            !(
-                mi.material instanceof
-                pc.StandardMaterial
-            ) ||
-            mi.material.blendType !==
-            pc.BLEND_NONE
-        ) {
-            return false;
-        }
-
-        var pr = mi.mesh.primitive;
-
-        if (
-            !pr ||
-            pr.length !== 1 ||
-            pr[0].type !==
-            pc.PRIMITIVE_TRIANGLES
-        ) {
-            return false;
-        }
-
-        var fmt =
-            mi.mesh.vertexBuffer.getFormat();
-
-        if (
-            !fmt ||
-            fmt.elements.some(function (e) {
-                return SEM.indexOf(e.name) >= 0;
-            })
-        ) {
-            return false;
-        }
-
-        var m = lm(mi);
-
-        if (m.tex) {
-            // Lightmap presente, independiente
-            // de quien lo haya generado.
-
-            if (
-                !fmt.elements.some(function (e) {
-                    return e.name ===
-                        pc.SEMANTIC_TEXCOORD1;
-                })
-            ) {
-                return false;
-            }
-
-            if (!m.rect) {
-                m.rect = DEFAULT_ATLAS_RECT;
-            }
-
-            if (
-                m.rect[2] <= 0 ||
-                m.rect[3] <= 0
-            ) {
-                return false;
-            }
-
-        } else if (
-            c.lightmapped &&
-            s._bakeLightsPresent
-        ) {
-            // Hay un horneado pendiente.
-            // No sustituir el objeto antes de que
-            // reciba su lightmap.
-
-            return false;
-        }
-
-        // Si no hay lightmap ni horneado pendiente,
-        // no se exige ningun atlas.
-
-        if (
-            mi.parameters &&
-            mi.parameters.forEach
-        ) {
-            var extra = false;
-
-            mi.parameters.forEach(
-                function (v, n) {
-                    if (
-                        n !== m.name &&
-                        n !== m.dirName &&
-                        n !== 'instance_lightMap' &&
-                        n !== 'texture_lightMap' &&
-                        n !== 'texture_dirLightMap' &&
-                        n !== 'uPT6LmRect'
-                    ) {
-                        extra = true;
-                    }
+        script._nativeAtlases = script._nativeAtlases.filter(
+            function (atlas) {
+                if (atlas.used) {
+                    pageCount++;
+                    return true;
                 }
-            );
 
-            if (extra) {
+                atlas.color.destroy();
+
+                if (atlas.dir) {
+                    atlas.dir.destroy();
+                }
+
                 return false;
             }
-        }
+        );
 
-        return m;
-    }
+        script._counts.nativeAtlasPages = pageCount;
+        script._counts.nativeAtlasInstances = usedCount;
+    },
 
-    // ============================================================
-    // MATERIALES
-    // ============================================================
+    // ========================================================
+    // 8. MATERIALES Y BUFFERS GPU
+    // ========================================================
 
-    function getMaterial(s, source, catcher) {
-        var cache = catcher ?
-            s._catchMaterials :
-            s._materials;
+    getMaterial(script, source, catcher) {
+        const core = AdvancedGpuInstancer._core;
+
+        const cache = catcher
+            ? script._catchMaterials
+            : script._materials;
 
         if (cache.has(source)) {
             return cache.get(source);
         }
 
-        var mat = catcher ?
-            new pc.StandardMaterial() :
-            source.clone();
+        const material = catcher
+            ? new pc.StandardMaterial()
+            : source.clone();
 
-        mat.name =
+        material.name =
             (source.name || 'Material') +
-            '_AGI4152' +
+            '_AGI4155' +
             (catcher ? '_Catcher' : '');
 
         if (catcher) {
-            mat.shadowCatcher = true;
+            material.shadowCatcher = true;
+            material.blendType = pc.BLEND_MULTIPLICATIVE;
 
-            mat.blendType =
-                pc.BLEND_MULTIPLICATIVE;
+            material.depthWrite = false;
+            material.depthTest = true;
+            material.cull = pc.CULLFACE_NONE;
 
-            mat.depthWrite = false;
-            mat.depthTest = true;
-            mat.cull = pc.CULLFACE_NONE;
+            material.diffuse.set(0, 0, 0);
+            material.specular.set(0, 0, 0);
 
-            mat.diffuse.set(0, 0, 0);
-            mat.specular.set(0, 0, 0);
-
-            mat.useSkybox = false;
+            material.useSkybox = false;
         }
 
-        mat.shaderChunksVersion = '2.23';
+        material.shaderChunksVersion = '2.23';
 
         [
-            [
-                pc.SHADERLANGUAGE_GLSL,
-                GL,
-                UVG,
-                true
-            ],
-            [
-                pc.SHADERLANGUAGE_WGSL,
-                WG,
-                UVW,
-                false
-            ]
-        ].forEach(function (data) {
-            var chunks =
-                mat.getShaderChunks(data[0]);
+            [pc.SHADERLANGUAGE_GLSL, core.GL, core.UVG, true],
+            [pc.SHADERLANGUAGE_WGSL, core.WG, core.UVW, false]
+        ].forEach(function (language) {
+            const chunks = material.getShaderChunks(language[0]);
 
-            chunks.set(
-                'transformInstancingVS',
-                data[1]
-            );
+            chunks.set('transformInstancingVS', language[1]);
 
-            function add(n, v) {
+            function append(name, value) {
                 chunks.set(
-                    n,
-                    (chunks.get(n) || '') +
-                    '\n' + v
+                    name,
+                    (chunks.get(name) || '') + '\n' + value
                 );
             }
 
             if (!catcher) {
-                add(
-                    'litUserMainEndVS',
-                    data[2]
-                );
-
+                append('litUserMainEndVS', language[2]);
             } else {
-                add(
+                append(
                     'litUserDeclarationVS',
-                    data[3] ? MVG : MVW
+                    language[3] ? core.MVG : core.MVW
                 );
 
-                add(
+                append(
                     'litUserMainEndVS',
-                    data[3] ? MEG : MEW
+                    language[3] ? core.MEG : core.MEW
                 );
 
-                add(
+                append(
                     'litUserDeclarationPS',
-                    data[3] ? MPG : MPW
+                    language[3] ? core.MPG : core.MPW
                 );
 
-                add(
+                append(
                     'litUserMainEndPS',
-                    data[3] ? MFG : MFW
+                    language[3] ? core.MFG : core.MFW
                 );
             }
         });
@@ -1593,98 +1269,133 @@ var AdvancedGpuInstancer =
             'aAGI2',
             'aAGI3',
             'aAGIRect'
-        ].forEach(function (n, i) {
-            mat.setAttribute(n, SEM[i]);
+        ].forEach(function (name, index) {
+            material.setAttribute(name, core.SEM[index]);
         });
 
         if (catcher) {
-            mat.setAttribute(
+            material.setAttribute(
                 'aAGIBakeUV',
                 pc.SEMANTIC_TEXCOORD1
             );
         }
 
-        mat.update();
-        cache.set(source, mat);
+        material.update();
+        cache.set(source, material);
 
-        return mat;
-    }
+        return material;
+    },
 
-    // ============================================================
-    // INSTANCING BUFFERS
-    // ============================================================
+    packed(items) {
+        const core = AdvancedGpuInstancer._core;
 
-    function packed(items) {
-        var data = new Float32Array(
-            items.length *
-            INSTANCE_FLOATS
+        const data = new Float32Array(
+            items.length * core.FLOATS_PER_INSTANCE
         );
 
-        items.forEach(function (x, i) {
-            var m =
-                x.mi.node
-                    .getWorldTransform().data;
+        items.forEach(function (item, index) {
+            const matrix = item.mi.node.getWorldTransform().data;
+            const offset = index * core.FLOATS_PER_INSTANCE;
 
-            var k = i * INSTANCE_FLOATS;
-
-            for (
-                var j = 0;
-                j < 16;
-                j++
-            ) {
-                data[k + j] = m[j];
+            for (let i = 0; i < 16; i++) {
+                data[offset + i] = matrix[i];
             }
 
             data.set(
-                x.lm.rect ||
-                DEFAULT_ATLAS_RECT,
-                k + 16
+                item.lm.rect || core.RECT_ONE,
+                offset + 16
             );
         });
 
         return data;
-    }
+    },
 
-    // ============================================================
-    // SHADOW CATCHER
-    // ============================================================
+    applyMeshFlags(target, source, baked) {
+        target.mask = source.mask;
+        target.castShadow = baked ? false : !!source.castShadow;
+        target.receiveShadow = !!source.receiveShadow;
+        target.shadowCascadeMask = source.shadowCascadeMask;
+        target.shaderPassMask = source.shaderPassMask;
+    },
 
-    function makeCatcher(s, g) {
-        var entity = null;
+    maskParams(script) {
+        const ratio = Math.fround(
+            Math.max(0.05, Math.min(0.95, script.bakedShadowRatio))
+        );
+
+        const softness = Math.fround(
+            Math.max(0.01, Math.min(0.4, script.bakedShadowSoftness))
+        );
+
+        const enabled = script.bakedShadowMask ? 1 : 0;
+        const previous = script._maskParams;
+
+        if (!previous ||
+            previous[0] !== ratio ||
+            previous[1] !== softness ||
+            previous[2] !== enabled) {
+            script._maskParams = new Float32Array([
+                ratio,
+                softness,
+                enabled,
+                0
+            ]);
+
+            script._maskVersion++;
+        }
+
+        return script._maskParams;
+    },
+
+    syncMaskParams(script) {
+        const core = AdvancedGpuInstancer._core;
+
+        const params = core.maskParams(script);
+
+        if (script._maskUploadedVersion === script._maskVersion) {
+            return;
+        }
+
+        script._groups.forEach(function (group) {
+            if (group.catcher) {
+                group.catcher.mi.setParameter(
+                    'agiMaskParams',
+                    params
+                );
+            }
+        });
+
+        script._maskUploadedVersion = script._maskVersion;
+    },
+
+    // ========================================================
+    // 9. CREACION DE SHADOW CATCHER
+    // ========================================================
+
+    makeCatcher(script, group) {
+        const core = AdvancedGpuInstancer._core;
+        let entity = null;
 
         try {
-            var source = g.items[0];
+            const source = group.items[0];
 
             entity = new pc.Entity(
-                'AGI4152_Catcher_' +
-                source.c.entity.name
+                'AGI4155_Catcher_' + source.c.entity.name
             );
 
             entity.__agiCatcher = true;
+            script.app.root.addChild(entity);
 
-            s.app.root.addChild(entity);
-
-            var mi = new pc.MeshInstance(
+            const mi = new pc.MeshInstance(
                 source.mi.mesh,
-                getMaterial(
-                    s,
-                    source.mi.material,
-                    true
-                ),
+                core.getMaterial(script, source.mi.material, true),
                 entity
             );
 
-            mi.setInstancing(g.vb, true);
+            mi.setInstancing(group.vb, true);
 
-            mi.setParameter(
-                'agiBakedAtlas',
-                source.lm.tex
-            );
-
-            mi.setParameter(
-                'agiMaskParams',
-                maskParams(s)
-            );
+            mi.setParameter('agiBakedAtlas', source.lm.tex);
+            mi.setParameter('agiMaskParams', core.maskParams(script));
 
             mi.castShadow = false;
             mi.receiveShadow = true;
@@ -1699,82 +1410,56 @@ var AdvancedGpuInstancer =
             entity.render.isStatic = false;
             entity.render.lightmapped = false;
 
-            mi.mask =
-                pc.MASK_AFFECT_DYNAMIC || 1;
-
+            mi.mask = core.DYNAMIC_MASK;
             mi.castShadow = false;
             mi.receiveShadow = true;
 
-            entity.render.customAabb =
-                aabb(g.bounds);
-
-            mi.aabb = aabb(g.bounds);
+            entity.render.customAabb = core.box3(group.bounds);
+            mi.aabb = core.box3(group.bounds);
 
             entity.enabled = false;
 
-            g.catcher = {
+            group.catcher = {
                 entity: entity,
                 mi: mi,
                 reason: 'inicial',
                 z: null,
                 distance: null
             };
-
-        } catch (err) {
+        } catch (error) {
             if (entity) {
                 entity.destroy();
             }
 
             console.warn(
-                TAG,
+                core.TAG,
                 'No se pudo crear catcher:',
-                err
+                error
             );
         }
-    }
+    },
 
-    // ============================================================
-    // ESTADO DE SOMBRAS
-    // ============================================================
+    // ========================================================
+    // 10. CREACION DE GRUPOS GPU
+    // ========================================================
 
-    function applyMeshShadowState(
-        target,
-        source,
-        isBaked
-    ) {
-        target.mask = source.mask;
+    makeGroup(script, group) {
+        const core = AdvancedGpuInstancer._core;
 
-        target.castShadow = isBaked ?
-            false :
-            !!source.castShadow;
+        const source = group.items[0];
 
-        target.receiveShadow =
-            !!source.receiveShadow;
+        let entity = null;
+        let vertexBuffer = null;
 
-        target.shadowCascadeMask =
-            source.shadowCascadeMask;
-
-        target.shaderPassMask =
-            source.shaderPassMask;
-    }
-
-    // ============================================================
-    // CREAR GRUPO GPU
-    // ============================================================
-
-    function makeGroup(s, g) {
-        var src = g.items[0];
-
-        var entity = null;
-        var vb = null;
+        const hiddenNow = [];
 
         try {
-            var data = packed(g.items);
+            const data = core.packed(group.items);
 
-            vb = new pc.VertexBuffer(
-                s.app.graphicsDevice,
-                s._format,
-                g.items.length,
+            vertexBuffer = new pc.VertexBuffer(
+                script.app.graphicsDevice,
+                script._format,
+                group.items.length,
                 {
                     data: data,
                     usage: pc.BUFFER_DYNAMIC
@@ -1782,316 +1467,247 @@ var AdvancedGpuInstancer =
             );
 
             entity = new pc.Entity(
-                'AGI4152_' +
-                src.c.entity.name +
+                'AGI4155_' +
+                source.c.entity.name +
                 '_' +
-                s._groups.size
+                script._groups.size
             );
 
             entity.__agiProxy = true;
 
-            s.app.root.addChild(entity);
+            script.app.root.addChild(entity);
 
-            var mi = new pc.MeshInstance(
-                src.mi.mesh,
-                getMaterial(
-                    s,
-                    src.mi.material,
+            const mi = new pc.MeshInstance(
+                source.mi.mesh,
+                core.getMaterial(
+                    script,
+                    source.mi.material,
                     false
                 ),
                 entity
             );
 
-            var baked = !!(
-                src.lm.tex &&
-                src.c.lightmapped
+            const baked = !!(
+                source.c.lightmapped &&
+                source.lm.tex
             );
 
-            applyMeshShadowState(
-                mi,
-                src.mi,
-                baked
-            );
+            core.applyMeshFlags(mi, source.mi, baked);
 
-            if (
-                !baked &&
-                src.c.lightmapped
-            ) {
-                mi.mask =
-                    pc.MASK_AFFECT_DYNAMIC || 1;
+            if (!baked && source.c.lightmapped) {
+                mi.mask = core.DYNAMIC_MASK;
             }
 
-            mi.renderStyle =
-                src.mi.renderStyle;
+            mi.renderStyle = source.mi.renderStyle;
+            mi.drawOrder = source.mi.drawOrder;
+            mi.drawBucket = source.mi.drawBucket;
 
-            mi.drawOrder =
-                src.mi.drawOrder;
-
-            mi.drawBucket =
-                src.mi.drawBucket;
-
-            mi.setInstancing(vb, true);
+            mi.setInstancing(vertexBuffer, true);
 
             entity.addComponent('render', {
                 meshInstances: [mi],
-                layers: src.layers.slice(),
-
-                castShadows: baked ?
-                    false :
-                    !!src.c.castShadows,
-
-                receiveShadows:
-                    !!src.c.receiveShadows
+                layers: source.layers.slice(),
+                castShadows: baked
+                    ? false
+                    : !!source.c.castShadows,
+                receiveShadows: !!source.c.receiveShadows
             });
 
             entity.render.isStatic = true;
             entity.render.lightmapped = baked;
 
-            entity.render.castShadows = baked ?
-                false :
-                !!src.c.castShadows;
+            entity.render.castShadows = baked
+                ? false
+                : !!source.c.castShadows;
 
             entity.render.receiveShadows =
-                !!src.c.receiveShadows;
-
-            // Preservar lightmap existente,
-            // sin importar su procedencia.
+                !!source.c.receiveShadows;
 
             if (baked) {
                 mi.setRealtimeLightmap(
-                    src.lm.name,
-                    src.lm.tex
+                    source.lm.name,
+                    source.lm.tex
                 );
 
-                if (src.lm.dir) {
+                if (source.lm.dir) {
                     mi.setRealtimeLightmap(
-                        src.lm.dirName,
-                        src.lm.dir
+                        source.lm.dirName,
+                        source.lm.dir
                     );
                 }
 
                 mi.setParameter(
                     'uPT6LmRect',
-                    [0, 0, 1, 1]
+                    core.RECT_ONE
                 );
             }
 
-            if (
-                typeof mi._updateShaderDefs ===
-                'function' &&
-                typeof src.mi._shaderDefs ===
-                'number'
-            ) {
-                var bits =
-                    mi._shaderDefs &
-                    ~src.mi._shaderDefs;
+            if (typeof mi._updateShaderDefs === 'function' &&
+                typeof source.mi._shaderDefs === 'number') {
+                const extras =
+                    mi._shaderDefs & ~source.mi._shaderDefs;
 
                 mi._updateShaderDefs(
-                    src.mi._shaderDefs | bits
+                    source.mi._shaderDefs | extras
                 );
             }
 
-            // Reaplicacion intencional despues
-            // de crear el RenderComponent.
+            // PlayCanvas puede modificar flags al crear el render.
+            core.applyMeshFlags(mi, source.mi, baked);
 
-            applyMeshShadowState(
-                mi,
-                src.mi,
-                baked
-            );
-
-            if (
-                !baked &&
-                src.c.lightmapped
-            ) {
-                mi.mask =
-                    pc.MASK_AFFECT_DYNAMIC || 1;
+            if (!baked && source.c.lightmapped) {
+                mi.mask = core.DYNAMIC_MASK;
             }
 
-            entity.render.customAabb =
-                aabb(g.bounds);
+            entity.render.customAabb = core.box3(group.bounds);
+            mi.aabb = core.box3(group.bounds);
 
-            mi.aabb = aabb(g.bounds);
+            group.entity = entity;
+            group.mi = mi;
+            group.vb = vertexBuffer;
+            group.data = data;
+            group.catcher = null;
 
-            g.entity = entity;
-            g.mi = mi;
-            g.vb = vb;
-            g.data = data;
-            g.catcher = null;
-
-            s._groups.set(entity, g);
-
-            if (
-                baked &&
-                isFloor(src.c)
-            ) {
-                makeCatcher(s, g);
+            if (baked && core.floor(source.c)) {
+                core.makeCatcher(script, group);
             }
 
-            // Ocultar originales solo despues
-            // de construir el proxy.
+            // Solo ocultar originales cuando el proxy existe.
+            group.items.forEach(function (item) {
+                if (script._parked.has(item.c)) return;
 
-            g.items.forEach(function (x) {
-                if (!s._parked.has(x.c)) {
-                    s._parked.set(x.c, {
-                        layers: x.c.layers.slice(),
-                        visible: x.mi.visible
-                    });
+                script._parked.set(item.c, {
+                    layers: item.c.layers.slice(),
+                    visible: item.mi.visible
+                });
 
-                    x.c.layers = [
-                        s._hiddenLayer.id
-                    ];
+                hiddenNow.push(item.c);
+
+                item.c.layers = [
+                    script._hiddenLayer.id
+                ];
+            });
+
+            script._groups.set(entity, group);
+
+            return true;
+        } catch (error) {
+            hiddenNow.forEach(function (component) {
+                const original = script._parked.get(component);
+
+                if (original) {
+                    try {
+                        component.layers = original.layers.slice();
+                    } catch (_) { }
+
+                    script._parked.delete(component);
                 }
             });
 
-            return true;
+            if (group.catcher) {
+                group.catcher.entity.destroy();
+            }
 
-        } catch (err) {
             if (entity) {
+                script._groups.delete(entity);
                 entity.destroy();
             }
 
-            if (vb) {
+            if (vertexBuffer) {
                 try {
-                    vb.destroy();
+                    vertexBuffer.destroy();
                 } catch (_) { }
             }
 
             console.error(
-                TAG,
-                'Grupo omitido:',
-                err
+                core.TAG,
+                'Grupo omitido; originales conservados:',
+                error
             );
 
             return false;
         }
-    }
+    },
 
-    // ============================================================
-    // CULLING DEL CATCHER
-    // ============================================================
+    // ========================================================
+    // 11. CATCHER Y DISTANCIAS
+    // ========================================================
 
-    function cameraDepth(b, cam) {
-        var m =
-            cam.entity
-                .getWorldTransform().data;
+    cameraDepth(bounds, camera) {
+        const core = AdvancedGpuInstancer._core;
 
-        var fx = -m[8];
-        var fy = -m[9];
-        var fz = -m[10];
+        const matrix = camera.entity.getWorldTransform().data;
 
-        var box = aabb(b);
-        var c = box.center;
-        var h = box.halfExtents;
+        const fx = -matrix[8];
+        const fy = -matrix[9];
+        const fz = -matrix[10];
 
-        var d =
-            (c.x - m[12]) * fx +
-            (c.y - m[13]) * fy +
-            (c.z - m[14]) * fz;
+        const box = core.box3(bounds);
+        const center = box.center;
+        const half = box.halfExtents;
 
-        var r =
-            Math.abs(fx) * h.x +
-            Math.abs(fy) * h.y +
-            Math.abs(fz) * h.z;
+        const distance =
+            (center.x - matrix[12]) * fx +
+            (center.y - matrix[13]) * fy +
+            (center.z - matrix[14]) * fz;
 
-        return [d - r, d + r];
-    }
+        const radius =
+            Math.abs(fx) * half.x +
+            Math.abs(fy) * half.y +
+            Math.abs(fz) * half.z;
 
-    function canShadowFloor(
-        g,
-        caster,
-        light
-    ) {
-        var b = bounds(caster.mi);
+        return [
+            distance - radius,
+            distance + radius
+        ];
+    },
 
-        if (!b) {
-            return true;
+    canShadowFloor(group, caster, light) {
+        const core = AdvancedGpuInstancer._core;
+
+        const bounds = core.renderBounds(caster.mi);
+
+        if (!bounds) return true;
+
+        const matrix = light.entity.getWorldTransform().data;
+
+        const dx = -matrix[4];
+        const dy = -matrix[5];
+        const dz = -matrix[6];
+
+        if (Math.abs(dy) < 0.06) return true;
+
+        const y = group.bounds[4];
+
+        const t0 = (y - bounds[1]) / dy;
+        const t1 = (y - bounds[4]) / dy;
+
+        if (Math.max(t0, t1) < 0) return false;
+
+        const lo = Math.max(0, Math.min(t0, t1));
+        const hi = Math.max(0, Math.max(t0, t1));
+
+        const x0 = bounds[0] + Math.min(lo * dx, hi * dx) - 0.5;
+        const x1 = bounds[3] + Math.max(lo * dx, hi * dx) + 0.5;
+
+        const z0 = bounds[2] + Math.min(lo * dz, hi * dz) - 0.5;
+        const z1 = bounds[5] + Math.max(lo * dz, hi * dz) + 0.5;
+
+        return x1 >= group.bounds[0] &&
+            x0 <= group.bounds[3] &&
+            z1 >= group.bounds[2] &&
+            z0 <= group.bounds[5];
+    },
+
+    catcherDecision(script, group, context) {
+        const core = AdvancedGpuInstancer._core;
+
+        if (!script.directionalShadowCatcher) {
+            return { on: false, reason: 'desactivado' };
         }
 
-        var m =
-            light.entity
-                .getWorldTransform().data;
-
-        var dx = -m[4];
-        var dy = -m[5];
-        var dz = -m[6];
-
-        if (Math.abs(dy) < .06) {
-            return true;
-        }
-
-        var y = g.bounds[4];
-
-        var t0 = (y - b[1]) / dy;
-        var t1 = (y - b[4]) / dy;
-
-        if (Math.max(t0, t1) < 0) {
-            return false;
-        }
-
-        var lo = Math.max(
-            0,
-            Math.min(t0, t1)
-        );
-
-        var hi = Math.max(
-            0,
-            Math.max(t0, t1)
-        );
-
-        var x0 =
-            b[0] +
-            Math.min(lo * dx, hi * dx) - .5;
-
-        var x1 =
-            b[3] +
-            Math.max(lo * dx, hi * dx) + .5;
-
-        var z0 =
-            b[2] +
-            Math.min(lo * dz, hi * dz) - .5;
-
-        var z1 =
-            b[5] +
-            Math.max(lo * dz, hi * dz) + .5;
-
-        return (
-            x1 >= g.bounds[0] &&
-            x0 <= g.bounds[3] &&
-            z1 >= g.bounds[2] &&
-            z0 <= g.bounds[5]
-        );
-    }
-
-    // ============================================================
-    // CONTEXTO CATCHER POR CICLO
-    // ============================================================
-
-    function makeCatcherContext(s) {
-        return {
-            lights: directionals(s),
-            cameras: cameras(s),
-
-            casters: s.smartShadowCatcher ?
-                realtimeCasters(s) :
-                []
-        };
-    }
-
-    function catcherDecision(
-        s,
-        g,
-        context
-    ) {
-        if (!s.directionalShadowCatcher) {
-            return {
-                on: false,
-                reason: 'desactivado'
-            };
-        }
-
-        var lights = context.lights;
-        var cams = context.cameras;
+        const lights = context.lights;
+        const cameras = context.cameras;
 
         if (!lights.length) {
             return {
@@ -2100,31 +1716,15 @@ var AdvancedGpuInstancer =
             };
         }
 
-        if (s.smartShadowCatcher) {
-            var relevant = false;
-            var casters = context.casters;
+        if (script.smartShadowCatcher) {
+            let relevant = false;
 
-            for (
-                var i = 0;
-                i < lights.length && !relevant;
-                i++
-            ) {
-                for (
-                    var j = 0;
-                    j < casters.length;
-                    j++
-                ) {
-                    if (
-                        (
-                            lights[i].mask &
-                            casters[j].mi.mask
-                        ) &&
-                        canShadowFloor(
-                            g,
-                            casters[j],
-                            lights[i]
-                        )
-                    ) {
+            for (let i = 0; i < lights.length && !relevant; i++) {
+                for (let j = 0; j < context.casters.length; j++) {
+                    const caster = context.casters[j];
+
+                    if ((lights[i].mask & caster.mi.mask) &&
+                        core.canShadowFloor(group, caster, lights[i])) {
                         relevant = true;
                         break;
                     }
@@ -2139,71 +1739,45 @@ var AdvancedGpuInstancer =
             }
         }
 
-        if (!s.distanceCulling) {
+        if (!script.distanceCulling) {
             return {
                 on: true,
                 reason: 'culling desactivado'
             };
         }
 
-        for (
-            var c = 0;
-            c < cams.length;
-            c++
-        ) {
-            for (
-                var l = 0;
-                l < lights.length;
-                l++
-            ) {
-                var camera = cams[c];
-                var light = lights[l];
+        for (let c = 0; c < cameras.length; c++) {
+            for (let l = 0; l < lights.length; l++) {
+                const camera = cameras[c];
+                const light = lights[l];
 
-                if (
-                    !(
-                        light.mask &
-                        (pc.MASK_AFFECT_DYNAMIC || 1)
-                    )
-                ) {
+                if (!(light.mask & core.DYNAMIC_MASK)) {
                     continue;
                 }
 
-                var dist = Math.min(
+                const distance = Math.min(
                     camera.farClip || Infinity,
                     light.shadowDistance || Infinity
                 );
 
-                if (
-                    !Number.isFinite(dist) ||
-                    dist <= 0
-                ) {
+                if (!Number.isFinite(distance) || distance <= 0) {
                     continue;
                 }
 
-                var z = cameraDepth(
-                    g.bounds,
-                    camera
+                const z = core.cameraDepth(group.bounds, camera);
+                const near = Math.max(0, camera.nearClip || 0);
+
+                const margin = Math.max(
+                    0.25,
+                    Math.min(3, distance * 0.04)
                 );
 
-                var near = Math.max(
-                    0,
-                    camera.nearClip || 0
-                );
-
-                var margin = Math.max(
-                    .25,
-                    Math.min(3, dist * .04)
-                );
-
-                if (
-                    z[1] >= near &&
-                    z[0] <= dist + margin
-                ) {
+                if (z[1] >= near && z[0] <= distance + margin) {
                     return {
                         on: true,
                         reason: 'shadowDistance',
                         z: z,
-                        distance: dist
+                        distance: distance
                     };
                 }
             }
@@ -2213,1697 +1787,1145 @@ var AdvancedGpuInstancer =
             on: false,
             reason: 'fuera del shadowDistance'
         };
-    }
+    },
 
-    function updateCatchers(s) {
-        var active = 0;
+    updateCatchers(script) {
+        const core = AdvancedGpuInstancer._core;
 
-        syncMaskParams(s);
+        core.syncMaskParams(script);
 
-        var context =
-            makeCatcherContext(s);
+        const context = {
+            lights: core.directionals(script),
+            cameras: core.cameras(script),
+            casters: script.smartShadowCatcher
+                ? core.realtimeCasters(script)
+                : []
+        };
 
-        s._groups.forEach(function (g) {
-            if (!g.catcher) {
+        let active = 0;
+
+        script._groups.forEach(function (group) {
+            if (!group.catcher) return;
+
+            const decision = core.catcherDecision(
+                script,
+                group,
+                context
+            );
+
+            const catcher = group.catcher;
+
+            if (catcher.entity.enabled !== decision.on) {
+                catcher.entity.enabled = decision.on;
+                script._counts.catcherTransitions++;
+            }
+
+            catcher.reason = decision.reason;
+            catcher.z = decision.z || null;
+            catcher.distance = decision.distance || null;
+
+            if (decision.on) active++;
+        });
+
+        script._counts.catcherActive = active;
+    },
+
+    // ========================================================
+    // 12. FIRMA ESTRUCTURAL
+    // ========================================================
+
+    signature(script) {
+        const core = AdvancedGpuInstancer._core;
+        const output = [];
+
+        script._renders.forEach(function (component) {
+            if (!component || !component.isStatic ||
+                !component.entity ||
+                component.entity.__agiProxy ||
+                component.entity.__agiCatcher) {
                 return;
             }
 
-            var decision =
-                catcherDecision(
-                    s,
-                    g,
-                    context
-                );
+            const mi = component.meshInstances &&
+                component.meshInstances[0];
 
-            var entity =
-                g.catcher.entity;
+            const lm = mi ? core.lightmap(mi) : null;
 
-            if (
-                entity.enabled !==
-                decision.on
-            ) {
-                entity.enabled = decision.on;
-
-                s._counts.catcherTransitions++;
-            }
-
-            g.catcher.reason =
-                decision.reason;
-
-            g.catcher.z =
-                decision.z || null;
-
-            g.catcher.distance =
-                decision.distance || null;
-
-            if (decision.on) {
-                active++;
-            }
+            output.push([
+                core.id(script, component),
+                core.id(script, mi),
+                core.id(script, mi && mi.mesh),
+                core.id(script, mi && mi.material),
+                core.id(script, lm && lm.tex),
+                core.id(script, lm && lm.dir),
+                lm && lm.rect && lm.rect.join(','),
+                component.enabled,
+                component.entity.enabled,
+                component.isStatic,
+                component.lightmapped,
+                component.castShadows,
+                component.castShadowsLightmap,
+                component.receiveShadows,
+                component.batchGroupId,
+                component.meshInstances
+                    ? component.meshInstances.length
+                    : 0,
+                component.layers.join(','),
+                mi && mi.mask,
+                mi && mi.castShadow,
+                mi && mi.receiveShadow,
+                mi && mi._shaderDefs
+            ].join('|'));
         });
 
-        s._counts.catcherActive = active;
-    }
+        return output.sort().join(';');
+    },
 
-    // ============================================================
-    // FIRMA ESTRUCTURAL
-    // ============================================================
+    // ========================================================
+    // 13. TRANSFORMACIONES
+    // ========================================================
 
-    function signature(s) {
-        var rows = [];
+    matrixChanged(group) {
+        const core = AdvancedGpuInstancer._core;
 
-        s.app.root
-            .findComponents('render')
-            .forEach(function (c) {
-                if (
-                    !c.isStatic ||
-                    c.entity.__agiProxy ||
-                    c.entity.__agiCatcher
-                ) {
-                    return;
-                }
+        for (let i = 0; i < group.items.length; i++) {
+            const item = group.items[i];
+            const matrix = item.mi.node.getWorldTransform().data;
 
-                var mi =
-                    c.meshInstances &&
-                    c.meshInstances[0];
+            const offset = i * core.FLOATS_PER_INSTANCE;
 
-                var l =
-                    mi ? lm(mi) : null;
-
-                rows.push([
-                    oid(s, c),
-                    oid(s, mi),
-                    oid(s, mi && mi.mesh),
-                    oid(s, mi && mi.material),
-                    oid(s, l && l.tex),
-                    oid(s, l && l.dir),
-
-                    l && l.rect &&
-                    l.rect.join(','),
-
-                    c.enabled,
-                    c.entity.enabled,
-                    c.isStatic,
-                    c.lightmapped,
-
-                    c.castShadows,
-                    c.castShadowsLightmap,
-                    c.receiveShadows,
-
-                    c.batchGroupId,
-
-                    c.meshInstances ?
-                        c.meshInstances.length : 0,
-
-                    c.layers.join(','),
-
-                    mi && mi.mask,
-                    mi && mi.castShadow,
-                    mi && mi.receiveShadow,
-                    mi && mi._shaderDefs
-                ].join('|'));
-            });
-
-        return rows.sort().join(';');
-    }
-
-    // ============================================================
-    // RESTAURAR FUENTES
-    // ============================================================
-
-    function restoreParked(s) {
-        s._parked.forEach(
-            function (state, c) {
-                if (
-                    !c ||
-                    !c.entity ||
-                    c.entity._destroyed
-                ) {
-                    return;
-                }
-
-                c.layers =
-                    state.layers.slice();
-
-                if (
-                    c.meshInstances &&
-                    c.meshInstances[0]
-                ) {
-                    c.meshInstances[0].visible =
-                        state.visible;
-                }
-            }
-        );
-
-        s._parked.clear();
-    }
-
-    // ============================================================
-    // DESTRUIR RECURSOS
-    // ============================================================
-
-    function destroyGroups(s) {
-        restoreParked(s);
-
-        s._groups.forEach(function (g) {
-            if (g.catcher) {
-                g.catcher.entity.destroy();
-            }
-
-            if (g.entity) {
-                try {
-                    g.mi.setInstancing(null);
-                } catch (_) { }
-
-                g.entity.destroy();
-            }
-
-            if (g.vb) {
-                try {
-                    g.vb.destroy();
-                } catch (_) { }
-            }
-        });
-
-        s._groups.clear();
-
-        s._materials.forEach(function (m) {
-            try {
-                m.destroy();
-            } catch (_) { }
-        });
-
-        s._catchMaterials.forEach(function (m) {
-            try {
-                m.destroy();
-            } catch (_) { }
-        });
-
-        s._materials.clear();
-        s._catchMaterials.clear();
-
-        s._nativeAtlases.forEach(
-            function (t) {
-                try {
-                    t.destroy();
-                } catch (_) { }
-            }
-        );
-
-        s._nativeAtlases.length = 0;
-    }
-
-    // ============================================================
-    // RECOLECTAR FUENTES
-    // ============================================================
-
-    function sources(s) {
-        var out = [];
-
-        s.app.root
-            .findComponents('render')
-            .forEach(function (c) {
-                var lightmap =
-                    eligible(c, s);
-
-                if (!lightmap) {
-                    return;
-                }
-
-                var mi =
-                    c.meshInstances[0];
-
-                var b = bounds(mi);
-
-                if (!b) {
-                    return;
-                }
-
-                out.push({
-                    c: c,
-                    mi: mi,
-                    lm: lightmap,
-                    bounds: b,
-                    layers: c.layers.slice()
-                });
-            });
-
-        return out;
-    }
-
-    // ============================================================
-    // REBUILD
-    // ============================================================
-
-    function build(s) {
-        if (
-            s.app.graphicsDevice.insideRenderPass
-        ) {
-            s._deferredBuild = true;
-            return;
-        }
-
-        destroyGroups(s);
-
-        s._counts.nativeAtlasPages = 0;
-        s._counts.nativeAtlasInstances = 0;
-
-        preBakePolicy(s);
-
-        suppressBakedRealtime(s);
-
-        s._bakeLightsPresent =
-            hasBakeLights(s);
-
-        var items = sources(s);
-
-        // Consolidar despues de leer las fuentes,
-        // antes de calcular las claves de grupo.
-
-        consolidateNative(s, items);
-
-        var extent = null;
-
-        items.forEach(function (x) {
-            extent = merge(
-                extent,
-                x.bounds
-            );
-        });
-
-        var size = Math.max(
-            8,
-            s.chunkSize
-        );
-
-        var common = !!(
-            items.length <= 256 &&
-            extent &&
-            extent[3] - extent[0] <= size &&
-            extent[5] - extent[2] <= size
-        );
-
-        var groups = new Map();
-
-        items.forEach(function (x) {
-            var b = x.bounds;
-            var mi = x.mi;
-
-            var cell = common ?
-                '0:0' :
-                Math.round(
-                    (b[0] + b[3]) / (2 * size)
-                ) + ':' +
-                Math.round(
-                    (b[2] + b[5]) / (2 * size)
-                );
-
-            // Identidad de render completa:
-            // geometria, materiales, iluminacion,
-            // capas, sombras y estados del mesh.
-
-            var key = [
-                cell,
-
-                oid(s, mi.mesh),
-                oid(s, mi.material),
-
-                oid(s, x.lm.tex),
-                oid(s, x.lm.dir),
-
-                x.c.lightmapped ? 1 : 0,
-                isFloor(x.c) ? 1 : 0,
-
-                x.layers.join(','),
-
-                mi.mask,
-                mi.castShadow,
-                mi.receiveShadow,
-
-                mi.renderStyle,
-                mi.shaderPassMask,
-                mi.shadowCascadeMask,
-
-                mi.drawOrder,
-                mi.drawBucket,
-
-                x.c.castShadows,
-                x.c.receiveShadows
-            ].join('|');
-
-            if (!groups.has(key)) {
-                groups.set(key, {
-                    items: [],
-                    bounds: null,
-                    cell: cell,
-                    common: common
-                });
-            }
-
-            var g = groups.get(key);
-
-            g.items.push(x);
-
-            g.bounds = merge(
-                g.bounds,
-                b
-            );
-        });
-
-        var count = 0;
-
-        groups.forEach(function (g) {
-            for (
-                var i = 0;
-                i < g.items.length;
-                i += MAX_INSTANCES_PER_GROUP
-            ) {
-                var part = g.items.slice(
-                    i,
-                    i + MAX_INSTANCES_PER_GROUP
-                );
-
-                if (part.length < 2) {
-                    continue;
-                }
-
-                var b = null;
-
-                part.forEach(function (x) {
-                    b = merge(
-                        b,
-                        x.bounds
-                    );
-                });
-
-                if (
-                    makeGroup(s, {
-                        items: part,
-                        bounds: b,
-                        cell: g.cell,
-                        common: g.common
-                    })
-                ) {
-                    count += part.length;
-                }
-            }
-        });
-
-        s._counts.groups =
-            s._groups.size;
-
-        s._counts.instances =
-            count;
-
-        s._counts.baked = 0;
-
-        s._groups.forEach(function (g) {
-            if (
-                g.items[0].c.lightmapped &&
-                g.items[0].lm.tex
-            ) {
-                s._counts.baked +=
-                    g.items.length;
-            }
-        });
-
-        s._counts.rebuilds++;
-
-        updateCatchers(s);
-
-        s._signature = signature(s);
-
-        if (s.debug) {
-            console.log(
-                TAG,
-                'Grupos:', s._counts.groups,
-                'Instancias:', count,
-                'Baked:', s._counts.baked,
-                'Catchers:', s._counts.catcherActive,
-                'Cambios Bake:', s._counts.bakeChanges
-            );
-        }
-    }
-
-    // ============================================================
-    // TRANSFORMACIONES
-    // ============================================================
-
-    function transformChanged(group) {
-        for (
-            var i = 0;
-            i < group.items.length;
-            i++
-        ) {
-            var item = group.items[i];
-
-            var matrix =
-                item.mi.node
-                    .getWorldTransform().data;
-
-            var offset =
-                i * INSTANCE_FLOATS;
-
-            for (
-                var k = 0;
-                k < 16;
-                k++
-            ) {
-                if (
-                    Math.fround(matrix[k]) !==
-                    group.data[offset + k]
-                ) {
+            for (let j = 0; j < 16; j++) {
+                if (Math.fround(matrix[j]) !==
+                    group.data[offset + j]) {
                     return true;
                 }
             }
 
-            var rect =
-                item.lm.rect ||
-                DEFAULT_ATLAS_RECT;
+            const rect = item.lm.rect || core.RECT_ONE;
 
-            for (
-                var r = 0;
-                r < 4;
-                r++
-            ) {
-                if (
-                    Math.fround(rect[r]) !==
-                    group.data[offset + 16 + r]
-                ) {
+            for (let k = 0; k < 4; k++) {
+                if (Math.fround(rect[k]) !==
+                    group.data[offset + 16 + k]) {
                     return true;
                 }
             }
         }
 
         return false;
-    }
+    },
 
-    function refreshTransforms(s) {
-        var changes = [];
-        var valid = true;
+    refreshTransforms(script) {
+        const core = AdvancedGpuInstancer._core;
 
-        s._groups.forEach(function (group) {
-            if (
-                !valid ||
-                !transformChanged(group)
-            ) {
+        const changes = [];
+        let valid = true;
+
+        script._groups.forEach(function (group) {
+            if (!valid || !core.matrixChanged(group)) {
                 return;
             }
 
-            var box = null;
+            let bounds = null;
+            const size = Math.max(8, script.chunkSize);
 
             group.items.forEach(function (item) {
-                var b = bounds(item.mi);
+                const box = core.renderBounds(item.mi);
 
-                if (!b) {
+                if (!box) {
                     valid = false;
                     return;
                 }
 
-                box = merge(box, b);
+                bounds = core.merge(bounds, box);
+
+                if (!group.common &&
+                    core.cellOf(box, size) !== group.cell) {
+                    valid = false;
+                }
             });
-
-            if (!valid) {
-                return;
-            }
-
-            if (!group.common) {
-                var size = Math.max(
-                    8,
-                    s.chunkSize
-                );
-
-                group.items.forEach(
-                    function (item) {
-                        var b = bounds(item.mi);
-
-                        if (!b) {
-                            valid = false;
-                            return;
-                        }
-
-                        var cell =
-                            Math.round(
-                                (b[0] + b[3]) / (2 * size)
-                            ) + ':' +
-                            Math.round(
-                                (b[2] + b[5]) / (2 * size)
-                            );
-
-                        if (
-                            cell !== group.cell
-                        ) {
-                            valid = false;
-                        }
-                    }
-                );
-            }
 
             if (valid) {
                 changes.push({
                     group: group,
-                    data: packed(group.items),
-                    box: box
+                    bounds: bounds,
+                    data: core.packed(group.items)
                 });
             }
         });
 
-        if (!valid) {
-            return false;
-        }
+        if (!valid) return false;
 
         changes.forEach(function (change) {
-            var group = change.group;
+            const group = change.group;
 
-            if (
-                group.vb.setData(
-                    change.data
-                ) === false
-            ) {
+            if (group.vb.setData(change.data) === false) {
                 valid = false;
                 return;
             }
 
-            group.data =
-                change.data;
+            group.data = change.data;
+            group.bounds = change.bounds;
 
-            group.bounds =
-                change.box;
-
-            group.mi.aabb =
-                aabb(change.box);
+            group.mi.aabb = core.box3(change.bounds);
 
             group.entity.render.customAabb =
-                aabb(change.box);
+                core.box3(change.bounds);
 
             if (group.catcher) {
                 group.catcher.mi.aabb =
-                    aabb(change.box);
+                    core.box3(change.bounds);
 
                 group.catcher.entity.render.customAabb =
-                    aabb(change.box);
+                    core.box3(change.bounds);
             }
 
-            s._counts.bufferUpdates++;
+            script._counts.bufferUpdates++;
         });
 
         return valid;
-    }
+    },
 
-    // ============================================================
-    // STREAMING FISICO
-    // ============================================================
+    // ========================================================
+    // 14. RESTAURACION Y RECURSOS GPU
+    // ========================================================
 
-    function physics(s, dt) {
-        if (!s.physicsStreaming) {
-            return;
-        }
-
-        s._physicsClock += dt;
-
-        if (
-            s._physicsClock <
-            PHYSICS_INTERVAL
-        ) {
-            return;
-        }
-
-        s._physicsClock = 0;
-
-        var player = s.app.root
-            .findByTag('is-player')
-            .find(alive);
-
-        if (!player) {
-            return;
-        }
-
-        var p = player.getPosition();
-
-        var v =
-            player.rigidbody &&
-            player.rigidbody.linearVelocity;
-
-        var future = p.clone();
-
-        if (v) {
-            future.add(
-                v.clone().mulScalar(.6)
-            );
-        }
-
-        var cam = cameras(s)[0];
-
-        var distance = Math.max(
-            12,
-            (
-                cam ?
-                    cam.farClip :
-                    100
-            ) * .15
-        );
-
-        if (v) {
-            distance += v.length() * .6;
-        }
-
-        s.app.root
-            .findComponents('collision')
-            .forEach(function (c) {
-                if (
-                    !tag(
-                        c.entity,
-                        'agi-stream-physics'
-                    )
-                ) {
-                    return;
-                }
-
-                if (!s._physicsOriginal.has(c)) {
-                    s._physicsOriginal.set(
-                        c,
-                        c.enabled
-                    );
-                }
-
-                var q =
-                    c.entity.getPosition();
-
-                var enabled = !!(
-                    s._physicsOriginal.get(c) &&
-                    (
-                        q.distance(future) <
-                        distance ||
-                        q.distance(p) <
-                        distance * .65
-                    )
-                );
-
-                if (
-                    c.enabled !== enabled
-                ) {
-                    c.enabled = enabled;
-                }
-            });
-    }
-
-    // ============================================================
-    // INITIALIZE
-    // ============================================================
-
-    AdvancedGpuInstancer.prototype.initialize =
-        function () {
-            this._ids = new WeakMap();
-            this._id = 0;
-
-            this._groups = new Map();
-            this._parked = new Map();
-
-            this._nativeAtlases = [];
-
-            this._materials = new Map();
-            this._catchMaterials = new Map();
-
-            this._casterOriginal = new Map();
-            this._bakeOriginal = new Map();
-            this._physicsOriginal = new Map();
-
-            this._maskParams = null;
-            this._maskVersion = 0;
-            this._maskUploadedVersion = -1;
-
-            this._counts = {
-                groups: 0,
-                instances: 0,
-                baked: 0,
-                rebuilds: 0,
-
-                catcherActive: 0,
-                catcherTransitions: 0,
-
-                bufferUpdates: 0,
-                bakeChanges: 0,
-                bakedCasterSuppressed: 0,
-
-                nativeAtlasPages: 0,
-                nativeAtlasInstances: 0
-            };
-
-            this._scanClock = 0;
-            this._catchClock = 0;
-            this._physicsClock = 0;
-
-            this._signature = '';
-            this._paused = false;
-
-            this._startPending = false;
-            this._deferredBuild = false;
-
-            this._format = new pc.VertexFormat(
-                this.app.graphicsDevice,
-                SEM.map(function (n) {
-                    return {
-                        semantic: n,
-                        components: 4,
-                        type: pc.TYPE_FLOAT32
-                    };
-                })
-            );
-
-            var id = 21000;
-
-            while (
-                this.app.scene.layers
-                    .getLayerById(id)
-            ) {
-                id++;
-            }
-
-            this._hiddenLayer = new pc.Layer({
-                name:
-                    'AGI4152_HIDDEN_SOURCES',
-                id: id,
-                enabled: false
-            });
-
-            this.app.scene.layers.push(
-                this._hiddenLayer
-            );
-
-            this.on(
-                'disable',
-                this.restore,
-                this
-            );
-
-            this.on(
-                'destroy',
-                this.restore,
-                this
-            );
-
-            this.on(
-                'enable',
-                function () {
-                    if (!this._groups.size) {
-                        this.rebuild();
-                    }
-                },
-                this
-            );
-
-            // Clasificar antes del primer bake.
-            preBakePolicy(this);
-
-            // Esperar al primer render para permitir
-            // que el Lightmapper asigne sus texturas.
-            // El trabajo GPU se ejecuta en update.
-
-            var self = this;
-
-            this.app.once(
-                'postrender',
-                function () {
-                    if (!self._paused) {
-                        self._startPending = true;
-                    }
-                }
-            );
-        };
-
-    // ============================================================
-    // UPDATE
-    // ============================================================
-
-    AdvancedGpuInstancer.prototype.update =
-        function (dt) {
-            if (this._paused) {
+    restoreParked(script) {
+        script._parked.forEach(function (original, component) {
+            if (!component || !component.entity ||
+                component.entity._destroyed) {
                 return;
             }
 
-            // Operaciones de copia de texturas
-            // fuera del render pass.
+            component.layers = original.layers.slice();
 
-            if (
-                this._startPending ||
-                this._deferredBuild
-            ) {
-                this._startPending = false;
-                this._deferredBuild = false;
+            if (component.meshInstances &&
+                component.meshInstances[0]) {
+                component.meshInstances[0].visible =
+                    original.visible;
+            }
+        });
 
-                build(this);
+        script._parked.clear();
+    },
+
+    destroyGroups(script) {
+        const core = AdvancedGpuInstancer._core;
+
+        core.restoreParked(script);
+
+        script._groups.forEach(function (group) {
+            if (group.catcher) {
+                group.catcher.entity.destroy();
             }
 
-            physics(this, dt);
+            if (group.entity) {
+                try {
+                    group.mi.setInstancing(null);
+                } catch (_) { }
 
-            this._catchClock += dt;
-
-            if (
-                this._catchClock >=
-                CATCHER_INTERVAL
-            ) {
-                this._catchClock = 0;
-                updateCatchers(this);
+                group.entity.destroy();
             }
 
-            this._scanClock += dt;
+            if (group.vb) {
+                try {
+                    group.vb.destroy();
+                } catch (_) { }
+            }
+        });
 
-            if (
-                this._scanClock >=
-                Math.max(.2, this.scanInterval)
-            ) {
-                this._scanClock = 0;
+        script._groups.clear();
 
-                preBakePolicy(this);
-                suppressBakedRealtime(this);
+        [
+            script._materials,
+            script._catchMaterials
+        ].forEach(function (cache) {
+            cache.forEach(function (material) {
+                try {
+                    material.destroy();
+                } catch (_) { }
+            });
 
-                if (
-                    signature(this) !==
-                    this._signature
-                ) {
-                    build(this);
+            cache.clear();
+        });
 
-                } else if (
-                    !refreshTransforms(this)
-                ) {
-                    build(this);
+        script._nativeAtlases.forEach(function (atlas) {
+            try {
+                atlas.color.destroy();
+            } catch (_) { }
+
+            if (atlas.dir) {
+                try {
+                    atlas.dir.destroy();
+                } catch (_) { }
+            }
+        });
+
+        script._nativeAtlases.length = 0;
+
+        script._counts.nativeAtlasPages = 0;
+        script._counts.nativeAtlasInstances = 0;
+    },
+
+    // ========================================================
+    // 15. CONSTRUCCION GPU
+    // ========================================================
+
+    build(script) {
+        const core = AdvancedGpuInstancer._core;
+
+        if (script.app.graphicsDevice.insideRenderPass) {
+            script._deferredBuild = true;
+            return;
+        }
+
+        core.destroyGroups(script);
+        core.snapshot(script);
+
+        core.preBakePolicy(script);
+        core.suppressBakedRealtime(script);
+
+        const items = core.prepare(
+            script,
+            core.sources(script)
+        );
+
+        core.consolidateNative(script, items);
+
+        const groups = core.groupsOf(script, items, true);
+
+        let count = 0;
+
+        groups.forEach(function (itemsInGroup) {
+            for (let i = 0;
+                i < itemsInGroup.length;
+                i += core.MAX_GROUP) {
+                const part = itemsInGroup.slice(
+                    i,
+                    i + core.MAX_GROUP
+                );
+
+                if (part.length < 2) continue;
+
+                let bounds = null;
+
+                part.forEach(function (item) {
+                    bounds = core.merge(bounds, item.bounds);
+                });
+
+                if (core.makeGroup(script, {
+                    items: part,
+                    bounds: bounds,
+                    cell: part[0].cell,
+                    common: part[0].common
+                })) {
+                    count += part.length;
                 }
             }
-        };
+        });
 
-    // ============================================================
-    // RESTORE
-    // ============================================================
+        core.releaseUnusedAtlases(script);
 
-    AdvancedGpuInstancer.prototype.restore =
-        function () {
-            this._paused = true;
+        script._counts.groups = script._groups.size;
+        script._counts.instances = count;
+        script._counts.baked = 0;
 
-            destroyGroups(this);
-
-            restoreRealtime(this);
-            restoreBake(this);
-
-            this._physicsOriginal.forEach(
-                function (was, c) {
-                    if (
-                        c &&
-                        c.entity &&
-                        !c.entity._destroyed
-                    ) {
-                        c.enabled = was;
-                    }
-                }
-            );
-
-            this._physicsOriginal.clear();
-
-            if (
-                this._hiddenLayer &&
-                this.app.scene.layers.getLayerById(
-                    this._hiddenLayer.id
-                ) === this._hiddenLayer
-            ) {
-                this.app.scene.layers.remove(
-                    this._hiddenLayer
-                );
+        script._groups.forEach(function (group) {
+            if (group.items[0].c.lightmapped &&
+                group.items[0].lm.tex) {
+                script._counts.baked += group.items.length;
             }
+        });
 
-            this._counts.groups = 0;
-            this._counts.instances = 0;
-            this._counts.baked = 0;
-            this._counts.catcherActive = 0;
-        };
+        script._counts.rebuilds++;
 
-    // ============================================================
-    // REBUILD
-    // ============================================================
+        core.updateCatchers(script);
 
-    AdvancedGpuInstancer.prototype.rebuild =
-        function () {
-            this._paused = false;
+        script._signature = core.signature(script);
 
-            if (
-                !this.app.scene.layers
-                    .getLayerById(
-                        this._hiddenLayer.id
-                    )
-            ) {
-                this.app.scene.layers.push(
-                    this._hiddenLayer
-                );
-            }
-
-            build(this);
-        };
-
-    // ============================================================
-    // CONTROL DEL HORNEADO
-    // ============================================================
-
-    AdvancedGpuInstancer.prototype.setBakeMode =
-        function (on) {
-            if (on) {
-                this._paused = true;
-
-                destroyGroups(this);
-
-                restoreRealtime(this);
-                preBakePolicy(this);
-
-            } else {
-                this.rebuild();
-            }
-
-            if (this.debug) {
-                console.log(
-                    TAG,
-                    'Fuentes para bake:',
-                    !!on
-                );
-            }
-        };
-
-    // ============================================================
-    // CONTROL DE LA MASCARA
-    // ============================================================
-
-    AdvancedGpuInstancer.prototype.setBakedShadowMask =
-        function (on, ratio) {
-            this.bakedShadowMask = !!on;
-
-            if (
-                typeof ratio === 'number' &&
-                Number.isFinite(ratio)
-            ) {
-                this.bakedShadowRatio =
-                    Math.max(
-                        .05,
-                        Math.min(.95, ratio)
-                    );
-            }
-
-            syncMaskParams(this);
-
+        if (script.debug) {
             console.log(
-                TAG,
-                'Mascara baked:',
-                this.bakedShadowMask,
-                'Umbral:',
-                this.bakedShadowRatio
+                core.TAG,
+                'Grupos:', script._counts.groups,
+                'Instancias:', count,
+                'Baked:', script._counts.baked,
+                'Catchers:', script._counts.catcherActive,
+                'Atlas nativo:', script._counts.nativeAtlasPages,
+                'Instancias atlas:',
+                script._counts.nativeAtlasInstances,
+                'Cambios Bake:', script._counts.bakeChanges
             );
-        };
+        }
+    },
 
-    AdvancedGpuInstancer.prototype.setCatcherBlend =
-        function () {
-            this._catchMaterials.forEach(
-                function (m) {
-                    m.blendType =
-                        pc.BLEND_MULTIPLICATIVE;
+    // ========================================================
+    // 16. STREAMING FISICO
+    // ========================================================
 
-                    m.update();
-                }
+    physics(script, dt) {
+        const core = AdvancedGpuInstancer._core;
+
+        if (!script.physicsStreaming) return;
+
+        script._physicsClock += dt;
+
+        if (script._physicsClock < core.PHYSICS_INTERVAL) {
+            return;
+        }
+
+        script._physicsClock = 0;
+
+        const player = script.app.root
+            .findByTag('is-player')
+            .find(core.alive);
+
+        if (!player) return;
+
+        const position = player.getPosition();
+
+        const velocity = player.rigidbody &&
+            player.rigidbody.linearVelocity;
+
+        const future = position.clone();
+
+        if (velocity) {
+            future.add(
+                velocity.clone().mulScalar(0.6)
             );
-
-            console.warn(
-                TAG,
-                'Catcher mantiene composicion MULTIPLICATIVE.'
-            );
-        };
-
-    // ============================================================
-    // AUDITORIA DE ROLES
-    // ============================================================
-
-    AdvancedGpuInstancer.prototype.auditBakeRoles =
-        function () {
-            var s = this;
-            var rows = [];
-
-            this.app.root
-                .findComponents('render')
-                .forEach(function (c) {
-                    if (
-                        c.entity.__agiProxy ||
-                        c.entity.__agiCatcher
-                    ) {
-                        return;
-                    }
-
-                    var before =
-                        s._bakeOriginal.get(c);
-
-                    rows.push({
-                        nombre: c.entity.name,
-                        guid: c.entity.guid,
-                        rol: bakeRole(c),
-
-                        lightmapped:
-                            !!c.lightmapped,
-
-                        tieneLightmap:
-                            (c.meshInstances || [])
-                                .some(function (mi) {
-                                    return !!lm(mi).tex;
-                                }),
-
-                        bakeAntes: before ?
-                            before.castShadowsLightmap :
-                            null,
-
-                        bakeActual:
-                            !!c.castShadowsLightmap,
-
-                        castRealtime:
-                            !!c.castShadows,
-
-                        realtimeSuprimido:
-                            s._casterOriginal.has(c)
-                    });
-                });
-
-            console.table(rows);
-
-            return rows;
-        };
-
-    // ============================================================
-    // AUDITORIA DE GRUPOS
-    // ============================================================
-
-    AdvancedGpuInstancer.prototype.auditGroups =
-        function () {
-            var rows = [];
-
-            this._groups.forEach(function (g) {
-                rows.push({
-                    nombre:
-                        g.items[0].c.entity.name,
-
-                    instancias:
-                        g.items.length,
-
-                    baked:
-                        !!g.items[0].c.lightmapped,
-
-                    castRealtime:
-                        g.mi.castShadow,
-
-                    receiveShadow:
-                        g.mi.receiveShadow,
-
-                    mask:
-                        g.mi.mask,
-
-                    shaderDefs:
-                        g.mi._shaderDefs,
-
-                    catcher:
-                        !!g.catcher,
-
-                    catcherActivo:
-                        !!(
-                            g.catcher &&
-                            g.catcher.entity.enabled
-                        )
-                });
-            });
-
-            console.table(rows);
-
-            return rows;
-        };
-
-    // ============================================================
-    // AUDITORIA DE DISTANCIA
-    // ============================================================
-
-    AdvancedGpuInstancer.prototype.auditDistance =
-        function () {
-            var rows = [];
-
-            this._groups.forEach(function (g) {
-                if (!g.catcher) {
-                    return;
-                }
-
-                var c = g.catcher;
-
-                rows.push({
-                    nombre: g.entity.name,
-                    instancias: g.items.length,
-
-                    activo:
-                        c.entity.enabled,
-
-                    razon:
-                        c.reason,
-
-                    zMin:
-                        c.z ? num(c.z[0]) : null,
-
-                    zMax:
-                        c.z ? num(c.z[1]) : null,
-
-                    shadowDistance:
-                        c.distance
-                });
-            });
-
-            console.table(rows);
-
-            return rows;
-        };
-
-    // ============================================================
-    // AUDITORIA DE SOMBRAS
-    // ============================================================
-
-    AdvancedGpuInstancer.prototype.auditShadows =
-        function () {
-            var rows = [];
-
-            this.app.root
-                .findComponents('render')
-                .forEach(function (c) {
-                    if (c.entity.__agiCatcher) {
-                        return;
-                    }
-
-                    (c.meshInstances || [])
-                        .forEach(function (mi) {
-                            rows.push({
-                                objeto:
-                                    c.entity.name,
-
-                                proxy:
-                                    !!c.entity.__agiProxy,
-
-                                lightmapped:
-                                    !!c.lightmapped,
-
-                                castRealtime:
-                                    mi.castShadow,
-
-                                receiveShadow:
-                                    mi.receiveShadow,
-
-                                mask:
-                                    mi.mask,
-
-                                layers:
-                                    c.layers.join(','),
-
-                                shaderDefs:
-                                    mi._shaderDefs
-                            });
-                        });
-                });
-
-            console.table(rows);
-
-            return rows;
-        };
-
-    // ============================================================
-    // AUDITORIA DE CASTERS
-    // ============================================================
-
-    AdvancedGpuInstancer.prototype.auditShadowSources =
-        function () {
-            var rows = [];
-
-            var set = new Set(
-                realtimeCasters(this)
-                    .map(function (x) {
-                        return x.mi;
-                    })
-            );
-
-            this.app.root
-                .findComponents('render')
-                .forEach(function (c) {
-                    if (
-                        c.entity.__agiProxy ||
-                        c.entity.__agiCatcher
-                    ) {
-                        return;
-                    }
-
-                    (c.meshInstances || [])
-                        .forEach(function (mi) {
-                            rows.push({
-                                objeto:
-                                    c.entity.name,
-
-                                receptorBaked:
-                                    !!(
-                                        c.lightmapped &&
-                                        lm(mi).tex
-                                    ),
-
-                                castShadowsLightmap:
-                                    !!c.castShadowsLightmap,
-
-                                castRealtime:
-                                    !!(
-                                        c.castShadows &&
-                                        mi.castShadow
-                                    ),
-
-                                catcherCaster:
-                                    set.has(mi),
-
-                                mask:
-                                    mi.mask,
-
-                                estatico:
-                                    !!c.isStatic
-                            });
-                        });
-                });
-
-            console.table(rows);
-
-            return rows;
-        };
-
-    // ============================================================
-    // AUDITORIA SPOT
-    // ============================================================
-
-    AdvancedGpuInstancer.prototype.auditSpotCasters =
-        function () {
-            var rows = [];
-
-            spots(this).forEach(function (l) {
-                var casters = [];
-
+        }
+
+        const camera = core.cameras(script)[0];
+
+        let distance = Math.max(
+            12,
+            (camera ? camera.farClip : 100) * 0.15
+        );
+
+        if (velocity) {
+            distance += velocity.length() * 0.6;
+        }
+
+        script._collisions.forEach(function (collision) {
+            if (!core.tagged(
+                collision.entity,
+                'agi-stream-physics'
+            )) {
+                return;
+            }
+
+            if (!script._physicsOriginal.has(collision)) {
+                script._physicsOriginal.set(
+                    collision,
+                    collision.enabled
+                );
+            }
+
+            const entityPosition =
+                collision.entity.getPosition();
+
+            const enabled = !!(
+                script._physicsOriginal.get(collision) &&
                 (
-                    (
-                        l.light &&
-                        l.light._renderData
-                    ) || []
-                ).forEach(function (rd) {
-                    (rd.visibleCasters || [])
-                        .forEach(function (mi) {
-                            casters.push(
-                                mi.node &&
-                                mi.node.name
-                            );
-                        });
-                });
-
-                rows.push({
-                    luz: l.entity.name,
-
-                    castShadows:
-                        l.castShadows,
-
-                    intensidad:
-                        l.intensity,
-
-                    shadowIntensity:
-                        l.shadowIntensity,
-
-                    range:
-                        l.range,
-
-                    cono:
-                        l.outerConeAngle,
-
-                    shadowBias:
-                        l.shadowBias,
-
-                    normalOffsetBias:
-                        l.normalOffsetBias,
-
-                    affectLightmapped:
-                        l.affectLightmapped,
-
-                    mask:
-                        l.mask,
-
-                    shadowMap:
-                        !!(
-                            l.light &&
-                            l.light.shadowMap
-                        ),
-
-                    casters:
-                        casters.join(',')
-                });
-            });
-
-            console.table(rows);
-
-            return rows;
-        };
-
-    // ============================================================
-    // AUDITORIA SPOT RECEIVERS
-    // ============================================================
-
-    AdvancedGpuInstancer.prototype.auditSpotReceivers =
-        function () {
-            var rows = [];
-            var s = this;
-
-            spots(s).forEach(function (l) {
-                s._groups.forEach(function (g) {
-                    var center =
-                        aabb(g.bounds).center;
-
-                    var p =
-                        l.entity.getPosition();
-
-                    var v =
-                        center.clone().sub(p);
-
-                    var d = v.length();
-
-                    var m =
-                        l.entity
-                            .getWorldTransform().data;
-
-                    var fw = new pc.Vec3(
-                        -m[4],
-                        -m[5],
-                        -m[6]
-                    );
-
-                    var angle = d > 0 ?
-                        Math.acos(
-                            Math.max(
-                                -1,
-                                Math.min(
-                                    1,
-                                    fw.dot(v) / d
-                                )
-                            )
-                        ) * 180 / Math.PI :
-                        0;
-
-                    rows.push({
-                        luz: l.entity.name,
-
-                        receptor:
-                            g.items[0].c.entity.name,
-
-                        instancias:
-                            g.items.length,
-
-                        baked:
-                            !!g.items[0].c.lightmapped,
-
-                        receiveShadow:
-                            g.mi.receiveShadow,
-
-                        mascaraCompatible:
-                            !!(l.mask & g.mi.mask),
-
-                        distancia:
-                            num(d),
-
-                        anguloCentro:
-                            num(angle),
-
-                        cono:
-                            l.outerConeAngle
-                    });
-                });
-            });
-
-            console.table(rows);
-
-            return rows;
-        };
-
-    AdvancedGpuInstancer.prototype.auditSpotDistances =
-        AdvancedGpuInstancer.prototype.auditSpotReceivers;
-
-    // ============================================================
-    // AUDITORIA PERFORMANCE
-    // ============================================================
-
-    AdvancedGpuInstancer.prototype.auditPerformance =
-        function () {
-            var r = {
-                version: 'AGI4.15.2',
-
-                drawCalls:
-                    this.app.stats.drawCallCount,
-
-                groups:
-                    this._counts.groups,
-
-                instances:
-                    this._counts.instances,
-
-                baked:
-                    this._counts.baked,
-
-                catcherActive:
-                    this._counts.catcherActive,
-
-                bakeChanges:
-                    this._counts.bakeChanges,
-
-                bakedCasterSuppressed:
-                    this._counts.bakedCasterSuppressed,
-
-                nativeAtlasPages:
-                    this._counts.nativeAtlasPages,
-
-                nativeAtlasInstances:
-                    this._counts.nativeAtlasInstances,
-
-                rebuilds:
-                    this._counts.rebuilds,
-
-                bufferUpdates:
-                    this._counts.bufferUpdates,
-
-                bakedShadowMask:
-                    !!this.bakedShadowMask,
-
-                bakedShadowRatio:
-                    num(this.bakedShadowRatio)
-            };
-
-            console.table([r]);
-
-            return r;
-        };
-
-    AdvancedGpuInstancer.prototype.capturePerformance =
-        function (label) {
-            var r = this.auditPerformance();
-
-            r.label = label || 'captura';
-
-            return r;
-        };
-
-    AdvancedGpuInstancer.prototype.auditPasses =
-        function () {
-            return {
-                drawCalls:
-                    this.app.stats.drawCallCount,
-
-                catcherActive:
-                    this._counts.catcherActive,
-
-                spot:
-                    this.auditSpotCasters()
-            };
-        };
-
-    // ============================================================
-    // AUDITORIA GENERAL
-    // ============================================================
-
-    AdvancedGpuInstancer.prototype.audit =
-        function () {
-            return {
-                performance:
-                    this.auditPerformance(),
-
-                groups:
-                    this.auditGroups(),
-
-                bakeRoles:
-                    this.auditBakeRoles(),
-
-                distance:
-                    this.auditDistance(),
-
-                shadows:
-                    this.auditShadows(),
-
-                spot:
-                    this.auditSpotCasters()
-            };
-        };
-
-    // ============================================================
-    // BENCHMARK
-    // ============================================================
-
-    AdvancedGpuInstancer.prototype.benchmarkPasses =
-        async function (frames) {
-            frames = Math.max(
-                15,
-                Math.min(
-                    240,
-                    Math.floor(frames || 60)
+                    entityPosition.distance(future) < distance ||
+                    entityPosition.distance(position) < distance * 0.65
                 )
             );
 
-            var s = this;
+            if (collision.enabled !== enabled) {
+                collision.enabled = enabled;
+            }
+        });
+    }
 
-            var sp = spots(s);
-            var dl = directionals(s);
-            var cs = [];
+});
 
-            s._groups.forEach(function (g) {
-                if (g.catcher) {
-                    cs.push(
-                        g.catcher.entity
-                    );
-                }
+// ============================================================
+// 17. PROTOTYPE: CICLO DE VIDA
+// ============================================================
+
+AdvancedGpuInstancer.prototype.initialize = function () {
+    const core = AdvancedGpuInstancer._core;
+
+    this._ids = new WeakMap();
+    this._lastId = 0;
+
+    this._groups = new Map();
+    this._parked = new Map();
+
+    this._materials = new Map();
+    this._catchMaterials = new Map();
+    this._nativeAtlases = [];
+
+    this._casterOriginal = new Map();
+    this._bakeOriginal = new Map();
+    this._physicsOriginal = new Map();
+
+    this._maskParams = null;
+    this._maskVersion = 0;
+    this._maskUploadedVersion = -1;
+
+    this._counts = {
+        groups: 0,
+        instances: 0,
+        baked: 0,
+        rebuilds: 0,
+        catcherActive: 0,
+        catcherTransitions: 0,
+        bufferUpdates: 0,
+        bakeChanges: 0,
+        bakedCasterSuppressed: 0,
+        nativeAtlasPages: 0,
+        nativeAtlasInstances: 0
+    };
+
+    this._scanClock = 0;
+    this._catchClock = 0;
+    this._physicsClock = 0;
+
+    this._signature = '';
+    this._paused = false;
+
+    this._startPending = false;
+    this._deferredBuild = false;
+
+    this._format = new pc.VertexFormat(
+        this.app.graphicsDevice,
+        core.SEM.map(function (semantic) {
+            return {
+                semantic: semantic,
+                components: 4,
+                type: pc.TYPE_FLOAT32
+            };
+        })
+    );
+
+    let layerId = 21000;
+
+    while (this.app.scene.layers.getLayerById(layerId)) {
+        layerId++;
+    }
+
+    this._hiddenLayer = new pc.Layer({
+        name: 'AGI4155_HIDDEN_SOURCES',
+        id: layerId,
+        enabled: false
+    });
+
+    this.app.scene.layers.push(this._hiddenLayer);
+
+    this.on('disable', this.restore, this);
+    this.on('destroy', this.restore, this);
+
+    this.on('enable', function () {
+        if (!this._groups.size) {
+            this.rebuild();
+        }
+    }, this);
+
+    core.snapshot(this);
+    core.preBakePolicy(this);
+
+    const script = this;
+
+    this.app.once('postrender', function () {
+        if (!script._paused) {
+            script._startPending = true;
+        }
+    });
+};
+
+AdvancedGpuInstancer.prototype.update = function (dt) {
+    const core = AdvancedGpuInstancer._core;
+
+    if (this._paused) return;
+
+    if (this._startPending || this._deferredBuild) {
+        this._startPending = false;
+        this._deferredBuild = false;
+
+        core.build(this);
+    }
+
+    core.physics(this, dt);
+
+    this._catchClock += dt;
+
+    if (this._catchClock >= core.CATCHER_INTERVAL) {
+        this._catchClock = 0;
+        core.updateCatchers(this);
+    }
+
+    this._scanClock += dt;
+
+    if (this._scanClock >= Math.max(0.2, this.scanInterval)) {
+        this._scanClock = 0;
+
+        core.snapshot(this);
+        core.preBakePolicy(this);
+        core.suppressBakedRealtime(this);
+
+        if (core.signature(this) !== this._signature) {
+            core.build(this);
+        } else if (!core.refreshTransforms(this)) {
+            core.build(this);
+        }
+    }
+};
+
+AdvancedGpuInstancer.prototype.restore = function () {
+    const core = AdvancedGpuInstancer._core;
+
+    this._paused = true;
+
+    core.destroyGroups(this);
+    core.restoreRealtime(this);
+    core.restoreBake(this);
+
+    this._physicsOriginal.forEach(function (original, collision) {
+        if (collision && collision.entity &&
+            !collision.entity._destroyed) {
+            collision.enabled = original;
+        }
+    });
+
+    this._physicsOriginal.clear();
+
+    if (this._hiddenLayer &&
+        this.app.scene.layers.getLayerById(
+            this._hiddenLayer.id
+        ) === this._hiddenLayer) {
+        this.app.scene.layers.remove(
+            this._hiddenLayer
+        );
+    }
+
+    this._counts.groups = 0;
+    this._counts.instances = 0;
+    this._counts.baked = 0;
+    this._counts.catcherActive = 0;
+};
+
+AdvancedGpuInstancer.prototype.rebuild = function () {
+    const core = AdvancedGpuInstancer._core;
+
+    this._paused = false;
+
+    if (!this.app.scene.layers.getLayerById(
+        this._hiddenLayer.id
+    )) {
+        this.app.scene.layers.push(
+            this._hiddenLayer
+        );
+    }
+
+    core.build(this);
+};
+
+// ============================================================
+// 18. PROTOTYPE: CONTROLES
+// ============================================================
+
+AdvancedGpuInstancer.prototype.setBakeMode = function (enabled) {
+    const core = AdvancedGpuInstancer._core;
+
+    if (enabled) {
+        this._paused = true;
+
+        core.destroyGroups(this);
+        core.restoreRealtime(this);
+        core.snapshot(this);
+        core.preBakePolicy(this);
+    } else {
+        this.rebuild();
+    }
+
+    if (this.debug) {
+        console.log(core.TAG, 'Fuentes para bake:', !!enabled);
+    }
+};
+
+AdvancedGpuInstancer.prototype.setBakedShadowMask = function (
+    enabled,
+    ratio
+) {
+    const core = AdvancedGpuInstancer._core;
+
+    this.bakedShadowMask = !!enabled;
+
+    if (typeof ratio === 'number' && Number.isFinite(ratio)) {
+        this.bakedShadowRatio = Math.max(
+            0.05,
+            Math.min(0.95, ratio)
+        );
+    }
+
+    core.syncMaskParams(this);
+
+    console.log(
+        core.TAG,
+        'Mascara baked:', this.bakedShadowMask,
+        'Umbral:', this.bakedShadowRatio
+    );
+};
+
+AdvancedGpuInstancer.prototype.setCatcherBlend = function () {
+    const core = AdvancedGpuInstancer._core;
+
+    this._catchMaterials.forEach(function (material) {
+        material.blendType = pc.BLEND_MULTIPLICATIVE;
+        material.update();
+    });
+
+    console.warn(
+        core.TAG,
+        'Catcher mantiene composicion MULTIPLICATIVE.'
+    );
+};
+
+// ============================================================
+// 19. PROTOTYPE: AUDITORIAS
+// ============================================================
+
+AdvancedGpuInstancer.prototype.auditBakeRoles = function () {
+    const core = AdvancedGpuInstancer._core;
+    const script = this;
+    const rows = [];
+
+    this._renders.forEach(function (component) {
+        if (!component || !component.entity ||
+            component.entity.__agiProxy ||
+            component.entity.__agiCatcher) {
+            return;
+        }
+
+        const original = script._bakeOriginal.get(component);
+
+        rows.push({
+            nombre: component.entity.name,
+            guid: component.entity.guid,
+            rol: core.bakeRole(component),
+            lightmapped: !!component.lightmapped,
+            tieneLightmap: (component.meshInstances || [])
+                .some(function (mi) {
+                    return !!core.lightmap(mi).tex;
+                }),
+            bakeAntes: original
+                ? original.castShadowsLightmap
+                : null,
+            bakeActual: !!component.castShadowsLightmap,
+            castRealtime: !!component.castShadows,
+            realtimeSuprimido:
+                script._casterOriginal.has(component)
+        });
+    });
+
+    console.table(rows);
+
+    return rows;
+};
+
+AdvancedGpuInstancer.prototype.auditGroups = function () {
+    const rows = [];
+
+    this._groups.forEach(function (group) {
+        rows.push({
+            nombre: group.items[0].c.entity.name,
+            instancias: group.items.length,
+            baked: !!(
+                group.items[0].c.lightmapped &&
+                group.items[0].lm.tex
+            ),
+            castRealtime: group.mi.castShadow,
+            receiveShadow: group.mi.receiveShadow,
+            mask: group.mi.mask,
+            shaderDefs: group.mi._shaderDefs,
+            catcher: !!group.catcher,
+            catcherActivo: !!(
+                group.catcher &&
+                group.catcher.entity.enabled
+            )
+        });
+    });
+
+    console.table(rows);
+
+    return rows;
+};
+
+AdvancedGpuInstancer.prototype.auditDistance = function () {
+    const core = AdvancedGpuInstancer._core;
+    const rows = [];
+
+    this._groups.forEach(function (group) {
+        if (!group.catcher) return;
+
+        const catcher = group.catcher;
+
+        rows.push({
+            nombre: group.entity.name,
+            instancias: group.items.length,
+            activo: catcher.entity.enabled,
+            razon: catcher.reason,
+            zMin: catcher.z
+                ? core.n3(catcher.z[0])
+                : null,
+            zMax: catcher.z
+                ? core.n3(catcher.z[1])
+                : null,
+            shadowDistance: catcher.distance
+        });
+    });
+
+    console.table(rows);
+
+    return rows;
+};
+
+AdvancedGpuInstancer.prototype.auditShadows = function () {
+    const rows = [];
+
+    this.app.root.findComponents('render')
+        .forEach(function (component) {
+            if (component.entity.__agiCatcher) return;
+
+            (component.meshInstances || []).forEach(function (mi) {
+                rows.push({
+                    objeto: component.entity.name,
+                    proxy: !!component.entity.__agiProxy,
+                    lightmapped: !!component.lightmapped,
+                    castRealtime: mi.castShadow,
+                    receiveShadow: mi.receiveShadow,
+                    mask: mi.mask,
+                    layers: component.layers.join(','),
+                    shaderDefs: mi._shaderDefs
+                });
             });
+        });
 
-            var oldSp = sp.map(function (l) {
-                return [l, l.castShadows];
+    console.table(rows);
+
+    return rows;
+};
+
+AdvancedGpuInstancer.prototype.auditShadowSources = function () {
+    const core = AdvancedGpuInstancer._core;
+    const rows = [];
+
+    const casters = new Set(
+        core.realtimeCasters(this).map(function (item) {
+            return item.mi;
+        })
+    );
+
+    this._renders.forEach(function (component) {
+        if (!component || !component.entity ||
+            component.entity.__agiProxy ||
+            component.entity.__agiCatcher) {
+            return;
+        }
+
+        (component.meshInstances || []).forEach(function (mi) {
+            rows.push({
+                objeto: component.entity.name,
+                receptorBaked: !!(
+                    component.lightmapped &&
+                    core.lightmap(mi).tex
+                ),
+                castShadowsLightmap:
+                    !!component.castShadowsLightmap,
+                castRealtime: !!(
+                    component.castShadows &&
+                    mi.castShadow
+                ),
+                catcherCaster: casters.has(mi),
+                mask: mi.mask,
+                estatico: !!component.isStatic
             });
+        });
+    });
 
-            var oldDl = dl.map(function (l) {
-                return [l, l.castShadows];
-            });
+    console.table(rows);
 
-            var oldCs = cs.map(function (e) {
-                return [e, e.enabled];
-            });
+    return rows;
+};
 
-            var oldPause = s._paused;
-            var rows = [];
+AdvancedGpuInstancer.prototype.auditSpotCasters = function () {
+    const core = AdvancedGpuInstancer._core;
+    const rows = [];
 
-            s._paused = true;
+    core.spots(this).forEach(function (light) {
+        const casters = [];
 
-            async function sample(label) {
-                var data = [];
-
-                for (
-                    var i = 0;
-                    i < frames + 12;
-                    i++
-                ) {
-                    await new Promise(
-                        function (resolve) {
-                            requestAnimationFrame(
-                                resolve
-                            );
-                        }
-                    );
-
-                    if (i >= 12) {
-                        data.push(
-                            s.app.stats.drawCallCount ||
-                            0
+        ((light.light && light.light._renderData) || [])
+            .forEach(function (renderData) {
+                (renderData.visibleCasters || [])
+                    .forEach(function (mi) {
+                        casters.push(
+                            mi.node && mi.node.name
                         );
-                    }
-                }
+                    });
+            });
 
-                data.sort(function (a, b) {
-                    return a - b;
-                });
+        rows.push({
+            luz: light.entity.name,
+            castShadows: light.castShadows,
+            intensidad: light.intensity,
+            shadowIntensity: light.shadowIntensity,
+            range: light.range,
+            cono: light.outerConeAngle,
+            shadowBias: light.shadowBias,
+            normalOffsetBias: light.normalOffsetBias,
+            affectLightmapped: light.affectLightmapped,
+            mask: light.mask,
+            shadowMap: !!(
+                light.light &&
+                light.light.shadowMap
+            ),
+            casters: casters.join(',')
+        });
+    });
 
-                return {
-                    estado: label,
+    console.table(rows);
 
-                    drawsP50:
-                        data[
-                        Math.floor(
-                            data.length / 2
+    return rows;
+};
+
+AdvancedGpuInstancer.prototype.auditSpotReceivers = function () {
+    const core = AdvancedGpuInstancer._core;
+    const rows = [];
+    const script = this;
+
+    core.spots(script).forEach(function (light) {
+        script._groups.forEach(function (group) {
+            const center = core.box3(group.bounds).center;
+            const position = light.entity.getPosition();
+
+            const direction = center.clone().sub(position);
+            const distance = direction.length();
+
+            const matrix = light.entity.getWorldTransform().data;
+
+            const forward = new pc.Vec3(
+                -matrix[4],
+                -matrix[5],
+                -matrix[6]
+            );
+
+            const angle = distance > 0
+                ? Math.acos(
+                    Math.max(
+                        -1,
+                        Math.min(
+                            1,
+                            forward.dot(direction) / distance
                         )
-                        ],
+                    )
+                ) * 180 / Math.PI
+                : 0;
 
-                    drawsPromedio:
-                        num(
-                            data.reduce(
-                                function (a, b) {
-                                    return a + b;
-                                },
-                                0
-                            ) / data.length
-                        )
-                };
+            rows.push({
+                luz: light.entity.name,
+                receptor: group.items[0].c.entity.name,
+                instancias: group.items.length,
+                baked: !!(
+                    group.items[0].c.lightmapped &&
+                    group.items[0].lm.tex
+                ),
+                receiveShadow: group.mi.receiveShadow,
+                mascaraCompatible:
+                    !!(light.mask & group.mi.mask),
+                distancia: core.n3(distance),
+                anguloCentro: core.n3(angle),
+                cono: light.outerConeAngle
+            });
+        });
+    });
+
+    console.table(rows);
+
+    return rows;
+};
+
+AdvancedGpuInstancer.prototype.auditSpotDistances =
+    AdvancedGpuInstancer.prototype.auditSpotReceivers;
+
+AdvancedGpuInstancer.prototype.auditPerformance = function () {
+    const core = AdvancedGpuInstancer._core;
+    const counts = this._counts;
+
+    const row = {
+        version: 'AGI4.15.5',
+        drawCalls: this.app.stats.drawCallCount,
+        groups: counts.groups,
+        instances: counts.instances,
+        baked: counts.baked,
+        catcherActive: counts.catcherActive,
+        bakeChanges: counts.bakeChanges,
+        bakedCasterSuppressed: counts.bakedCasterSuppressed,
+        nativeAtlasPages: counts.nativeAtlasPages,
+        nativeAtlasInstances: counts.nativeAtlasInstances,
+        rebuilds: counts.rebuilds,
+        bufferUpdates: counts.bufferUpdates,
+        bakedShadowMask: !!this.bakedShadowMask,
+        bakedShadowRatio: core.n3(this.bakedShadowRatio)
+    };
+
+    console.table([row]);
+
+    return row;
+};
+
+AdvancedGpuInstancer.prototype.capturePerformance = function (label) {
+    const result = this.auditPerformance();
+
+    result.label = label || 'captura';
+
+    return result;
+};
+
+AdvancedGpuInstancer.prototype.auditPasses = function () {
+    return {
+        drawCalls: this.app.stats.drawCallCount,
+        catcherActive: this._counts.catcherActive,
+        spot: this.auditSpotCasters()
+    };
+};
+
+AdvancedGpuInstancer.prototype.audit = function () {
+    return {
+        performance: this.auditPerformance(),
+        groups: this.auditGroups(),
+        bakeRoles: this.auditBakeRoles(),
+        distance: this.auditDistance(),
+        shadows: this.auditShadows(),
+        spot: this.auditSpotCasters()
+    };
+};
+
+// ============================================================
+// 20. PROTOTYPE: BENCHMARK
+// ============================================================
+
+AdvancedGpuInstancer.prototype.benchmarkPasses = async function (frames) {
+    const core = AdvancedGpuInstancer._core;
+
+    frames = Math.max(
+        15,
+        Math.min(240, Math.floor(frames || 60))
+    );
+
+    const script = this;
+
+    const spots = core.spots(script);
+    const directionals = core.directionals(script);
+
+    const catchers = [];
+
+    script._groups.forEach(function (group) {
+        if (group.catcher) {
+            catchers.push(group.catcher.entity);
+        }
+    });
+
+    const oldSpots = spots.map(function (light) {
+        return [light, light.castShadows];
+    });
+
+    const oldDirectionals = directionals.map(function (light) {
+        return [light, light.castShadows];
+    });
+
+    const oldCatchers = catchers.map(function (entity) {
+        return [entity, entity.enabled];
+    });
+
+    const wasPaused = script._paused;
+    const rows = [];
+
+    script._paused = true;
+
+    async function sample(label) {
+        const data = [];
+
+        for (let i = 0; i < frames + 12; i++) {
+            await new Promise(function (resolve) {
+                requestAnimationFrame(resolve);
+            });
+
+            if (i >= 12) {
+                data.push(
+                    script.app.stats.drawCallCount || 0
+                );
             }
+        }
 
-            try {
-                rows.push(
-                    await sample(
-                        'Escena actual'
-                    )
-                );
+        data.sort(function (a, b) {
+            return a - b;
+        });
 
-                cs.forEach(function (e) {
-                    e.enabled = false;
-                });
-
-                rows.push(
-                    await sample(
-                        'Sin Catchers'
-                    )
-                );
-
-                oldCs.forEach(function (x) {
-                    x[0].enabled = x[1];
-                });
-
-                sp.forEach(function (l) {
-                    l.castShadows = false;
-                });
-
-                rows.push(
-                    await sample(
-                        'Sin sombras Spot'
-                    )
-                );
-
-                oldSp.forEach(function (x) {
-                    x[0].castShadows = x[1];
-                });
-
-                dl.forEach(function (l) {
-                    l.castShadows = false;
-                });
-
-                rows.push(
-                    await sample(
-                        'Sin sombras Directional'
-                    )
-                );
-
-            } finally {
-                oldSp.forEach(function (x) {
-                    x[0].castShadows = x[1];
-                });
-
-                oldDl.forEach(function (x) {
-                    x[0].castShadows = x[1];
-                });
-
-                oldCs.forEach(function (x) {
-                    x[0].enabled = x[1];
-                });
-
-                s._paused = oldPause;
-            }
-
-            console.table(rows);
-
-            return rows;
+        return {
+            estado: label,
+            drawsP50: data[Math.floor(data.length / 2)],
+            drawsPromedio: core.n3(
+                data.reduce(function (a, b) {
+                    return a + b;
+                }, 0) / data.length
+            )
         };
+    }
 
-})();
+    try {
+        rows.push(
+            await sample('Escena actual')
+        );
+
+        catchers.forEach(function (entity) {
+            entity.enabled = false;
+        });
+
+        rows.push(
+            await sample('Sin Catchers')
+        );
+
+        oldCatchers.forEach(function (item) {
+            item[0].enabled = item[1];
+        });
+
+        spots.forEach(function (light) {
+            light.castShadows = false;
+        });
+
+        rows.push(
+            await sample('Sin sombras Spot')
+        );
+
+        oldSpots.forEach(function (item) {
+            item[0].castShadows = item[1];
+        });
+
+        directionals.forEach(function (light) {
+            light.castShadows = false;
+        });
+
+        rows.push(
+            await sample('Sin sombras Directional')
+        );
+    } finally {
+        oldSpots.forEach(function (item) {
+            item[0].castShadows = item[1];
+        });
+
+        oldDirectionals.forEach(function (item) {
+            item[0].castShadows = item[1];
+        });
+
+        oldCatchers.forEach(function (item) {
+            item[0].enabled = item[1];
+        });
+
+        script._paused = wasPaused;
+    }
+
+    console.table(rows);
+
+    return rows;
+};
