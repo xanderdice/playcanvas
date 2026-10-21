@@ -1,19 +1,55 @@
-
 /*
- * AGI4.15.1 - Advanced GPU Instancer / Clean Code
- * PlayCanvas 2.23.x | WebGPU / WebGL2 | BakePT6.6.0
- * ID inalterado: advancedGpuInstancer
+ * ================================================================
+ * AGI4.15.2 - ADVANCED GPU INSTANCER
+ * INDEPENDENT INSTANCING
+ * ================================================================
  *
- * No modifica luces ni PT. Clasifica las fuentes ANTES del bake.
- * Reglas automaticas:
- *   lightmapped=true y estatico -> caster baked; realtime se suprime tras PT.
- *   no lightmapped + caster realtime -> exclusivamente realtime.
- *   no lightmapped + sin caster realtime + castShadowsLightmap -> baked-only.
- * Overrides opcionales: agi-bake-caster, agi-realtime-only,
- *                         agi-keep-realtime-shadows, agi-no-instance.
- * Necesita reiniciar Launch para corregir sombras YA horneadas.
+ * PlayCanvas 2.23.x
+ * WebGPU / WebGL2
+ *
+ * Script ID: advancedGpuInstancer
+ *
+ * OBJETIVO
+ *
+ * GPU Instancing independiente de cualquier horneador.
+ *
+ * MODOS AUTOMATICOS
+ *
+ * 1. Lightmaps compartidos con UV1 atlas:
+ *    Reutiliza las texturas y sus rectangulos.
+ *
+ * 2. Lightmaps nativos individuales:
+ *    Intenta consolidarlos en atlas GPU compatibles.
+ *
+ * 3. Sin lightmaps:
+ *    Instancing con iluminacion realtime.
+ *
+ * CONSERVA
+ *
+ * - Politica pre-bake AGI4.15
+ * - Separacion baked / realtime
+ * - Sombras dinamicas
+ * - Shadow Catcher
+ * - Baked Shadow Mask
+ * - Streaming fisico
+ * - Auditorias
+ * - Benchmark A/B
+ *
+ * No modifica propiedades de las luces.
+ * No modifica BakePathTracing.
+ * No requiere atributos PT para funcionar.
+ *
+ * Los atlas originales nunca se destruyen.
+ * Si falla una copia, permanecen visibles los originales.
+ * ================================================================
  */
-var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
+
+var AdvancedGpuInstancer =
+    pc.createScript('advancedGpuInstancer');
+
+// ================================================================
+// ATRIBUTOS DEL EDITOR
+// ================================================================
 
 [
     ['chunkSize', 'number', 96, 8],
@@ -35,6 +71,7 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
 
     if (a.length > 3) {
         options.min = a[3];
+
         if (a.length > 4) {
             options.max = a[4];
         }
@@ -46,17 +83,22 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
 (function () {
     'use strict';
 
-    var TAG = '[AGI4.15.1]';
-
-    // ======================================================
+    // ============================================================
     // CONSTANTES
-    // ======================================================
+    // ============================================================
+
+    var TAG = '[AGI4.15.2]';
 
     var MAX_INSTANCES_PER_GROUP = 256;
-    var INSTANCE_FLOATS = 20; // 16 Mat4 + 4 UV1 atlas.
+    var INSTANCE_FLOATS = 20;
+
     var CATCHER_INTERVAL = 0.15;
     var PHYSICS_INTERVAL = 0.22;
+
     var DEFAULT_ATLAS_RECT = [0, 0, 1, 1];
+
+    // Borde de proteccion entre regiones de atlas.
+    var ATLAS_BORDER = 1;
 
     var SEM = [
         pc.SEMANTIC_ATTR11,
@@ -66,13 +108,19 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         pc.SEMANTIC_ATTR13
     ];
 
-    // ======================================================
-    // SHADERS INSTANCING
-    // ======================================================
+    // ============================================================
+    // SHADERS DE INSTANCING
+    // ============================================================
 
     var GL = [
-        'attribute vec4 aAGI0,aAGI1,aAGI2,aAGI3,aAGIRect;',
-        'mat4 getModelMatrix(){return mat4(aAGI0,aAGI1,aAGI2,aAGI3);}'
+        'attribute vec4 aAGI0;',
+        'attribute vec4 aAGI1;',
+        'attribute vec4 aAGI2;',
+        'attribute vec4 aAGI3;',
+        'attribute vec4 aAGIRect;',
+        'mat4 getModelMatrix(){',
+        '    return mat4(aAGI0,aAGI1,aAGI2,aAGI3);',
+        '}'
     ].join('\n');
 
     var WG = [
@@ -82,121 +130,211 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         'attribute aAGI3: vec4f;',
         'attribute aAGIRect: vec4f;',
         'fn getModelMatrix() -> mat4x4f {',
-        '  return mat4x4f(aAGI0,aAGI1,aAGI2,aAGI3);',
+        '    return mat4x4f(aAGI0,aAGI1,aAGI2,aAGI3);',
         '}'
     ].join('\n');
 
-    var UVG =
-        '\n#if defined(INSTANCING) && defined(UV1_UNMODIFIED)\n' +
-        'vUv1=vUv1*aAGIRect.zw+aAGIRect.xy;\n#endif';
+    var UVG = [
+        '#if defined(INSTANCING) && defined(UV1_UNMODIFIED)',
+        'vUv1 = vUv1 * aAGIRect.zw + aAGIRect.xy;',
+        '#endif'
+    ].join('\n');
 
-    var UVW =
-        '\n#if defined(INSTANCING) && defined(UV1_UNMODIFIED)\n' +
-        'output.vUv1=output.vUv1*aAGIRect.zw+aAGIRect.xy;\n#endif';
+    var UVW = [
+        '#if defined(INSTANCING) && defined(UV1_UNMODIFIED)',
+        'output.vUv1 = output.vUv1 * aAGIRect.zw + aAGIRect.xy;',
+        '#endif'
+    ].join('\n');
 
-    // ======================================================
+    // ============================================================
     // BAKED SHADOW MASK
-    // ======================================================
+    // ============================================================
 
-    // Misma mascara perceptual de AGI4.15.
-    // No agrega draw calls.
-    //
-    // El color oscuro del atlas NO equivale a una
-    // visibilidad baked fisicamente exacta.
+    var MVG = [
+        'varying vec2 vAGIBakeUV;',
+        'varying vec4 vAGIBakeRect;',
+        'attribute vec2 aAGIBakeUV;'
+    ].join('\n');
 
-    var MVG =
-        'varying vec2 vAGIBakeUV; varying vec4 vAGIBakeRect;' +
-        'attribute vec2 aAGIBakeUV;';
+    var MVW = [
+        'varying vAGIBakeUV:vec2f;',
+        'varying vAGIBakeRect:vec4f;',
+        'attribute aAGIBakeUV:vec2f;'
+    ].join('\n');
 
-    var MVW =
-        'varying vAGIBakeUV:vec2f; varying vAGIBakeRect:vec4f;' +
-        'attribute aAGIBakeUV:vec2f;';
+    var MEG = [
+        'vAGIBakeUV =',
+        'aAGIBakeUV * aAGIRect.zw + aAGIRect.xy;',
+        'vAGIBakeRect = aAGIRect;'
+    ].join('\n');
 
-    var MEG =
-        'vAGIBakeUV=aAGIBakeUV*aAGIRect.zw+aAGIRect.xy;' +
-        'vAGIBakeRect=aAGIRect;';
-
-    var MEW =
-        'output.vAGIBakeUV=aAGIBakeUV*aAGIRect.zw+aAGIRect.xy;' +
-        'output.vAGIBakeRect=aAGIRect;';
+    var MEW = [
+        'output.vAGIBakeUV =',
+        'aAGIBakeUV * aAGIRect.zw + aAGIRect.xy;',
+        'output.vAGIBakeRect = aAGIRect;'
+    ].join('\n');
 
     var MPG = [
-        'varying vec2 vAGIBakeUV; varying vec4 vAGIBakeRect;',
-        'uniform sampler2D agiBakedAtlas; uniform vec4 agiMaskParams;',
-        'float agiLum(vec3 c){return dot(c,vec3(.2126,.7152,.0722));}'
+        'varying vec2 vAGIBakeUV;',
+        'varying vec4 vAGIBakeRect;',
+        'uniform sampler2D agiBakedAtlas;',
+        'uniform vec4 agiMaskParams;',
+
+        'float agiLum(vec3 c) {',
+        '    return dot(c,vec3(.2126,.7152,.0722));',
+        '}'
     ].join('\n');
 
     var MPW = [
-        'varying vAGIBakeUV:vec2f; varying vAGIBakeRect:vec4f;',
+        'varying vAGIBakeUV:vec2f;',
+        'varying vAGIBakeRect:vec4f;',
         'var agiBakedAtlas:texture_2d<f32>;',
         'var agiBakedAtlasSampler:sampler;',
         'uniform agiMaskParams:vec4f;',
-        'fn agiLum(c:vec3f)->f32{return dot(c,vec3f(.2126,.7152,.0722));}'
+
+        'fn agiLum(c:vec3f)->f32 {',
+        '    return dot(c,vec3f(.2126,.7152,.0722));',
+        '}'
     ].join('\n');
 
     var MFG = [
-        'if(agiMaskParams.z>.5){',
-        'vec2 ro=vAGIBakeRect.xy,rs=vAGIBakeRect.zw;',
-        'float refL=.0001;',
-        'refL=max(refL,agiLum(texture2D(agiBakedAtlas,ro+rs*vec2(.17,.17)).rgb));',
-        'refL=max(refL,agiLum(texture2D(agiBakedAtlas,ro+rs*vec2(.83,.17)).rgb));',
-        'refL=max(refL,agiLum(texture2D(agiBakedAtlas,ro+rs*vec2(.17,.83)).rgb));',
-        'refL=max(refL,agiLum(texture2D(agiBakedAtlas,ro+rs*vec2(.83,.83)).rgb));',
-        'float lum=agiLum(texture2D(agiBakedAtlas,vAGIBakeUV).rgb);',
-        'float w=smoothstep(agiMaskParams.x-agiMaskParams.y,',
-        'agiMaskParams.x+agiMaskParams.y,lum/refL);',
-        'gl_FragColor.rgb=mix(vec3(1.),gl_FragColor.rgb,w);',
+        'if (agiMaskParams.z > .5) {',
+
+        'vec2 ro = vAGIBakeRect.xy;',
+        'vec2 rs = vAGIBakeRect.zw;',
+
+        'float refL = .0001;',
+
+        'refL = max(refL,agiLum(texture2D(',
+        'agiBakedAtlas,ro+rs*vec2(.17,.17)).rgb));',
+
+        'refL = max(refL,agiLum(texture2D(',
+        'agiBakedAtlas,ro+rs*vec2(.83,.17)).rgb));',
+
+        'refL = max(refL,agiLum(texture2D(',
+        'agiBakedAtlas,ro+rs*vec2(.17,.83)).rgb));',
+
+        'refL = max(refL,agiLum(texture2D(',
+        'agiBakedAtlas,ro+rs*vec2(.83,.83)).rgb));',
+
+        'float lum = agiLum(texture2D(',
+        'agiBakedAtlas,vAGIBakeUV).rgb);',
+
+        'float w = smoothstep(',
+        'agiMaskParams.x-agiMaskParams.y,',
+        'agiMaskParams.x+agiMaskParams.y,',
+        'lum/refL);',
+
+        'gl_FragColor.rgb = mix(',
+        'vec3(1.),gl_FragColor.rgb,w);',
+
         '}'
     ].join('\n');
 
     var MFW = [
-        'if(uniform.agiMaskParams.z>.5){',
-        'let ro=vAGIBakeRect.xy; let rs=vAGIBakeRect.zw;',
-        'var refL:f32=.0001;',
-        'refL=max(refL,agiLum(textureSampleLevel(agiBakedAtlas,agiBakedAtlasSampler,ro+rs*vec2f(.17,.17),0.).rgb));',
-        'refL=max(refL,agiLum(textureSampleLevel(agiBakedAtlas,agiBakedAtlasSampler,ro+rs*vec2f(.83,.17),0.).rgb));',
-        'refL=max(refL,agiLum(textureSampleLevel(agiBakedAtlas,agiBakedAtlasSampler,ro+rs*vec2f(.17,.83),0.).rgb));',
-        'refL=max(refL,agiLum(textureSampleLevel(agiBakedAtlas,agiBakedAtlasSampler,ro+rs*vec2f(.83,.83),0.).rgb));',
-        'let lum=agiLum(textureSampleLevel(agiBakedAtlas,agiBakedAtlasSampler,vAGIBakeUV,0.).rgb);',
-        'let w=smoothstep(uniform.agiMaskParams.x-uniform.agiMaskParams.y,',
-        'uniform.agiMaskParams.x+uniform.agiMaskParams.y,lum/refL);',
-        'output.color=vec4f(mix(vec3f(1.),output.color.rgb,w),output.color.a);',
+        'if (uniform.agiMaskParams.z > .5) {',
+
+        'let ro = vAGIBakeRect.xy;',
+        'let rs = vAGIBakeRect.zw;',
+
+        'var refL:f32 = .0001;',
+
+        'refL = max(refL,agiLum(textureSampleLevel(',
+        'agiBakedAtlas,agiBakedAtlasSampler,',
+        'ro+rs*vec2f(.17,.17),0.).rgb));',
+
+        'refL = max(refL,agiLum(textureSampleLevel(',
+        'agiBakedAtlas,agiBakedAtlasSampler,',
+        'ro+rs*vec2f(.83,.17),0.).rgb));',
+
+        'refL = max(refL,agiLum(textureSampleLevel(',
+        'agiBakedAtlas,agiBakedAtlasSampler,',
+        'ro+rs*vec2f(.17,.83),0.).rgb));',
+
+        'refL = max(refL,agiLum(textureSampleLevel(',
+        'agiBakedAtlas,agiBakedAtlasSampler,',
+        'ro+rs*vec2f(.83,.83),0.).rgb));',
+
+        'let lum = agiLum(textureSampleLevel(',
+        'agiBakedAtlas,agiBakedAtlasSampler,',
+        'vAGIBakeUV,0.).rgb);',
+
+        'let w = smoothstep(',
+        'uniform.agiMaskParams.x-uniform.agiMaskParams.y,',
+        'uniform.agiMaskParams.x+uniform.agiMaskParams.y,',
+        'lum/refL);',
+
+        'output.color = vec4f(',
+        'mix(vec3f(1.),output.color.rgb,w),',
+        'output.color.a);',
+
         '}'
     ].join('\n');
 
-    // ======================================================
+    // ============================================================
     // UTILIDADES
-    // ======================================================
+    // ============================================================
 
     function alive(e) {
-        return !!(e && e.enabled && !e._destroyed);
+        return !!(
+            e &&
+            e.enabled &&
+            !e._destroyed
+        );
     }
 
     function tag(e, n) {
-        return !!(e && e.tags && e.tags.has(n));
+        return !!(
+            e &&
+            e.tags &&
+            e.tags.has(n)
+        );
     }
 
     function num(x) {
-        return Number.isFinite(x) ? +x.toFixed(3) : null;
+        return Number.isFinite(x) ?
+            +x.toFixed(3) : null;
     }
 
-    // ======================================================
-    // CACHE DE PARAMETROS GPU
-    // ======================================================
+    function oid(s, x) {
+        if (!x) return 0;
 
-    // Evita crear un nuevo Float32Array en cada ciclo.
-    // Math.fround evita falsos cambios por precision float32.
+        if (!s._ids.has(x)) {
+            s._ids.set(x, ++s._id);
+        }
+
+        return s._ids.get(x);
+    }
+
+    function param(mi, n) {
+        var p = mi.getParameter ?
+            mi.getParameter(n) : null;
+
+        return p && p.data !== undefined ?
+            p.data : p;
+    }
+
+    // ============================================================
+    // PARAMETROS DE MASCARA CON CACHE
+    // ============================================================
 
     function maskParams(s) {
         var ratio = Math.fround(
-            Math.max(.05, Math.min(.95, s.bakedShadowRatio))
+            Math.max(
+                .05,
+                Math.min(.95, s.bakedShadowRatio)
+            )
         );
 
         var softness = Math.fround(
-            Math.max(.01, Math.min(.4, s.bakedShadowSoftness))
+            Math.max(
+                .01,
+                Math.min(.4, s.bakedShadowSoftness)
+            )
         );
 
         var enabled = s.bakedShadowMask ? 1 : 0;
+
         var p = s._maskParams;
 
         if (
@@ -221,7 +359,10 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
     function syncMaskParams(s) {
         var p = maskParams(s);
 
-        if (s._maskUploadedVersion === s._maskVersion) {
+        if (
+            s._maskUploadedVersion ===
+            s._maskVersion
+        ) {
             return;
         }
 
@@ -237,27 +378,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         s._maskUploadedVersion = s._maskVersion;
     }
 
-    // ======================================================
-    // IDENTIFICADORES Y LIGHTMAPS
-    // ======================================================
-
-    function oid(s, x) {
-        if (!x) return 0;
-
-        if (!s._ids.has(x)) {
-            s._ids.set(x, ++s._id);
-        }
-
-        return s._ids.get(x);
-    }
-
-    function param(mi, n) {
-        var p = mi.getParameter ?
-            mi.getParameter(n) : null;
-
-        return p && p.data !== undefined ?
-            p.data : p;
-    }
+    // ============================================================
+    // LIGHTMAPS
+    // ============================================================
 
     function lm(mi) {
         var names =
@@ -276,13 +399,26 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             param(mi, names[1]) ||
             param(mi, 'texture_dirLightMap');
 
-        var rect = param(mi, 'uPT6LmRect');
+        var rect =
+            param(mi, 'uPT6LmRect');
 
-        if (!(tex && typeof tex === 'object' && tex.width)) {
+        if (
+            !(
+                tex &&
+                typeof tex === 'object' &&
+                tex.width
+            )
+        ) {
             tex = null;
         }
 
-        if (!(dir && typeof dir === 'object' && dir.width)) {
+        if (
+            !(
+                dir &&
+                typeof dir === 'object' &&
+                dir.width
+            )
+        ) {
             dir = null;
         }
 
@@ -291,14 +427,20 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             dirName: names[1],
             tex: tex,
             dir: dir,
-            rect: rect && rect.length === 4 ?
-                Array.from(rect) : null
+
+            rect:
+                rect && rect.length === 4 ?
+                    Array.from(rect) :
+                    null,
+
+            fromPT:
+                !!(rect && rect.length === 4)
         };
     }
 
-    // ======================================================
+    // ============================================================
     // BOUNDS
-    // ======================================================
+    // ============================================================
 
     function bounds(mi) {
         var a = mi && mi.aabb;
@@ -319,8 +461,13 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
     }
 
     function merge(a, b) {
-        if (!a) return b ? b.slice() : null;
-        if (!b) return a;
+        if (!a) {
+            return b ? b.slice() : null;
+        }
+
+        if (!b) {
+            return a;
+        }
 
         return [
             Math.min(a[0], b[0]),
@@ -388,15 +535,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             });
     }
 
-    // ======================================================
-    // PRE-BAKE POLICY
-    // ======================================================
-
-    // Esta es la politica funcional validada de AGI4.15.
-    //
-    // No depende de UV1 ni de un lightmap asignado.
-    // Un objeto puede proyectar sombra horneada
-    // sin recibir un lightmap propio.
+    // ============================================================
+    // POLITICA PRE-BAKE
+    // ============================================================
 
     function bakeRole(c) {
         if (
@@ -435,7 +576,8 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         }
 
         return c.castShadowsLightmap ?
-            'baked' : 'none';
+            'baked' :
+            'none';
     }
 
     function preBakePolicy(s) {
@@ -466,23 +608,17 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                     });
                 }
 
-                // Los objetos realtime no deben
-                // proyectar sombras durante el bake.
-                //
-                // Para los baked se preserva la
-                // configuracion original.
-
-                var target = role === 'realtime' ?
-                    false :
-                    s._bakeOriginal.get(c)
-                        .castShadowsLightmap;
+                var target =
+                    role === 'realtime' ?
+                        false :
+                        s._bakeOriginal.get(c)
+                            .castShadowsLightmap;
 
                 if (
                     !!c.castShadowsLightmap !==
                     !!target
                 ) {
                     c.castShadowsLightmap = !!target;
-
                     s._counts.bakeChanges++;
                 }
             });
@@ -505,11 +641,11 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         s._bakeOriginal.clear();
     }
 
-    // ======================================================
-    // DETECCION DE PT
-    // ======================================================
+    // ============================================================
+    // DETECCION DE ILUMINACION BAKED
+    // ============================================================
 
-    function ptReady(s) {
+    function lightmapsAvailable(s) {
         return s.app.root
             .findComponents('render')
             .some(function (c) {
@@ -525,9 +661,21 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             });
     }
 
-    // ======================================================
+    function hasBakeLights(s) {
+        return s.app.root
+            .findComponents('light')
+            .some(function (l) {
+                return (
+                    l.enabled &&
+                    alive(l.entity) &&
+                    !!l.bake
+                );
+            });
+    }
+
+    // ============================================================
     // CASTERS BAKED
-    // ======================================================
+    // ============================================================
 
     function bakedCaster(c) {
         if (
@@ -550,15 +698,8 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         );
     }
 
-    // ======================================================
-    // SUPRESION REALTIME POST-BAKE
-    // ======================================================
-
     function suppressBakedRealtime(s) {
-        // No desactivar casters hasta que PT
-        // haya producido los lightmaps.
-
-        if (!ptReady(s)) {
+        if (!lightmapsAvailable(s)) {
             return;
         }
 
@@ -602,9 +743,7 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                         return mi.castShadow;
                     });
 
-                if (c.castShadows) {
-                    c.castShadows = false;
-                }
+                c.castShadows = false;
 
                 mis.forEach(function (mi) {
                     mi.castShadow = false;
@@ -640,9 +779,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         s._casterOriginal.clear();
     }
 
-    // ======================================================
+    // ============================================================
     // CASTERS REALTIME
-    // ======================================================
+    // ============================================================
 
     function realtimeCasters(s) {
         var out = [];
@@ -686,17 +825,533 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         return out;
     }
 
-    // ======================================================
-    // SELECCION DE FUENTES GPU
-    // ======================================================
+    // ============================================================
+    // ATLAS AUTOMATICO DE LIGHTMAPS NATIVOS
+    // ============================================================
 
-    // Devuelve la informacion lightmap si la
-    // fuente es elegible; false en caso contrario.
-    //
-    // Asi no consultamos el mismo atlas dos veces
-    // durante sources().
+    function powerOfTwo(n) {
+        var v = 1;
 
-    function eligible(c) {
+        while (v < n) {
+            v *= 2;
+        }
+
+        return v;
+    }
+
+    function atlasCompatible(m) {
+        var t = m.tex;
+        var d = m.dir;
+
+        if (
+            !t ||
+            !t.width ||
+            !t.height ||
+            m.fromPT
+        ) {
+            return false;
+        }
+
+        // Por seguridad, solo formatos sin compresion.
+        // Los formatos comprimidos requieren tratar
+        // limites de bloques y no se consolidan aqui.
+
+        var supported = [
+            pc.PIXELFORMAT_RGBA8,
+            pc.PIXELFORMAT_SRGBA8,
+            pc.PIXELFORMAT_RGBA16F,
+            pc.PIXELFORMAT_RGBA32F,
+            pc.PIXELFORMAT_RGB10A2,
+            pc.PIXELFORMAT_111110F
+        ];
+
+        if (supported.indexOf(t.format) < 0) {
+            return false;
+        }
+
+        if (
+            d &&
+            (
+                supported.indexOf(d.format) < 0 ||
+                d.width !== t.width ||
+                d.height !== t.height
+            )
+        ) {
+            return false;
+        }
+
+        return true;
+    }
+
+    // Empaquetado determinista por estanterias.
+    // Se crean paginas adicionales cuando es necesario.
+
+    function atlasPlan(entries, maxSize) {
+        var sorted = entries.slice().sort(
+            function (a, b) {
+                return (
+                    b.tex.height - a.tex.height ||
+                    b.tex.width - a.tex.width
+                );
+            }
+        );
+
+        var pixels = 0;
+        var widest = 0;
+
+        sorted.forEach(function (e) {
+            var w =
+                e.tex.width +
+                ATLAS_BORDER * 2;
+
+            var h =
+                e.tex.height +
+                ATLAS_BORDER * 2;
+
+            pixels += w * h;
+            widest = Math.max(widest, w);
+        });
+
+        if (
+            sorted.some(function (e) {
+                return (
+                    e.tex.height +
+                    ATLAS_BORDER * 2 >
+                    maxSize
+                );
+            })
+        ) {
+            return [];
+        }
+
+        var width = powerOfTwo(
+            Math.max(
+                widest,
+                Math.ceil(Math.sqrt(pixels))
+            )
+        );
+
+        if (width > maxSize) {
+            return [];
+        }
+
+        var best = null;
+
+        while (width <= maxSize) {
+            var pages = [];
+
+            var page = {
+                tiles: [],
+                x: 0,
+                y: 0,
+                rowH: 0,
+                usedW: 0,
+                usedH: 0
+            };
+
+            pages.push(page);
+
+            sorted.forEach(function (e) {
+                var w =
+                    e.tex.width +
+                    ATLAS_BORDER * 2;
+
+                var h =
+                    e.tex.height +
+                    ATLAS_BORDER * 2;
+
+                if (page.x + w > width) {
+                    page.x = 0;
+                    page.y += page.rowH;
+                    page.rowH = 0;
+                }
+
+                if (page.y + h > maxSize) {
+                    page = {
+                        tiles: [],
+                        x: 0,
+                        y: 0,
+                        rowH: 0,
+                        usedW: 0,
+                        usedH: 0
+                    };
+
+                    pages.push(page);
+                }
+
+                page.tiles.push({
+                    entry: e,
+                    x: page.x,
+                    y: page.y
+                });
+
+                page.usedW = Math.max(
+                    page.usedW,
+                    page.x + w
+                );
+
+                page.usedH = Math.max(
+                    page.usedH,
+                    page.y + h
+                );
+
+                page.x += w;
+
+                page.rowH = Math.max(
+                    page.rowH,
+                    h
+                );
+            });
+
+            pages.forEach(function (p) {
+                p.width = powerOfTwo(p.usedW);
+                p.height = powerOfTwo(p.usedH);
+            });
+
+            var area = pages.reduce(
+                function (a, p) {
+                    return (
+                        a +
+                        p.width * p.height
+                    );
+                },
+                0
+            );
+
+            if (
+                !best ||
+                pages.length < best.pages.length ||
+                (
+                    pages.length === best.pages.length &&
+                    area < best.area
+                )
+            ) {
+                best = {
+                    pages: pages,
+                    area: area
+                };
+            }
+
+            if (pages.length === 1) {
+                break;
+            }
+
+            width *= 2;
+        }
+
+        return best ? best.pages : [];
+    }
+
+    // ============================================================
+    // CREACION DE TEXTURAS DE ATLAS
+    // ============================================================
+
+    function makeAtlasTexture(
+        s,
+        source,
+        width,
+        height,
+        name
+    ) {
+        var nearest =
+            source.format === pc.PIXELFORMAT_RGBA32F &&
+            !s.app.graphicsDevice.textureFloatFilterable;
+
+        return new pc.Texture(
+            s.app.graphicsDevice,
+            {
+                name: name,
+                width: width,
+                height: height,
+
+                format: source.format,
+                type: source.type,
+                srgb: !!source.srgb,
+
+                mipmaps: false,
+
+                minFilter: nearest ?
+                    pc.FILTER_NEAREST :
+                    pc.FILTER_LINEAR,
+
+                magFilter: nearest ?
+                    pc.FILTER_NEAREST :
+                    pc.FILTER_LINEAR,
+
+                addressU: pc.ADDRESS_CLAMP_TO_EDGE,
+                addressV: pc.ADDRESS_CLAMP_TO_EDGE
+            }
+        );
+    }
+
+    // ============================================================
+    // COPIAR REGION CON BORDES
+    // ============================================================
+
+    function copyWithBorder(dst, source, x, y) {
+        var w = source.width;
+        var h = source.height;
+
+        var b = ATLAS_BORDER;
+        var ok = true;
+
+        function cp(
+            x0,
+            y0,
+            ww,
+            hh,
+            dx,
+            dy
+        ) {
+            if (
+                dst.copy(source, {
+                    sourceX: x0,
+                    sourceY: y0,
+
+                    width: ww,
+                    height: hh,
+
+                    destX: dx,
+                    destY: dy
+                }) === false
+            ) {
+                ok = false;
+            }
+        }
+
+        // Interior.
+        cp(0, 0, w, h, x + b, y + b);
+
+        // Bordes verticales y horizontales.
+        cp(0, 0, w, 1, x + b, y);
+        cp(0, h - 1, w, 1, x + b, y + b + h);
+
+        cp(0, 0, 1, h, x, y + b);
+        cp(w - 1, 0, 1, h, x + b + w, y + b);
+
+        // Esquinas.
+        cp(0, 0, 1, 1, x, y);
+        cp(w - 1, 0, 1, 1, x + b + w, y);
+
+        cp(0, h - 1, 1, 1, x, y + b + h);
+
+        cp(
+            w - 1,
+            h - 1,
+            1,
+            1,
+            x + b + w,
+            y + b + h
+        );
+
+        return ok;
+    }
+
+    // ============================================================
+    // CONSOLIDACION DE LIGHTMAPS NATIVOS
+    // ============================================================
+
+    function consolidateNative(s, items) {
+        var buckets = new Map();
+
+        items.forEach(function (item) {
+            var m = item.lm;
+
+            if (!atlasCompatible(m)) {
+                return;
+            }
+
+            // Nunca combinar formatos incompatibles.
+
+            var key = [
+                m.tex.format,
+                m.tex.type,
+                m.tex.encoding,
+
+                m.dir ? m.dir.format : 'no-dir',
+                m.dir ? m.dir.type : 'no-dir',
+                m.dir ? m.dir.encoding : 'no-dir'
+            ].join('|');
+
+            var bucket = buckets.get(key);
+
+            if (!bucket) {
+                bucket = new Map();
+                buckets.set(key, bucket);
+            }
+
+            // Si dos instancias usan exactamente
+            // la misma textura, reutilizan el tile.
+
+            var identity =
+                oid(s, m.tex) +
+                '/' +
+                oid(s, m.dir);
+
+            var entry = bucket.get(identity);
+
+            if (!entry) {
+                entry = {
+                    tex: m.tex,
+                    dir: m.dir,
+                    items: []
+                };
+
+                bucket.set(identity, entry);
+            }
+
+            entry.items.push(item);
+        });
+
+        var maxSize =
+            s.app.graphicsDevice.maxTextureSize ||
+            4096;
+
+        var total = 0;
+
+        buckets.forEach(function (byTexture) {
+            var entries =
+                Array.from(byTexture.values());
+
+            if (entries.length < 2) {
+                return;
+            }
+
+            var pages = atlasPlan(
+                entries,
+                maxSize
+            );
+
+            pages.forEach(function (page) {
+                if (page.tiles.length < 2) {
+                    return;
+                }
+
+                var color = null;
+                var direction = null;
+                var success = false;
+
+                try {
+                    var first = page.tiles[0].entry;
+
+                    color = makeAtlasTexture(
+                        s,
+                        first.tex,
+                        page.width,
+                        page.height,
+                        'AGI4152_NativeColorAtlas'
+                    );
+
+                    if (first.dir) {
+                        direction = makeAtlasTexture(
+                            s,
+                            first.dir,
+                            page.width,
+                            page.height,
+                            'AGI4152_NativeDirectionAtlas'
+                        );
+                    }
+
+                    success = page.tiles.every(
+                        function (tile) {
+                            return (
+                                copyWithBorder(
+                                    color,
+                                    tile.entry.tex,
+                                    tile.x,
+                                    tile.y
+                                ) &&
+                                (
+                                    !direction ||
+                                    copyWithBorder(
+                                        direction,
+                                        tile.entry.dir,
+                                        tile.x,
+                                        tile.y
+                                    )
+                                )
+                            );
+                        }
+                    );
+
+                } catch (err) {
+                    if (s.debug) {
+                        console.warn(
+                            TAG,
+                            'Atlas nativo no disponible:',
+                            err
+                        );
+                    }
+                }
+
+                if (!success) {
+                    if (color) {
+                        color.destroy();
+                    }
+
+                    if (direction) {
+                        direction.destroy();
+                    }
+
+                    // No se tocan las fuentes.
+                    return;
+                }
+
+                s._nativeAtlases.push(color);
+
+                if (direction) {
+                    s._nativeAtlases.push(direction);
+                }
+
+                page.tiles.forEach(function (tile) {
+                    var e = tile.entry;
+
+                    var rect = [
+                        (
+                            tile.x +
+                            ATLAS_BORDER
+                        ) / page.width,
+
+                        (
+                            tile.y +
+                            ATLAS_BORDER
+                        ) / page.height,
+
+                        e.tex.width / page.width,
+
+                        e.tex.height / page.height
+                    ];
+
+                    e.items.forEach(function (item) {
+                        item.lm = {
+                            name: item.lm.name,
+                            dirName: item.lm.dirName,
+
+                            tex: color,
+                            dir: direction,
+
+                            rect: rect,
+
+                            fromPT: false,
+                            consolidated: true
+                        };
+                    });
+
+                    total += e.items.length;
+                });
+
+                s._counts.nativeAtlasPages++;
+            });
+        });
+
+        s._counts.nativeAtlasInstances = total;
+    }
+
+    // ============================================================
+    // ELEGIBILIDAD GPU
+    // ============================================================
+
+    function eligible(c, s) {
         if (
             !c ||
             !c.enabled ||
@@ -731,8 +1386,12 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         }
 
         if (
-            !(mi.material instanceof pc.StandardMaterial) ||
-            mi.material.blendType !== pc.BLEND_NONE
+            !(
+                mi.material instanceof
+                pc.StandardMaterial
+            ) ||
+            mi.material.blendType !==
+            pc.BLEND_NONE
         ) {
             return false;
         }
@@ -742,7 +1401,8 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         if (
             !pr ||
             pr.length !== 1 ||
-            pr[0].type !== pc.PRIMITIVE_TRIANGLES
+            pr[0].type !==
+            pc.PRIMITIVE_TRIANGLES
         ) {
             return false;
         }
@@ -761,12 +1421,11 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
 
         var m = lm(mi);
 
-        if (c.lightmapped) {
+        if (m.tex) {
+            // Lightmap presente, independiente
+            // de quien lo haya generado.
+
             if (
-                !m.tex ||
-                !m.rect ||
-                m.rect[2] <= 0 ||
-                m.rect[3] <= 0 ||
                 !fmt.elements.some(function (e) {
                     return e.name ===
                         pc.SEMANTIC_TEXCOORD1;
@@ -775,12 +1434,30 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                 return false;
             }
 
-        } else if (m.tex) {
+            if (!m.rect) {
+                m.rect = DEFAULT_ATLAS_RECT;
+            }
+
+            if (
+                m.rect[2] <= 0 ||
+                m.rect[3] <= 0
+            ) {
+                return false;
+            }
+
+        } else if (
+            c.lightmapped &&
+            s._bakeLightsPresent
+        ) {
+            // Hay un horneado pendiente.
+            // No sustituir el objeto antes de que
+            // reciba su lightmap.
+
             return false;
         }
 
-        // No combinar meshInstances que tengan
-        // parametros privados incompatibles.
+        // Si no hay lightmap ni horneado pendiente,
+        // no se exige ningun atlas.
 
         if (
             mi.parameters &&
@@ -811,9 +1488,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         return m;
     }
 
-    // ======================================================
-    // MATERIALES Y SHADER CHUNKS
-    // ======================================================
+    // ============================================================
+    // MATERIALES
+    // ============================================================
 
     function getMaterial(s, source, catcher) {
         var cache = catcher ?
@@ -830,12 +1507,14 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
 
         mat.name =
             (source.name || 'Material') +
-            '_AGI415' +
+            '_AGI4152' +
             (catcher ? '_Catcher' : '');
 
         if (catcher) {
             mat.shadowCatcher = true;
-            mat.blendType = pc.BLEND_MULTIPLICATIVE;
+
+            mat.blendType =
+                pc.BLEND_MULTIPLICATIVE;
 
             mat.depthWrite = false;
             mat.depthTest = true;
@@ -880,7 +1559,10 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             }
 
             if (!catcher) {
-                add('litUserMainEndVS', data[2]);
+                add(
+                    'litUserMainEndVS',
+                    data[2]
+                );
 
             } else {
                 add(
@@ -923,33 +1605,39 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         }
 
         mat.update();
-
         cache.set(source, mat);
 
         return mat;
     }
 
-    // ======================================================
-    // BUFFER DE INSTANCIAS
-    // ======================================================
+    // ============================================================
+    // INSTANCING BUFFERS
+    // ============================================================
 
     function packed(items) {
         var data = new Float32Array(
-            items.length * INSTANCE_FLOATS
+            items.length *
+            INSTANCE_FLOATS
         );
 
         items.forEach(function (x, i) {
             var m =
-                x.mi.node.getWorldTransform().data;
+                x.mi.node
+                    .getWorldTransform().data;
 
             var k = i * INSTANCE_FLOATS;
 
-            for (var j = 0; j < 16; j++) {
+            for (
+                var j = 0;
+                j < 16;
+                j++
+            ) {
                 data[k + j] = m[j];
             }
 
             data.set(
-                x.lm.rect || DEFAULT_ATLAS_RECT,
+                x.lm.rect ||
+                DEFAULT_ATLAS_RECT,
                 k + 16
             );
         });
@@ -957,9 +1645,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         return data;
     }
 
-    // ======================================================
+    // ============================================================
     // SHADOW CATCHER
-    // ======================================================
+    // ============================================================
 
     function makeCatcher(s, g) {
         var entity = null;
@@ -968,7 +1656,7 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             var source = g.items[0];
 
             entity = new pc.Entity(
-                'AGI415_Catcher_' +
+                'AGI4152_Catcher_' +
                 source.c.entity.name
             );
 
@@ -1045,17 +1733,15 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         }
     }
 
-    // ======================================================
-    // ESTADO DE SOMBRAS MESHINSTANCE
-    // ======================================================
+    // ============================================================
+    // ESTADO DE SOMBRAS
+    // ============================================================
 
-    // PlayCanvas puede modificar los flags al crear
-    // el RenderComponent.
-    //
-    // Por eso esta funcion se aplica antes y despues
-    // de addComponent. NO es trabajo duplicado accidental.
-
-    function applyMeshShadowState(target, source, isBaked) {
+    function applyMeshShadowState(
+        target,
+        source,
+        isBaked
+    ) {
         target.mask = source.mask;
 
         target.castShadow = isBaked ?
@@ -1072,12 +1758,13 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             source.shaderPassMask;
     }
 
-    // ======================================================
+    // ============================================================
     // CREAR GRUPO GPU
-    // ======================================================
+    // ============================================================
 
     function makeGroup(s, g) {
         var src = g.items[0];
+
         var entity = null;
         var vb = null;
 
@@ -1095,7 +1782,7 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             );
 
             entity = new pc.Entity(
-                'AGI415_' +
+                'AGI4152_' +
                 src.c.entity.name +
                 '_' +
                 s._groups.size
@@ -1115,7 +1802,10 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                 entity
             );
 
-            var baked = !!src.c.lightmapped;
+            var baked = !!(
+                src.lm.tex &&
+                src.c.lightmapped
+            );
 
             applyMeshShadowState(
                 mi,
@@ -1123,9 +1813,22 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                 baked
             );
 
-            mi.renderStyle = src.mi.renderStyle;
-            mi.drawOrder = src.mi.drawOrder;
-            mi.drawBucket = src.mi.drawBucket;
+            if (
+                !baked &&
+                src.c.lightmapped
+            ) {
+                mi.mask =
+                    pc.MASK_AFFECT_DYNAMIC || 1;
+            }
+
+            mi.renderStyle =
+                src.mi.renderStyle;
+
+            mi.drawOrder =
+                src.mi.drawOrder;
+
+            mi.drawBucket =
+                src.mi.drawBucket;
 
             mi.setInstancing(vb, true);
 
@@ -1151,7 +1854,8 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             entity.render.receiveShadows =
                 !!src.c.receiveShadows;
 
-            // Preservar el atlas nativo PT.
+            // Preservar lightmap existente,
+            // sin importar su procedencia.
 
             if (baked) {
                 mi.setRealtimeLightmap(
@@ -1172,9 +1876,6 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                 );
             }
 
-            // Compatibilidad con las definiciones
-            // nativas LM / DIRLM de PlayCanvas/PT.
-
             if (
                 typeof mi._updateShaderDefs ===
                 'function' &&
@@ -1190,13 +1891,22 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                 );
             }
 
-            // Reaplicar tras crear RenderComponent.
+            // Reaplicacion intencional despues
+            // de crear el RenderComponent.
 
             applyMeshShadowState(
                 mi,
                 src.mi,
                 baked
             );
+
+            if (
+                !baked &&
+                src.c.lightmapped
+            ) {
+                mi.mask =
+                    pc.MASK_AFFECT_DYNAMIC || 1;
+            }
 
             entity.render.customAabb =
                 aabb(g.bounds);
@@ -1211,12 +1921,15 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
 
             s._groups.set(entity, g);
 
-            if (baked && isFloor(src.c)) {
+            if (
+                baked &&
+                isFloor(src.c)
+            ) {
                 makeCatcher(s, g);
             }
 
-            // Solo ocultar los originales cuando
-            // el grupo GPU ya existe correctamente.
+            // Ocultar originales solo despues
+            // de construir el proxy.
 
             g.items.forEach(function (x) {
                 if (!s._parked.has(x.c)) {
@@ -1254,13 +1967,14 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         }
     }
 
-    // ======================================================
-    // CULLING DE SOMBRAS
-    // ======================================================
+    // ============================================================
+    // CULLING DEL CATCHER
+    // ============================================================
 
     function cameraDepth(b, cam) {
         var m =
-            cam.entity.getWorldTransform().data;
+            cam.entity
+                .getWorldTransform().data;
 
         var fx = -m[8];
         var fy = -m[9];
@@ -1283,7 +1997,11 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         return [d - r, d + r];
     }
 
-    function canShadowFloor(g, caster, light) {
+    function canShadowFloor(
+        g,
+        caster,
+        light
+    ) {
         var b = bounds(caster.mi);
 
         if (!b) {
@@ -1291,7 +2009,8 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         }
 
         var m =
-            light.entity.getWorldTransform().data;
+            light.entity
+                .getWorldTransform().data;
 
         var dx = -m[4];
         var dy = -m[5];
@@ -1302,6 +2021,7 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         }
 
         var y = g.bounds[4];
+
         var t0 = (y - b[1]) / dy;
         var t1 = (y - b[4]) / dy;
 
@@ -1343,14 +2063,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         );
     }
 
-    // ======================================================
+    // ============================================================
     // CONTEXTO CATCHER POR CICLO
-    // ======================================================
-
-    // Antes: buscar camaras, luces y casters
-    // por separado para cada grupo.
-    //
-    // Ahora: construir el contexto una vez.
+    // ============================================================
 
     function makeCatcherContext(s) {
         return {
@@ -1363,7 +2078,11 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         };
     }
 
-    function catcherDecision(s, g, context) {
+    function catcherDecision(
+        s,
+        g,
+        context
+    ) {
         if (!s.directionalShadowCatcher) {
             return {
                 on: false,
@@ -1499,13 +2218,10 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
     function updateCatchers(s) {
         var active = 0;
 
-        // Solo actualizar uniforms cuando cambian.
-
         syncMaskParams(s);
 
-        // Una unica lectura del estado de escena.
-
-        var context = makeCatcherContext(s);
+        var context =
+            makeCatcherContext(s);
 
         s._groups.forEach(function (g) {
             if (!g.catcher) {
@@ -1513,18 +2229,30 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             }
 
             var decision =
-                catcherDecision(s, g, context);
+                catcherDecision(
+                    s,
+                    g,
+                    context
+                );
 
-            var entity = g.catcher.entity;
+            var entity =
+                g.catcher.entity;
 
-            if (entity.enabled !== decision.on) {
+            if (
+                entity.enabled !==
+                decision.on
+            ) {
                 entity.enabled = decision.on;
 
                 s._counts.catcherTransitions++;
             }
 
-            g.catcher.reason = decision.reason;
-            g.catcher.z = decision.z || null;
+            g.catcher.reason =
+                decision.reason;
+
+            g.catcher.z =
+                decision.z || null;
+
             g.catcher.distance =
                 decision.distance || null;
 
@@ -1536,9 +2264,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         s._counts.catcherActive = active;
     }
 
-    // ======================================================
+    // ============================================================
     // FIRMA ESTRUCTURAL
-    // ======================================================
+    // ============================================================
 
     function signature(s) {
         var rows = [];
@@ -1558,7 +2286,8 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                     c.meshInstances &&
                     c.meshInstances[0];
 
-                var l = mi ? lm(mi) : null;
+                var l =
+                    mi ? lm(mi) : null;
 
                 rows.push([
                     oid(s, c),
@@ -1575,9 +2304,11 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                     c.entity.enabled,
                     c.isStatic,
                     c.lightmapped,
+
                     c.castShadows,
                     c.castShadowsLightmap,
                     c.receiveShadows,
+
                     c.batchGroupId,
 
                     c.meshInstances ?
@@ -1595,37 +2326,40 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         return rows.sort().join(';');
     }
 
-    // ======================================================
+    // ============================================================
     // RESTAURAR FUENTES
-    // ======================================================
+    // ============================================================
 
     function restoreParked(s) {
-        s._parked.forEach(function (state, c) {
-            if (
-                !c ||
-                !c.entity ||
-                c.entity._destroyed
-            ) {
-                return;
-            }
+        s._parked.forEach(
+            function (state, c) {
+                if (
+                    !c ||
+                    !c.entity ||
+                    c.entity._destroyed
+                ) {
+                    return;
+                }
 
-            c.layers = state.layers.slice();
+                c.layers =
+                    state.layers.slice();
 
-            if (
-                c.meshInstances &&
-                c.meshInstances[0]
-            ) {
-                c.meshInstances[0].visible =
-                    state.visible;
+                if (
+                    c.meshInstances &&
+                    c.meshInstances[0]
+                ) {
+                    c.meshInstances[0].visible =
+                        state.visible;
+                }
             }
-        });
+        );
 
         s._parked.clear();
     }
 
-    // ======================================================
-    // DESTRUIR GRUPOS
-    // ======================================================
+    // ============================================================
+    // DESTRUIR RECURSOS
+    // ============================================================
 
     function destroyGroups(s) {
         restoreParked(s);
@@ -1666,11 +2400,21 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
 
         s._materials.clear();
         s._catchMaterials.clear();
+
+        s._nativeAtlases.forEach(
+            function (t) {
+                try {
+                    t.destroy();
+                } catch (_) { }
+            }
+        );
+
+        s._nativeAtlases.length = 0;
     }
 
-    // ======================================================
+    // ============================================================
     // RECOLECTAR FUENTES
-    // ======================================================
+    // ============================================================
 
     function sources(s) {
         var out = [];
@@ -1678,13 +2422,16 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         s.app.root
             .findComponents('render')
             .forEach(function (c) {
-                var lightmap = eligible(c);
+                var lightmap =
+                    eligible(c, s);
 
                 if (!lightmap) {
                     return;
                 }
 
-                var mi = c.meshInstances[0];
+                var mi =
+                    c.meshInstances[0];
+
                 var b = bounds(mi);
 
                 if (!b) {
@@ -1703,24 +2450,44 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         return out;
     }
 
-    // ======================================================
-    // CONSTRUIR GPU INSTANCING
-    // ======================================================
+    // ============================================================
+    // REBUILD
+    // ============================================================
 
     function build(s) {
+        if (
+            s.app.graphicsDevice.insideRenderPass
+        ) {
+            s._deferredBuild = true;
+            return;
+        }
+
         destroyGroups(s);
 
-        // Mantener orden validado por AGI4.15:
-        // pre-bake -> post-bake -> grupos GPU.
+        s._counts.nativeAtlasPages = 0;
+        s._counts.nativeAtlasInstances = 0;
 
         preBakePolicy(s);
+
         suppressBakedRealtime(s);
 
+        s._bakeLightsPresent =
+            hasBakeLights(s);
+
         var items = sources(s);
+
+        // Consolidar despues de leer las fuentes,
+        // antes de calcular las claves de grupo.
+
+        consolidateNative(s, items);
+
         var extent = null;
 
         items.forEach(function (x) {
-            extent = merge(extent, x.bounds);
+            extent = merge(
+                extent,
+                x.bounds
+            );
         });
 
         var size = Math.max(
@@ -1750,17 +2517,16 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                     (b[2] + b[5]) / (2 * size)
                 );
 
-            // Evitar agrupar materiales, atlas,
-            // mascaras y estados incompatibles.
-            //
-            // Tambien comparar las propiedades del
-            // RenderComponent que afectan sombras.
+            // Identidad de render completa:
+            // geometria, materiales, iluminacion,
+            // capas, sombras y estados del mesh.
 
             var key = [
                 cell,
 
                 oid(s, mi.mesh),
                 oid(s, mi.material),
+
                 oid(s, x.lm.tex),
                 oid(s, x.lm.dir),
 
@@ -1772,9 +2538,11 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                 mi.mask,
                 mi.castShadow,
                 mi.receiveShadow,
+
                 mi.renderStyle,
                 mi.shaderPassMask,
                 mi.shadowCascadeMask,
+
                 mi.drawOrder,
                 mi.drawBucket,
 
@@ -1821,7 +2589,10 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                 var b = null;
 
                 part.forEach(function (x) {
-                    b = merge(b, x.bounds);
+                    b = merge(
+                        b,
+                        x.bounds
+                    );
                 });
 
                 if (
@@ -1837,12 +2608,19 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             }
         });
 
-        s._counts.groups = s._groups.size;
-        s._counts.instances = count;
+        s._counts.groups =
+            s._groups.size;
+
+        s._counts.instances =
+            count;
+
         s._counts.baked = 0;
 
         s._groups.forEach(function (g) {
-            if (g.items[0].c.lightmapped) {
+            if (
+                g.items[0].c.lightmapped &&
+                g.items[0].lm.tex
+            ) {
                 s._counts.baked +=
                     g.items.length;
             }
@@ -1866,17 +2644,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         }
     }
 
-    // ======================================================
-    // DETECCION DE CAMBIOS DE TRANSFORM
-    // ======================================================
-
-    // Comparacion directa contra el buffer actual.
-    //
-    // En un frame sin cambios no creamos
-    // otro Float32Array de matrices.
-    //
-    // Math.fround conserva la misma precision
-    // que utilizan los buffers GPU.
+    // ============================================================
+    // TRANSFORMACIONES
+    // ============================================================
 
     function transformChanged(group) {
         for (
@@ -1887,12 +2657,17 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             var item = group.items[i];
 
             var matrix =
-                item.mi.node.getWorldTransform().data;
+                item.mi.node
+                    .getWorldTransform().data;
 
             var offset =
                 i * INSTANCE_FLOATS;
 
-            for (var k = 0; k < 16; k++) {
+            for (
+                var k = 0;
+                k < 16;
+                k++
+            ) {
                 if (
                     Math.fround(matrix[k]) !==
                     group.data[offset + k]
@@ -1902,9 +2677,14 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             }
 
             var rect =
-                item.lm.rect || DEFAULT_ATLAS_RECT;
+                item.lm.rect ||
+                DEFAULT_ATLAS_RECT;
 
-            for (var r = 0; r < 4; r++) {
+            for (
+                var r = 0;
+                r < 4;
+                r++
+            ) {
                 if (
                     Math.fround(rect[r]) !==
                     group.data[offset + 16 + r]
@@ -1916,10 +2696,6 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
 
         return false;
     }
-
-    // ======================================================
-    // REFRESH TRANSFORMS
-    // ======================================================
 
     function refreshTransforms(s) {
         var changes = [];
@@ -1950,37 +2726,36 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                 return;
             }
 
-            // Si la instancia abandono su chunk,
-            // solicitar un rebuild.
-
             if (!group.common) {
                 var size = Math.max(
                     8,
                     s.chunkSize
                 );
 
-                group.items.forEach(function (item) {
-                    var b = bounds(item.mi);
+                group.items.forEach(
+                    function (item) {
+                        var b = bounds(item.mi);
 
-                    if (!b) {
-                        valid = false;
-                        return;
+                        if (!b) {
+                            valid = false;
+                            return;
+                        }
+
+                        var cell =
+                            Math.round(
+                                (b[0] + b[3]) / (2 * size)
+                            ) + ':' +
+                            Math.round(
+                                (b[2] + b[5]) / (2 * size)
+                            );
+
+                        if (
+                            cell !== group.cell
+                        ) {
+                            valid = false;
+                        }
                     }
-
-                    var cell =
-                        Math.round(
-                            (b[0] + b[3]) /
-                            (2 * size)
-                        ) + ':' +
-                        Math.round(
-                            (b[2] + b[5]) /
-                            (2 * size)
-                        );
-
-                    if (cell !== group.cell) {
-                        valid = false;
-                    }
-                });
+                );
             }
 
             if (valid) {
@@ -1996,21 +2771,23 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             return false;
         }
 
-        // Validar primero; subir al GPU despues.
-
         changes.forEach(function (change) {
             var group = change.group;
 
             if (
-                group.vb.setData(change.data) ===
-                false
+                group.vb.setData(
+                    change.data
+                ) === false
             ) {
                 valid = false;
                 return;
             }
 
-            group.data = change.data;
-            group.bounds = change.box;
+            group.data =
+                change.data;
+
+            group.bounds =
+                change.box;
 
             group.mi.aabb =
                 aabb(change.box);
@@ -2032,9 +2809,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         return valid;
     }
 
-    // ======================================================
+    // ============================================================
     // STREAMING FISICO
-    // ======================================================
+    // ============================================================
 
     function physics(s, dt) {
         if (!s.physicsStreaming) {
@@ -2044,7 +2821,8 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
         s._physicsClock += dt;
 
         if (
-            s._physicsClock < PHYSICS_INTERVAL
+            s._physicsClock <
+            PHYSICS_INTERVAL
         ) {
             return;
         }
@@ -2077,7 +2855,11 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
 
         var distance = Math.max(
             12,
-            (cam ? cam.farClip : 100) * .15
+            (
+                cam ?
+                    cam.farClip :
+                    100
+            ) * .15
         );
 
         if (v) {
@@ -2109,20 +2891,24 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                 var enabled = !!(
                     s._physicsOriginal.get(c) &&
                     (
-                        q.distance(future) < distance ||
-                        q.distance(p) < distance * .65
+                        q.distance(future) <
+                        distance ||
+                        q.distance(p) <
+                        distance * .65
                     )
                 );
 
-                if (c.enabled !== enabled) {
+                if (
+                    c.enabled !== enabled
+                ) {
                     c.enabled = enabled;
                 }
             });
     }
 
-    // ======================================================
+    // ============================================================
     // INITIALIZE
-    // ======================================================
+    // ============================================================
 
     AdvancedGpuInstancer.prototype.initialize =
         function () {
@@ -2131,6 +2917,8 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
 
             this._groups = new Map();
             this._parked = new Map();
+
+            this._nativeAtlases = [];
 
             this._materials = new Map();
             this._catchMaterials = new Map();
@@ -2148,11 +2936,16 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                 instances: 0,
                 baked: 0,
                 rebuilds: 0,
+
                 catcherActive: 0,
                 catcherTransitions: 0,
+
                 bufferUpdates: 0,
                 bakeChanges: 0,
-                bakedCasterSuppressed: 0
+                bakedCasterSuppressed: 0,
+
+                nativeAtlasPages: 0,
+                nativeAtlasInstances: 0
             };
 
             this._scanClock = 0;
@@ -2161,6 +2954,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
 
             this._signature = '';
             this._paused = false;
+
+            this._startPending = false;
+            this._deferredBuild = false;
 
             this._format = new pc.VertexFormat(
                 this.app.graphicsDevice,
@@ -2183,7 +2979,8 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             }
 
             this._hiddenLayer = new pc.Layer({
-                name: 'AGI415_HIDDEN_SOURCES',
+                name:
+                    'AGI4152_HIDDEN_SOURCES',
                 id: id,
                 enabled: false
             });
@@ -2214,20 +3011,46 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                 this
             );
 
-            // build() ya ejecuta preBakePolicy()
-            // sincronamente. No duplicar recorrido.
+            // Clasificar antes del primer bake.
+            preBakePolicy(this);
 
-            build(this);
+            // Esperar al primer render para permitir
+            // que el Lightmapper asigne sus texturas.
+            // El trabajo GPU se ejecuta en update.
+
+            var self = this;
+
+            this.app.once(
+                'postrender',
+                function () {
+                    if (!self._paused) {
+                        self._startPending = true;
+                    }
+                }
+            );
         };
 
-    // ======================================================
+    // ============================================================
     // UPDATE
-    // ======================================================
+    // ============================================================
 
     AdvancedGpuInstancer.prototype.update =
         function (dt) {
             if (this._paused) {
                 return;
+            }
+
+            // Operaciones de copia de texturas
+            // fuera del render pass.
+
+            if (
+                this._startPending ||
+                this._deferredBuild
+            ) {
+                this._startPending = false;
+                this._deferredBuild = false;
+
+                build(this);
             }
 
             physics(this, dt);
@@ -2267,9 +3090,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             }
         };
 
-    // ======================================================
+    // ============================================================
     // RESTORE
-    // ======================================================
+    // ============================================================
 
     AdvancedGpuInstancer.prototype.restore =
         function () {
@@ -2311,18 +3134,19 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             this._counts.catcherActive = 0;
         };
 
-    // ======================================================
+    // ============================================================
     // REBUILD
-    // ======================================================
+    // ============================================================
 
     AdvancedGpuInstancer.prototype.rebuild =
         function () {
             this._paused = false;
 
             if (
-                !this.app.scene.layers.getLayerById(
-                    this._hiddenLayer.id
-                )
+                !this.app.scene.layers
+                    .getLayerById(
+                        this._hiddenLayer.id
+                    )
             ) {
                 this.app.scene.layers.push(
                     this._hiddenLayer
@@ -2332,9 +3156,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             build(this);
         };
 
-    // ======================================================
-    // MODO BAKE PT
-    // ======================================================
+    // ============================================================
+    // CONTROL DEL HORNEADO
+    // ============================================================
 
     AdvancedGpuInstancer.prototype.setBakeMode =
         function (on) {
@@ -2342,6 +3166,7 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                 this._paused = true;
 
                 destroyGroups(this);
+
                 restoreRealtime(this);
                 preBakePolicy(this);
 
@@ -2352,15 +3177,15 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             if (this.debug) {
                 console.log(
                     TAG,
-                    'Fuentes para PT:',
+                    'Fuentes para bake:',
                     !!on
                 );
             }
         };
 
-    // ======================================================
-    // CONTROL DE MASCARA
-    // ======================================================
+    // ============================================================
+    // CONTROL DE LA MASCARA
+    // ============================================================
 
     AdvancedGpuInstancer.prototype.setBakedShadowMask =
         function (on, ratio) {
@@ -2405,9 +3230,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             );
         };
 
-    // ======================================================
+    // ============================================================
     // AUDITORIA DE ROLES
-    // ======================================================
+    // ============================================================
 
     AdvancedGpuInstancer.prototype.auditBakeRoles =
         function () {
@@ -2461,9 +3286,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             return rows;
         };
 
-    // ======================================================
+    // ============================================================
     // AUDITORIA DE GRUPOS
-    // ======================================================
+    // ============================================================
 
     AdvancedGpuInstancer.prototype.auditGroups =
         function () {
@@ -2508,9 +3333,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             return rows;
         };
 
-    // ======================================================
+    // ============================================================
     // AUDITORIA DE DISTANCIA
-    // ======================================================
+    // ============================================================
 
     AdvancedGpuInstancer.prototype.auditDistance =
         function () {
@@ -2549,9 +3374,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             return rows;
         };
 
-    // ======================================================
+    // ============================================================
     // AUDITORIA DE SOMBRAS
-    // ======================================================
+    // ============================================================
 
     AdvancedGpuInstancer.prototype.auditShadows =
         function () {
@@ -2567,7 +3392,8 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                     (c.meshInstances || [])
                         .forEach(function (mi) {
                             rows.push({
-                                objeto: c.entity.name,
+                                objeto:
+                                    c.entity.name,
 
                                 proxy:
                                     !!c.entity.__agiProxy,
@@ -2598,9 +3424,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             return rows;
         };
 
-    // ======================================================
-    // AUDITORIA DE FUENTES
-    // ======================================================
+    // ============================================================
+    // AUDITORIA DE CASTERS
+    // ============================================================
 
     AdvancedGpuInstancer.prototype.auditShadowSources =
         function () {
@@ -2661,9 +3487,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             return rows;
         };
 
-    // ======================================================
-    // AUDITORIA SPOT CASTERS
-    // ======================================================
+    // ============================================================
+    // AUDITORIA SPOT
+    // ============================================================
 
     AdvancedGpuInstancer.prototype.auditSpotCasters =
         function () {
@@ -2689,15 +3515,24 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
 
                 rows.push({
                     luz: l.entity.name,
-                    castShadows: l.castShadows,
-                    intensidad: l.intensity,
+
+                    castShadows:
+                        l.castShadows,
+
+                    intensidad:
+                        l.intensity,
 
                     shadowIntensity:
                         l.shadowIntensity,
 
-                    range: l.range,
-                    cono: l.outerConeAngle,
-                    shadowBias: l.shadowBias,
+                    range:
+                        l.range,
+
+                    cono:
+                        l.outerConeAngle,
+
+                    shadowBias:
+                        l.shadowBias,
 
                     normalOffsetBias:
                         l.normalOffsetBias,
@@ -2705,7 +3540,8 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                     affectLightmapped:
                         l.affectLightmapped,
 
-                    mask: l.mask,
+                    mask:
+                        l.mask,
 
                     shadowMap:
                         !!(
@@ -2723,9 +3559,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             return rows;
         };
 
-    // ======================================================
+    // ============================================================
     // AUDITORIA SPOT RECEIVERS
-    // ======================================================
+    // ============================================================
 
     AdvancedGpuInstancer.prototype.auditSpotReceivers =
         function () {
@@ -2746,7 +3582,8 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                     var d = v.length();
 
                     var m =
-                        l.entity.getWorldTransform().data;
+                        l.entity
+                            .getWorldTransform().data;
 
                     var fw = new pc.Vec3(
                         -m[4],
@@ -2804,14 +3641,14 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
     AdvancedGpuInstancer.prototype.auditSpotDistances =
         AdvancedGpuInstancer.prototype.auditSpotReceivers;
 
-    // ======================================================
-    // AUDITORIA DE RENDIMIENTO
-    // ======================================================
+    // ============================================================
+    // AUDITORIA PERFORMANCE
+    // ============================================================
 
     AdvancedGpuInstancer.prototype.auditPerformance =
         function () {
             var r = {
-                version: 'AGI4.15.1',
+                version: 'AGI4.15.2',
 
                 drawCalls:
                     this.app.stats.drawCallCount,
@@ -2833,6 +3670,12 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
 
                 bakedCasterSuppressed:
                     this._counts.bakedCasterSuppressed,
+
+                nativeAtlasPages:
+                    this._counts.nativeAtlasPages,
+
+                nativeAtlasInstances:
+                    this._counts.nativeAtlasInstances,
 
                 rebuilds:
                     this._counts.rebuilds,
@@ -2861,10 +3704,6 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             return r;
         };
 
-    // ======================================================
-    // AUDITORIA DE PASADAS
-    // ======================================================
-
     AdvancedGpuInstancer.prototype.auditPasses =
         function () {
             return {
@@ -2879,9 +3718,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             };
         };
 
-    // ======================================================
-    // AUDITORIA COMPLETA
-    // ======================================================
+    // ============================================================
+    // AUDITORIA GENERAL
+    // ============================================================
 
     AdvancedGpuInstancer.prototype.audit =
         function () {
@@ -2906,9 +3745,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
             };
         };
 
-    // ======================================================
-    // BENCHMARK A/B
-    // ======================================================
+    // ============================================================
+    // BENCHMARK
+    // ============================================================
 
     AdvancedGpuInstancer.prototype.benchmarkPasses =
         async function (frames) {
@@ -2928,7 +3767,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
 
             s._groups.forEach(function (g) {
                 if (g.catcher) {
-                    cs.push(g.catcher.entity);
+                    cs.push(
+                        g.catcher.entity
+                    );
                 }
             });
 
@@ -2967,7 +3808,8 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
 
                     if (i >= 12) {
                         data.push(
-                            s.app.stats.drawCallCount || 0
+                            s.app.stats.drawCallCount ||
+                            0
                         );
                     }
                 }
@@ -3000,7 +3842,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
 
             try {
                 rows.push(
-                    await sample('Escena actual')
+                    await sample(
+                        'Escena actual'
+                    )
                 );
 
                 cs.forEach(function (e) {
@@ -3008,7 +3852,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                 });
 
                 rows.push(
-                    await sample('Sin Catchers')
+                    await sample(
+                        'Sin Catchers'
+                    )
                 );
 
                 oldCs.forEach(function (x) {
@@ -3020,7 +3866,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                 });
 
                 rows.push(
-                    await sample('Sin sombras Spot')
+                    await sample(
+                        'Sin sombras Spot'
+                    )
                 );
 
                 oldSp.forEach(function (x) {
@@ -3032,7 +3880,9 @@ var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
                 });
 
                 rows.push(
-                    await sample('Sin sombras Directional')
+                    await sample(
+                        'Sin sombras Directional'
+                    )
                 );
 
             } finally {
