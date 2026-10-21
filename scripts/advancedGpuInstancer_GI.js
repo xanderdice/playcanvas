@@ -1,35 +1,36 @@
+
 /*
- * AGI4.15.5 - Advanced GPU Instancer
- * Scoped Core & Modern JavaScript
- *
- * PlayCanvas 2.23.x / WebGPU / WebGL2
- * Script ID: advancedGpuInstancer
- *
- * ARQUITECTURA
- *
- * - Unico identificador global requerido por PlayCanvas.
- * - Atributos del Editor declarados individualmente.
- * - Constantes, shaders y helpers encapsulados en _core.
- * - API publica mediante prototype.
- * - Variables locales const / let.
- * - Sin IIFE y sin helpers globales.
- *
- * ILUMINACION
- *
- * - Atlas PT compartidos.
- * - Lightmaps nativos consolidados automaticamente.
- * - Iluminacion realtime sin lightmaps.
- *
- * CONSERVA
- *
- * - Politica pre-bake AGI4.15.
- * - Separacion baked / realtime.
- * - Baked Shadow Mask.
- * - Shadow Catcher.
- * - Streaming fisico.
- * - Restauracion de recursos GPU.
- * - Auditorias y benchmarks.
- */
+* AGI4.15.7 - Advanced GPU Instancer
+* Scoped Core & Modern JavaScript
+*
+* PlayCanvas 2.23.x / WebGPU / WebGL2
+* Script ID: advancedGpuInstancer
+*
+* ARQUITECTURA
+*
+* - Unico identificador global requerido por PlayCanvas.
+* - Atributos del Editor declarados individualmente.
+* - Constantes, shaders y helpers encapsulados en _core.
+* - API publica mediante prototype.
+* - Variables locales const / let.
+* - Sin IIFE y sin helpers globales.
+*
+* ILUMINACION
+*
+* - Atlas PT compartidos.
+* - Lightmaps nativos consolidados automaticamente.
+* - Iluminacion realtime sin lightmaps.
+*
+* CONSERVA
+*
+* - Politica pre-bake AGI4.15.
+* - Separacion baked / realtime.
+* - Baked Shadow Mask.
+* - Shadow Catcher.
+* - Streaming fisico.
+* - Restauracion de recursos GPU.
+* - Auditorias y benchmarks.
+*/
 
 var AdvancedGpuInstancer = pc.createScript('advancedGpuInstancer');
 
@@ -78,23 +79,17 @@ AdvancedGpuInstancer.attributes.add('debug', {
 });
 
 // ============================================================
-// 2. NUCLEO INTERNO ENCAPSULADO
-//
-// Un unico objeto compartido por las instancias de AGI.
-// Ninguna funcion auxiliar se declara en el scope global.
-// Object.freeze evita reasignar los miembros del nucleo.
+// 2. NUCLEO INTERNO
 // ============================================================
 
 AdvancedGpuInstancer._core = Object.freeze({
 
-    TAG: '[AGI4.15.5]',
+    TAG: '[AGI4.15.7]',
 
     MAX_GROUP: 256,
     FLOATS_PER_INSTANCE: 20,
-
     CATCHER_INTERVAL: 0.15,
     PHYSICS_INTERVAL: 0.22,
-
     ATLAS_BORDER: 1,
 
     RECT_ONE: Object.freeze([0, 0, 1, 1]),
@@ -110,7 +105,7 @@ AdvancedGpuInstancer._core = Object.freeze({
     ]),
 
     // ========================================================
-    // SHADERS - Se preserva el WGSL validado en AGI4.15.4
+    // 3. SHADERS GLSL / WGSL
     // ========================================================
 
     GL: [
@@ -200,7 +195,7 @@ AdvancedGpuInstancer._core = Object.freeze({
     ].join('\n'),
 
     // ========================================================
-    // 3. UTILIDADES BASICAS
+    // 4. UTILIDADES
     // ========================================================
 
     alive(entity) {
@@ -217,21 +212,17 @@ AdvancedGpuInstancer._core = Object.freeze({
 
     power2(value) {
         let result = 1;
-
         while (result < value) {
             result *= 2;
         }
-
         return result;
     },
 
     id(script, object) {
         if (!object) return 0;
-
         if (!script._ids.has(object)) {
             script._ids.set(object, ++script._lastId);
         }
-
         return script._ids.get(object);
     },
 
@@ -284,7 +275,6 @@ AdvancedGpuInstancer._core = Object.freeze({
 
     renderBounds(meshInstance) {
         const aabb = meshInstance && meshInstance.aabb;
-
         if (!aabb) return null;
 
         const center = aabb.center;
@@ -337,7 +327,7 @@ AdvancedGpuInstancer._core = Object.freeze({
     },
 
     // ========================================================
-    // 4. DETECCION DE LIGHTMAPS
+    // 5. LIGHTMAPS
     // ========================================================
 
     lightmap(meshInstance) {
@@ -382,7 +372,7 @@ AdvancedGpuInstancer._core = Object.freeze({
     },
 
     // ========================================================
-    // 5. POLITICA DE SOMBRAS BAKED / REALTIME
+    // 6. POLITICA BAKE / REALTIME
     // ========================================================
 
     bakeRole(component) {
@@ -515,7 +505,6 @@ AdvancedGpuInstancer._core = Object.freeze({
             }
 
             const meshInstances = component.meshInstances || [];
-
             if (!meshInstances.length) return;
 
             if (!script._casterOriginal.has(component)) {
@@ -592,7 +581,7 @@ AdvancedGpuInstancer._core = Object.freeze({
     },
 
     // ========================================================
-    // 6. FUENTES DE INSTANCING
+    // 7. FUENTES DE INSTANCING
     // ========================================================
 
     eligible(component, pendingBake) {
@@ -656,6 +645,7 @@ AdvancedGpuInstancer._core = Object.freeze({
             if (lm.rect[2] <= 0 || lm.rect[3] <= 0) {
                 return false;
             }
+
         } else if (component.lightmapped && pendingBake) {
             return false;
         }
@@ -716,6 +706,7 @@ AdvancedGpuInstancer._core = Object.freeze({
     groupKey(script, item, cell, withLightmap) {
         const core = AdvancedGpuInstancer._core;
         const mi = item.mi;
+        const original = script._casterOriginal.get(item.c);
 
         const parts = [
             cell,
@@ -733,7 +724,10 @@ AdvancedGpuInstancer._core = Object.freeze({
             mi.drawOrder,
             mi.drawBucket,
             item.c.castShadows,
-            item.c.receiveShadows
+            item.c.receiveShadows,
+            original ? +original.component : +item.c.castShadows,
+            original && original.mesh[0]
+                ? +original.mesh[0].cast : +mi.castShadow
         ];
 
         if (withLightmap) {
@@ -802,7 +796,7 @@ AdvancedGpuInstancer._core = Object.freeze({
     },
 
     // ========================================================
-    // 7. ATLAS NATIVOS AUTOMATICOS
+    // 8. ATLAS NATIVOS AUTOMATICOS
     // ========================================================
 
     atlasCompatible(lm) {
@@ -984,7 +978,6 @@ AdvancedGpuInstancer._core = Object.freeze({
 
     copyWithBorder(destination, source, x, y) {
         const core = AdvancedGpuInstancer._core;
-
         const width = source.width;
         const height = source.height;
         const border = core.ATLAS_BORDER;
@@ -1014,7 +1007,6 @@ AdvancedGpuInstancer._core = Object.freeze({
 
     consolidateNative(script, items) {
         const core = AdvancedGpuInstancer._core;
-
         const potential = new Set();
 
         core.groupsOf(script, items, false).forEach(function (group) {
@@ -1077,14 +1069,14 @@ AdvancedGpuInstancer._core = Object.freeze({
                     color = core.createAtlasTexture(
                         script, sample.tex,
                         page.width, page.height,
-                        'AGI4155_NativeLightmap'
+                        'AGI4157_NativeLightmap'
                     );
 
                     if (sample.dir) {
                         direction = core.createAtlasTexture(
                             script, sample.dir,
                             page.width, page.height,
-                            'AGI4155_NativeDirection'
+                            'AGI4157_NativeDirection'
                         );
                     }
 
@@ -1098,6 +1090,7 @@ AdvancedGpuInstancer._core = Object.freeze({
                                 tile.x, tile.y
                             ));
                     });
+
                 } catch (error) {
                     if (script.debug) {
                         console.warn(
@@ -1184,7 +1177,7 @@ AdvancedGpuInstancer._core = Object.freeze({
     },
 
     // ========================================================
-    // 8. MATERIALES Y BUFFERS GPU
+    // 9. MATERIALES GPU
     // ========================================================
 
     getMaterial(script, source, catcher) {
@@ -1204,20 +1197,17 @@ AdvancedGpuInstancer._core = Object.freeze({
 
         material.name =
             (source.name || 'Material') +
-            '_AGI4155' +
+            '_AGI4157' +
             (catcher ? '_Catcher' : '');
 
         if (catcher) {
             material.shadowCatcher = true;
             material.blendType = pc.BLEND_MULTIPLICATIVE;
-
             material.depthWrite = false;
             material.depthTest = true;
             material.cull = pc.CULLFACE_NONE;
-
             material.diffuse.set(0, 0, 0);
             material.specular.set(0, 0, 0);
-
             material.useSkybox = false;
         }
 
@@ -1349,7 +1339,6 @@ AdvancedGpuInstancer._core = Object.freeze({
 
     syncMaskParams(script) {
         const core = AdvancedGpuInstancer._core;
-
         const params = core.maskParams(script);
 
         if (script._maskUploadedVersion === script._maskVersion) {
@@ -1369,7 +1358,7 @@ AdvancedGpuInstancer._core = Object.freeze({
     },
 
     // ========================================================
-    // 9. CREACION DE SHADOW CATCHER
+    // 10. SHADOW CATCHER DIRECCIONAL
     // ========================================================
 
     makeCatcher(script, group) {
@@ -1380,7 +1369,7 @@ AdvancedGpuInstancer._core = Object.freeze({
             const source = group.items[0];
 
             entity = new pc.Entity(
-                'AGI4155_Catcher_' + source.c.entity.name
+                'AGI4157_Catcher_' + source.c.entity.name
             );
 
             entity.__agiCatcher = true;
@@ -1393,7 +1382,6 @@ AdvancedGpuInstancer._core = Object.freeze({
             );
 
             mi.setInstancing(group.vb, true);
-
             mi.setParameter('agiBakedAtlas', source.lm.tex);
             mi.setParameter('agiMaskParams', core.maskParams(script));
 
@@ -1426,6 +1414,7 @@ AdvancedGpuInstancer._core = Object.freeze({
                 z: null,
                 distance: null
             };
+
         } catch (error) {
             if (entity) {
                 entity.destroy();
@@ -1440,17 +1429,15 @@ AdvancedGpuInstancer._core = Object.freeze({
     },
 
     // ========================================================
-    // 10. CREACION DE GRUPOS GPU
+    // 11. CREACION DE GRUPOS GPU
     // ========================================================
 
     makeGroup(script, group) {
         const core = AdvancedGpuInstancer._core;
-
         const source = group.items[0];
 
         let entity = null;
         let vertexBuffer = null;
-
         const hiddenNow = [];
 
         try {
@@ -1467,14 +1454,13 @@ AdvancedGpuInstancer._core = Object.freeze({
             );
 
             entity = new pc.Entity(
-                'AGI4155_' +
+                'AGI4157_' +
                 source.c.entity.name +
                 '_' +
                 script._groups.size
             );
 
             entity.__agiProxy = true;
-
             script.app.root.addChild(entity);
 
             const mi = new pc.MeshInstance(
@@ -1552,7 +1538,6 @@ AdvancedGpuInstancer._core = Object.freeze({
                 );
             }
 
-            // PlayCanvas puede modificar flags al crear el render.
             core.applyMeshFlags(mi, source.mi, baked);
 
             if (!baked && source.c.lightmapped) {
@@ -1568,11 +1553,23 @@ AdvancedGpuInstancer._core = Object.freeze({
             group.data = data;
             group.catcher = null;
 
+            // AGI4.15.7:
+            // Los casters baked pueden volver a proyectar mediante
+            // su propio grupo GPU, sin reactivar MeshInstances.
+            group.nativeLocalEligible = baked && !core.floor(source.c) &&
+                group.items.some(function (item) {
+                    const original = script._casterOriginal.get(item.c);
+                    return original
+                        ? original.component
+                        : item.c.castShadows;
+                });
+
+            group.nativeLocalCast = false;
+
             if (baked && core.floor(source.c)) {
                 core.makeCatcher(script, group);
             }
 
-            // Solo ocultar originales cuando el proxy existe.
             group.items.forEach(function (item) {
                 if (script._parked.has(item.c)) return;
 
@@ -1589,8 +1586,8 @@ AdvancedGpuInstancer._core = Object.freeze({
             });
 
             script._groups.set(entity, group);
-
             return true;
+
         } catch (error) {
             hiddenNow.forEach(function (component) {
                 const original = script._parked.get(component);
@@ -1630,12 +1627,11 @@ AdvancedGpuInstancer._core = Object.freeze({
     },
 
     // ========================================================
-    // 11. CATCHER Y DISTANCIAS
+    // 12. DISTANCIAS Y SHADOW CATCHER
     // ========================================================
 
     cameraDepth(bounds, camera) {
         const core = AdvancedGpuInstancer._core;
-
         const matrix = camera.entity.getWorldTransform().data;
 
         const fx = -matrix[8];
@@ -1664,7 +1660,6 @@ AdvancedGpuInstancer._core = Object.freeze({
 
     canShadowFloor(group, caster, light) {
         const core = AdvancedGpuInstancer._core;
-
         const bounds = core.renderBounds(caster.mi);
 
         if (!bounds) return true;
@@ -1831,7 +1826,90 @@ AdvancedGpuInstancer._core = Object.freeze({
     },
 
     // ========================================================
-    // 12. FIRMA ESTRUCTURAL
+    // 13. PROYECCION LOCAL NATIVA - SPOT / OMNI
+    // ========================================================
+    //
+    // Esta es la correccion de AGI4.15.7.
+    //
+    // No modifica shaders, UV1, atlas ni lightmaps.
+    // No crea shadow catchers adicionales.
+    // No muestra objetos originales.
+    // El RenderComponent administra los shadow casters nativos.
+    //
+    // shadowCascadeMask = 0 excluye las cascadas Directional.
+    // Los shadow maps Spot / Omni siguen siendo del motor.
+    // ========================================================
+
+    updateNativeLocalCasters(script) {
+        const core = AdvancedGpuInstancer._core;
+
+        const lights = script._lights.filter(function (light) {
+            return light.enabled && core.alive(light.entity) &&
+                (light.type === 'spot' || light.type === 'omni') &&
+                light.castShadows && light.range > 0 &&
+                (light.affectLightmapped || light.affectDynamic);
+        });
+
+        const cameras = core.cameras(script);
+        const directionals = core.directionals(script);
+
+        const maxDirectionalDistance = directionals.reduce(
+            function (distance, light) {
+                return Math.max(distance, light.shadowDistance || 0);
+            }, 0
+        );
+
+        script._groups.forEach(function (group) {
+            if (!group.nativeLocalEligible) return;
+
+            const b = group.bounds;
+
+            const visible = !script.distanceCulling || cameras.some(
+                function (camera) {
+                    const limit = Math.min(
+                        camera.farClip > 0 ? camera.farClip : Infinity,
+                        maxDirectionalDistance > 0
+                            ? maxDirectionalDistance : Infinity
+                    );
+
+                    const depth = core.cameraDepth(b, camera);
+
+                    return depth[1] >= Math.max(0, camera.nearClip || 0) &&
+                        depth[0] <= limit;
+                }
+            );
+
+            const active = visible && lights.some(function (light) {
+                if (!(light.mask & group.mi.mask)) return false;
+
+                const p = light.entity.getPosition();
+
+                const dx = Math.max(b[0] - p.x, 0, p.x - b[3]);
+                const dy = Math.max(b[1] - p.y, 0, p.y - b[4]);
+                const dz = Math.max(b[2] - p.z, 0, p.z - b[5]);
+
+                return dx * dx + dy * dy + dz * dz <=
+                    light.range * light.range;
+            });
+
+            if (group.nativeLocalCast === active) return;
+
+            group.entity.render.castShadows = active;
+
+            group.entity.render.shadowCascadeMask = active
+                ? 0 : group.items[0].mi.shadowCascadeMask;
+
+            group.mi.castShadow = active;
+
+            group.mi.shadowCascadeMask = active
+                ? 0 : group.items[0].mi.shadowCascadeMask;
+
+            group.nativeLocalCast = active;
+        });
+    },
+
+    // ========================================================
+    // 14. FIRMA ESTRUCTURAL
     // ========================================================
 
     signature(script) {
@@ -1882,7 +1960,7 @@ AdvancedGpuInstancer._core = Object.freeze({
     },
 
     // ========================================================
-    // 13. TRANSFORMACIONES
+    // 15. TRANSFORMACIONES
     // ========================================================
 
     matrixChanged(group) {
@@ -1891,7 +1969,6 @@ AdvancedGpuInstancer._core = Object.freeze({
         for (let i = 0; i < group.items.length; i++) {
             const item = group.items[i];
             const matrix = item.mi.node.getWorldTransform().data;
-
             const offset = i * core.FLOATS_PER_INSTANCE;
 
             for (let j = 0; j < 16; j++) {
@@ -1916,7 +1993,6 @@ AdvancedGpuInstancer._core = Object.freeze({
 
     refreshTransforms(script) {
         const core = AdvancedGpuInstancer._core;
-
         const changes = [];
         let valid = true;
 
@@ -1967,7 +2043,6 @@ AdvancedGpuInstancer._core = Object.freeze({
             group.bounds = change.bounds;
 
             group.mi.aabb = core.box3(change.bounds);
-
             group.entity.render.customAabb =
                 core.box3(change.bounds);
 
@@ -1986,7 +2061,7 @@ AdvancedGpuInstancer._core = Object.freeze({
     },
 
     // ========================================================
-    // 14. RESTAURACION Y RECURSOS GPU
+    // 16. RESTAURACION Y RECURSOS GPU
     // ========================================================
 
     restoreParked(script) {
@@ -2061,13 +2136,12 @@ AdvancedGpuInstancer._core = Object.freeze({
         });
 
         script._nativeAtlases.length = 0;
-
         script._counts.nativeAtlasPages = 0;
         script._counts.nativeAtlasInstances = 0;
     },
 
     // ========================================================
-    // 15. CONSTRUCCION GPU
+    // 17. CONSTRUCCION GPU
     // ========================================================
 
     build(script) {
@@ -2099,6 +2173,7 @@ AdvancedGpuInstancer._core = Object.freeze({
             for (let i = 0;
                 i < itemsInGroup.length;
                 i += core.MAX_GROUP) {
+
                 const part = itemsInGroup.slice(
                     i,
                     i + core.MAX_GROUP
@@ -2139,6 +2214,7 @@ AdvancedGpuInstancer._core = Object.freeze({
         script._counts.rebuilds++;
 
         core.updateCatchers(script);
+        core.updateNativeLocalCasters(script);
 
         script._signature = core.signature(script);
 
@@ -2158,7 +2234,7 @@ AdvancedGpuInstancer._core = Object.freeze({
     },
 
     // ========================================================
-    // 16. STREAMING FISICO
+    // 18. STREAMING FISICO
     // ========================================================
 
     physics(script, dt) {
@@ -2239,7 +2315,7 @@ AdvancedGpuInstancer._core = Object.freeze({
 });
 
 // ============================================================
-// 17. PROTOTYPE: CICLO DE VIDA
+// 19. PROTOTYPE: CICLO DE VIDA
 // ============================================================
 
 AdvancedGpuInstancer.prototype.initialize = function () {
@@ -2305,7 +2381,7 @@ AdvancedGpuInstancer.prototype.initialize = function () {
     }
 
     this._hiddenLayer = new pc.Layer({
-        name: 'AGI4155_HIDDEN_SOURCES',
+        name: 'AGI4157_HIDDEN_SOURCES',
         id: layerId,
         enabled: false
     });
@@ -2341,7 +2417,6 @@ AdvancedGpuInstancer.prototype.update = function (dt) {
     if (this._startPending || this._deferredBuild) {
         this._startPending = false;
         this._deferredBuild = false;
-
         core.build(this);
     }
 
@@ -2352,6 +2427,7 @@ AdvancedGpuInstancer.prototype.update = function (dt) {
     if (this._catchClock >= core.CATCHER_INTERVAL) {
         this._catchClock = 0;
         core.updateCatchers(this);
+        core.updateNativeLocalCasters(this);
     }
 
     this._scanClock += dt;
@@ -2421,7 +2497,7 @@ AdvancedGpuInstancer.prototype.rebuild = function () {
 };
 
 // ============================================================
-// 18. PROTOTYPE: CONTROLES
+// 20. PROTOTYPE: CONTROLES
 // ============================================================
 
 AdvancedGpuInstancer.prototype.setBakeMode = function (enabled) {
@@ -2432,6 +2508,7 @@ AdvancedGpuInstancer.prototype.setBakeMode = function (enabled) {
 
         core.destroyGroups(this);
         core.restoreRealtime(this);
+
         core.snapshot(this);
         core.preBakePolicy(this);
     } else {
@@ -2482,7 +2559,7 @@ AdvancedGpuInstancer.prototype.setCatcherBlend = function () {
 };
 
 // ============================================================
-// 19. PROTOTYPE: AUDITORIAS
+// 21. PROTOTYPE: AUDITORIAS
 // ============================================================
 
 AdvancedGpuInstancer.prototype.auditBakeRoles = function () {
@@ -2519,7 +2596,6 @@ AdvancedGpuInstancer.prototype.auditBakeRoles = function () {
     });
 
     console.table(rows);
-
     return rows;
 };
 
@@ -2547,7 +2623,6 @@ AdvancedGpuInstancer.prototype.auditGroups = function () {
     });
 
     console.table(rows);
-
     return rows;
 };
 
@@ -2576,7 +2651,6 @@ AdvancedGpuInstancer.prototype.auditDistance = function () {
     });
 
     console.table(rows);
-
     return rows;
 };
 
@@ -2602,7 +2676,6 @@ AdvancedGpuInstancer.prototype.auditShadows = function () {
         });
 
     console.table(rows);
-
     return rows;
 };
 
@@ -2644,7 +2717,6 @@ AdvancedGpuInstancer.prototype.auditShadowSources = function () {
     });
 
     console.table(rows);
-
     return rows;
 };
 
@@ -2685,7 +2757,6 @@ AdvancedGpuInstancer.prototype.auditSpotCasters = function () {
     });
 
     console.table(rows);
-
     return rows;
 };
 
@@ -2701,7 +2772,6 @@ AdvancedGpuInstancer.prototype.auditSpotReceivers = function () {
 
             const direction = center.clone().sub(position);
             const distance = direction.length();
-
             const matrix = light.entity.getWorldTransform().data;
 
             const forward = new pc.Vec3(
@@ -2741,7 +2811,6 @@ AdvancedGpuInstancer.prototype.auditSpotReceivers = function () {
     });
 
     console.table(rows);
-
     return rows;
 };
 
@@ -2753,7 +2822,7 @@ AdvancedGpuInstancer.prototype.auditPerformance = function () {
     const counts = this._counts;
 
     const row = {
-        version: 'AGI4.15.5',
+        version: 'AGI4.15.7',
         drawCalls: this.app.stats.drawCallCount,
         groups: counts.groups,
         instances: counts.instances,
@@ -2770,15 +2839,12 @@ AdvancedGpuInstancer.prototype.auditPerformance = function () {
     };
 
     console.table([row]);
-
     return row;
 };
 
 AdvancedGpuInstancer.prototype.capturePerformance = function (label) {
     const result = this.auditPerformance();
-
     result.label = label || 'captura';
-
     return result;
 };
 
@@ -2802,7 +2868,7 @@ AdvancedGpuInstancer.prototype.audit = function () {
 };
 
 // ============================================================
-// 20. PROTOTYPE: BENCHMARK
+// 22. PROTOTYPE: BENCHMARK
 // ============================================================
 
 AdvancedGpuInstancer.prototype.benchmarkPasses = async function (frames) {
@@ -2814,10 +2880,8 @@ AdvancedGpuInstancer.prototype.benchmarkPasses = async function (frames) {
     );
 
     const script = this;
-
     const spots = core.spots(script);
     const directionals = core.directionals(script);
-
     const catchers = [];
 
     script._groups.forEach(function (group) {
@@ -2909,6 +2973,7 @@ AdvancedGpuInstancer.prototype.benchmarkPasses = async function (frames) {
         rows.push(
             await sample('Sin sombras Directional')
         );
+
     } finally {
         oldSpots.forEach(function (item) {
             item[0].castShadows = item[1];
@@ -2926,6 +2991,5 @@ AdvancedGpuInstancer.prototype.benchmarkPasses = async function (frames) {
     }
 
     console.table(rows);
-
     return rows;
 };
